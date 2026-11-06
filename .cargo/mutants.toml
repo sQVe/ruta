@@ -1,0 +1,12 @@
+exclude_globs = [
+  # Integration tests: a mutant in a test only weakens the test itself.
+  "**/tests/**",
+  # Unit test modules: a mutant in a test only weakens the test itself.
+  "**/tests.rs",
+  # Test helpers: a mutant in a helper only weakens the tests that use it.
+  "**/test_support.rs",
+  # Test helper modules: a mutant in a helper only weakens the tests that use it.
+  "**/test_support/**",
+]
+test_tool = "nextest"
+timeout_multiplier = 3.0
