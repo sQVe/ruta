@@ -299,8 +299,15 @@ mod tests {
         let plain_path = plain.path().to_string_lossy().into_owned();
         let both = format!("{plain_path}:{}", runnable.path().display());
 
-        // 0o641 lets only others run a file that the current user owns.
-        for mode in [0o644, 0o641] {
+        // 0o641 lets only others run a file that the current user owns. Root may run any file with
+        // an execute bit, so that case applies only to other users.
+        let modes: &[u32] = if rustix::process::geteuid().is_root() {
+            &[0o644]
+        } else {
+            &[0o644, 0o641]
+        };
+
+        for &mode in modes {
             std::fs::set_permissions(&skipped, std::fs::Permissions::from_mode(mode))
                 .expect("set the tool mode");
 

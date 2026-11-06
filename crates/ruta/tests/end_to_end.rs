@@ -445,8 +445,15 @@ fn a_tool_the_user_cannot_run_is_refused_and_leaves_a_running_sandbox_up() {
     sandbox.succeed(&["up"]);
     let before = records(&sandbox.root());
 
-    // 0o641 lets only others run a file that the current user owns.
-    for mode in [0o644, 0o641] {
+    // 0o641 lets only others run a file that the current user owns. Root may run any file with an
+    // execute bit, so that case applies only to other users.
+    let modes: &[u32] = if rustix::process::geteuid().is_root() {
+        &[0o644]
+    } else {
+        &[0o644, 0o641]
+    };
+
+    for &mode in modes {
         let path = path_with_xdotool_mode(mode);
 
         for arguments in [&["up"][..], &["restart"]] {
