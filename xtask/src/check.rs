@@ -5,7 +5,6 @@ use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Group {
-    /// Checks whose result does not depend on the operating system.
     Tidy,
     Build,
 }
@@ -130,7 +129,6 @@ fn run_step(root: &Path, step: &Step) -> bool {
     }
 }
 
-/// Runs every selected step, even after a failure, so one run shows every problem.
 fn failed_steps<'a>(root: &Path, steps: &'a [Step], groups: &[Group]) -> Vec<&'a str> {
     steps
         .iter()

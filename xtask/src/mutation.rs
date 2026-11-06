@@ -163,8 +163,6 @@ impl Scope {
     }
 }
 
-/// cargo-mutants matches `--file` as a glob against workspace-relative paths, so `./a.rs` or an
-/// absolute path would match nothing and wrongly report `nothing`.
 fn workspace_relative_path(root: &Path, path: &str) -> Result<String, PathError> {
     let file = root
         .join(path)
@@ -241,7 +239,6 @@ fn count_mutants(
         anyhow::bail!("cargo mutants --list failed with {}.", listing.status);
     }
 
-    // cargo-mutants prints nothing, not `[]`, when a diff changes no Rust source.
     if listing.stdout.trim_ascii().is_empty() {
         return Ok(BTreeMap::new());
     }
@@ -304,8 +301,6 @@ fn run_mutants(cargo: &str, root: &Path, output: &Path, scope: &Scope) -> anyhow
         .status()
         .context("Could not start cargo mutants")?;
 
-    // cargo-mutants exits 2 for missed mutants and 3 for timeouts. A timed-out mutant counts as
-    // caught, as Stryker counts it in Tau's own mutation script, so only missed mutants survive.
     match status.code() {
         Some(0 | 2 | 3) => Ok(()),
         Some(4) => anyhow::bail!("The unmutated tree fails to build or pass its tests."),
