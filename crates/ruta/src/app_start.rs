@@ -18,8 +18,6 @@ use crate::process::{POLL, ProcessError, TOOL_TIMEOUT, poll_until, run_until};
 use crate::root::write_unlinked;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
-// An app's last lines can still be in the pipe when it exits. The reader gets this long to reach
-// a ready line before ruta reports the exit.
 const EXIT_GRACE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Error)]
@@ -34,8 +32,6 @@ enum AppStartError {
     ReadyTimeout { timeout: Duration, log: PathBuf },
 }
 
-// Starts the configured app with `arguments` appended and waits until it is ready. The app
-// leads its own process group, so a wrapper script and everything it starts stop together.
 pub(crate) fn start_app(
     root: &Path,
     config: &Config,
@@ -109,8 +105,6 @@ fn clone_log(log: &File, path: &Path) -> anyhow::Result<File> {
         .with_context(|| format!("Could not open {} for writing", path.display()))
 }
 
-// Copies the app's stdout to the log until the first line that is a JSON object, and returns
-// that line with the reader, which may hold later output in its buffer.
 fn read_ready_line(
     stdout: ChildStdout,
     log: File,
@@ -182,8 +176,6 @@ fn is_json_object(line: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(line).is_ok_and(|value| value.is_object())
 }
 
-// Hands the rest of the app's stdout to a `cat` in the app's process group, so the log keeps
-// growing after ruta exits and the cat stops with the app.
 fn copy_rest(
     reader: BufReader<ChildStdout>,
     mut log: File,
@@ -220,8 +212,6 @@ fn probe_command(probe: &CommandLine, environment: &[(String, String)], folder: 
     command
 }
 
-// Runs the ready command until it exits 0. A probe that hangs counts as not ready, and a probe
-// still running when the app exits is stopped at once.
 fn wait_for_ready_command(
     mut probe: impl FnMut() -> Command,
     pid: u32,

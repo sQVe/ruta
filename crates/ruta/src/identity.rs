@@ -101,9 +101,6 @@ fn identity_still_matches(pid: u32, started: u64) -> bool {
     process_start(pid) == Some(started)
 }
 
-// Records the app by its start time and this root's marker, not its command line, because a
-// launch script may exec the app and replace its argv. The start time stays the same across an
-// exec, and the marker keeps ruta from signaling a process that is not its own.
 pub(crate) fn record_marked_process(
     path: &Path,
     pid: u32,
@@ -213,11 +210,6 @@ fn process_is_ours(pid: u32, root: &Path) -> bool {
         .any(|line| line == marker)
 }
 
-// Stops the app's process group: every live process in the recorded leader's group that holds
-// this root's marker. The leader may already be gone, as with a wrapper script that exits. While a
-// member lives, the kernel cannot hand the group's ID to a new process, and each member is
-// signaled through its own pidfd after its start time is checked again. The record stays until
-// no member is left, so a later `down` can retry.
 pub(crate) fn stop_window(root: &Path) -> anyhow::Result<()> {
     stop_group(root, STOP_TIMEOUT)
 }
@@ -262,10 +254,6 @@ fn stop_group(root: &Path, timeout: Duration) -> anyhow::Result<()> {
     Ok(())
 }
 
-// The live members of the recorded leader's group, with their start times. The recorded leader
-// counts by its PID and start time alone, since it may exec into an environment without the
-// marker. Other members count only when they hold this root's marker. A leader whose start time
-// changed is a reused PID, not a member.
 fn group_members((leader, started): (u32, u64), root: &Path) -> Vec<(u32, u64)> {
     let Ok(entries) = fs::read_dir("/proc") else {
         return Vec::new();

@@ -28,7 +28,6 @@ pub(crate) fn spawn_without_marker() -> ChildGuard {
     child
 }
 
-// Starts a marked group leader, as the app is started.
 pub(crate) fn spawn_with_marker(root: &Path) -> ChildGuard {
     let mut command = Command::new("sleep");
     command.arg("30").env("RUTA_ROOT", root.as_os_str());

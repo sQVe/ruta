@@ -13,7 +13,6 @@ use crate::environment::{caller_environment, nested_weston_environment, weston_e
 use crate::identity::{STOP_TIMEOUT, record_matches, record_process, stop_recorded};
 use crate::root::{prepare_root, socket_name};
 
-// Starts Weston and Xwayland, so it needs a real display server.
 #[mutants::skip]
 pub(crate) fn ensure_display(
     name: &str,
@@ -112,11 +111,9 @@ pub(crate) enum HeadedSessionError {
     NoAbsoluteRuntimeDir,
 }
 
-// Where Weston shows the private display.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Session {
     Headless,
-    // One window on the caller's Wayland session.
     Headed {
         wayland_display: String,
         runtime: PathBuf,
@@ -124,7 +121,6 @@ pub(crate) enum Session {
 }
 
 impl Session {
-    // The mode record, which a restart without `--headed` reads back.
     fn mode(&self) -> &'static str {
         match self {
             Session::Headless => "headless",

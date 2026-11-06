@@ -1,8 +1,3 @@
-//! Best-effort cleanup for temporary files and child processes.
-//!
-//! A cleanup failure must not hide the original error, so these helpers report it on stderr and
-//! continue. A path or process that is already gone is not a failure.
-
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;

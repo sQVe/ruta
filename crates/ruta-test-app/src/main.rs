@@ -1,8 +1,3 @@
-//! Opens one X11 window and prints a JSON ready line, for ruta's end-to-end tests.
-//!
-//! Usage: `ruta-test-app <title> <width> <height> [arguments]`. The ready line repeats the title,
-//! the size, and the extra arguments.
-
 use std::io::Write as _;
 
 use anyhow::Context as _;

@@ -43,9 +43,6 @@ pub(crate) fn run_with_timeout(command: Command, timeout: Duration) -> anyhow::R
     run_until(command, timeout, || false)
 }
 
-// Runs `command` as the leader of its own process group until it exits, `timeout` passes, or
-// `stop_early` returns true. The whole group is killed before this returns, so no descendant of
-// the command outlives the call.
 pub(crate) fn run_until(
     mut command: Command,
     timeout: Duration,
@@ -97,7 +94,6 @@ pub(crate) fn run_until(
         .wait()
         .with_context(|| format!("Could not wait for {program}"))?;
 
-    // A descendant that left the group can keep the pipes open after the command exits.
     let readers_done = poll_until(deadline.saturating_duration_since(Instant::now()), || {
         if stop_early() {
             return Err(ProcessError::Stopped {
@@ -127,7 +123,6 @@ pub(crate) fn run_until(
     })
 }
 
-// Checks for an exit without reaping the child.
 fn has_exited(child: &Child) -> std::io::Result<bool> {
     let options = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
     let status = rustix::process::waitid(WaitId::Pid(Pid::from_child(child)), options)?;

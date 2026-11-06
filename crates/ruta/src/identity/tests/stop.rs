@@ -315,7 +315,6 @@ fn stop_recorded_signals_only_the_recorded_process() {
 
 const STUBBORN_NAME: &str = "ruta-stubborn";
 
-// Starts a marked group whose leader stops on TERM and whose member ignores it.
 pub(crate) fn spawn_stubborn_group(root: &Path) -> ChildGuard {
     let mut command = Command::new("sh");
     command

@@ -32,7 +32,6 @@ fn read_ready(script: &str, timeout: Duration) -> ReadReady {
     read_ready_after(script, timeout, |_| {})
 }
 
-// Runs `before_read` on the started app before ruta reads its output.
 fn read_ready_after(script: &str, timeout: Duration, before_read: impl FnOnce(u32)) -> ReadReady {
     let folder = crate::test_support::temporary_directory();
     let (log, log_path) = log_file(folder.path());

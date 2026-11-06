@@ -49,7 +49,6 @@ pub(crate) fn window_id(root: &Path) -> anyhow::Result<String> {
     Ok(window)
 }
 
-// Sends xdotool input to a live display.
 #[mutants::skip]
 pub(crate) fn focus_window(
     root: &Path,
@@ -67,7 +66,6 @@ pub(crate) fn focus_window(
     xdotool(root, display, &["click".to_string(), "1".to_string()])
 }
 
-// Queries windows on a live display.
 #[mutants::skip]
 fn find_window(
     root: &Path,
@@ -100,7 +98,6 @@ fn find_window(
     })
 }
 
-// Picks the one window that matches the title and size, if it has appeared.
 fn pick_window(
     matching: Vec<String>,
     title: &str,
@@ -118,7 +115,6 @@ fn pick_window(
     }
 }
 
-// Queries windows on a live display.
 #[mutants::skip]
 fn search_windows(environment: &[(String, String)], title: &str) -> anyhow::Result<Vec<String>> {
     let output = xdotool_output(
@@ -139,7 +135,6 @@ fn search_windows(environment: &[(String, String)], title: &str) -> anyhow::Resu
         .collect())
 }
 
-// Queries windows on a live display.
 #[mutants::skip]
 fn window_size(
     environment: &[(String, String)],
@@ -167,7 +162,6 @@ fn xdotool_output(
     process::run_with_timeout(command, process::TOOL_TIMEOUT)
 }
 
-// xdotool matches `--name` as a case-insensitive extended regular expression.
 fn title_pattern(title: &str) -> String {
     let mut pattern = String::from("^");
 
@@ -195,7 +189,6 @@ fn parse_geometry(output: &str) -> Option<(u32, u32)> {
     Some((value("WIDTH")?, value("HEIGHT")?))
 }
 
-// Sends xdotool input to a live display.
 #[mutants::skip]
 fn move_pointer(root: &Path, display: &str, window: &str, x: i32, y: i32) -> anyhow::Result<()> {
     xdotool(
@@ -211,7 +204,6 @@ fn move_pointer(root: &Path, display: &str, window: &str, x: i32, y: i32) -> any
     )
 }
 
-// Sends xdotool input to a live display.
 #[mutants::skip]
 fn xdotool(root: &Path, display: &str, arguments: &[String]) -> anyhow::Result<()> {
     let environment = sandbox_environment(&caller_environment(), root, display);

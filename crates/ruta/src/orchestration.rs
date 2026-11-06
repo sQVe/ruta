@@ -20,7 +20,6 @@ use crate::root::{
     require_trusted_root, root_path,
 };
 
-// Room around the app window for Weston's window frame.
 const DISPLAY_MARGIN: u32 = 200;
 
 #[expect(
@@ -51,7 +50,6 @@ fn execute(config: &Config, command: Sandbox) -> anyhow::Result<()> {
     }
 }
 
-// Starts a live sandbox display and app.
 #[mutants::skip]
 fn up(config: &Config, root: &Path, arguments: &[String], headed: bool) -> anyhow::Result<()> {
     require_display_tools()?;
@@ -60,7 +58,6 @@ fn up(config: &Config, root: &Path, arguments: &[String], headed: bool) -> anyho
     start_window(config, root, arguments, &session)
 }
 
-// Restarts a live sandbox display and app.
 #[mutants::skip]
 fn restart(
     config: &Config,
@@ -205,7 +202,6 @@ fn require_up(name: &str, root: &Path) -> anyhow::Result<String> {
     Ok(display)
 }
 
-// Captures a live sandbox window with ImageMagick.
 #[mutants::skip]
 #[expect(clippy::print_stdout, reason = "the shot path is the command's output")]
 fn shot(name: &str, root: &Path, file: Option<PathBuf>) -> anyhow::Result<()> {
@@ -283,9 +279,6 @@ fn stop_target(target: StopTarget) -> anyhow::Result<()> {
     }
 }
 
-// Stops everything the sandbox recorded, then removes the root. It refuses a root that fails
-// the owner, mode, or symlink checks, so a failed `up` cannot act on an untrusted path. A
-// process that will not stop keeps the root so the retry has its record.
 fn cleanup<F>(root: &Path, mut stop: F) -> anyhow::Result<()>
 where
     F: FnMut(StopTarget) -> anyhow::Result<()>,

@@ -15,7 +15,6 @@ pub(crate) fn temporary_directory() -> TempDir {
         .expect("create a temporary directory")
 }
 
-// A private folder under `/var/tmp` whose name passes the root checks, so cleanup may remove it.
 pub(crate) fn temporary_sandbox_root(label: &str) -> TempDir {
     let prefix = format!("ruta-test-{label}-");
     let root = Builder::new()
@@ -29,8 +28,6 @@ pub(crate) fn temporary_sandbox_root(label: &str) -> TempDir {
     root
 }
 
-// Lists live processes whose environment holds `variable`, such as `RUTA_ROOT=/var/tmp/ruta-x`.
-// A zombie has no readable environment, so it is not listed.
 pub(crate) fn live_processes_with(variable: &str) -> Vec<u32> {
     let processes = fs::read_dir("/proc").expect("list /proc");
 
@@ -47,7 +44,6 @@ pub(crate) fn live_processes_with(variable: &str) -> Vec<u32> {
         .collect()
 }
 
-// Waits until no live process holds `variable`, and returns the ones still alive.
 pub(crate) fn wait_until_gone(variable: &str, timeout: Duration) -> Vec<u32> {
     poll_until(timeout, || {
         let alive = live_processes_with(variable);
@@ -73,7 +69,6 @@ pub(crate) fn stop_child(child: &mut Child) {
     }
 }
 
-// A test child that is stopped and reaped on drop. A group leader takes its whole group along.
 pub(crate) struct ChildGuard {
     child: Child,
     reaped: bool,

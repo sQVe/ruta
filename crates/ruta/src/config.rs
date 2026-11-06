@@ -13,7 +13,6 @@ const APP_KEYS: &[&str] = &["command", "title", "width", "height"];
 const READY_KEYS: &[&str] = &["line", "command"];
 const READY_LINE: &str = "json";
 
-// ruta sets these itself, and a caller value could point the app at the real display.
 const RESERVED_KEYS: &[&str] = &[
     "DISPLAY",
     "HOME",
@@ -28,7 +27,6 @@ const RESERVED_PREFIXES: &[&str] = &["WAYLAND_", "XDG_", "RUTA_"];
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Config {
     pub(crate) name: String,
-    // The folder that holds `ruta.toml`. The app and the ready command run here.
     pub(crate) folder: PathBuf,
     pub(crate) app: App,
     pub(crate) ready: Ready,
@@ -86,8 +84,6 @@ pub(crate) enum ConfigError {
     BadEnvironmentKey { key: String },
 }
 
-// Finds `ruta.toml` in `start` or a folder above it and parses it. `name_override` comes from
-// `RUTA_NAME` and replaces the configured name.
 pub(crate) fn load(start: &Path, name_override: Option<&str>) -> anyhow::Result<Config> {
     let path = find(start).ok_or_else(|| ConfigError::NotFound {
         start: start.to_path_buf(),
@@ -142,7 +138,6 @@ pub(crate) fn parse(
     })
 }
 
-// Checks the rule that keeps a sandbox name one safe path and socket component.
 pub(crate) fn valid_name(key: &str, name: &str) -> Result<String, ConfigError> {
     let mut characters = name.chars();
     let valid_first = characters
@@ -307,7 +302,6 @@ fn command_line(value: &Value, key: &str, folder: &Path) -> Result<CommandLine, 
     })
 }
 
-// A bare program name stays a PATH lookup; a relative path is relative to the config folder.
 fn resolve_program(program: &str, folder: &Path) -> PathBuf {
     let path = Path::new(program);
 

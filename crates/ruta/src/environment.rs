@@ -49,8 +49,6 @@ pub(crate) fn sandbox_environment(
     )
 }
 
-// The sandbox environment with the config's `[environment]` on top. The config cannot hold a
-// key that ruta sets, so it only adds keys or replaces allowed caller keys.
 pub(crate) fn app_environment(
     caller: &[(String, String)],
     root: &Path,

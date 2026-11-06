@@ -23,7 +23,6 @@ const RECORDS: &[&str] = &[
     "xwayland.pid",
 ];
 
-// A folder with a `ruta.toml` that launches the test app.
 struct Project {
     folder: TempDir,
 }
@@ -256,7 +255,6 @@ fn processes_with_marker(marker: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-// The app's later output reaches the log through a copy that runs on after `up` returns.
 fn wait_for_log(sandbox: &Sandbox, expected: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(5);
 
@@ -412,7 +410,6 @@ fn command_ready_up_writes_no_ready_json() {
     sandbox.assert_gone();
 }
 
-// A PATH folder that holds the real display tools and an `xdotool` with `mode`.
 fn path_with_xdotool_mode(mode: u32) -> TempDir {
     let folder = tempfile::Builder::new()
         .prefix("ruta-end-to-end-path-")

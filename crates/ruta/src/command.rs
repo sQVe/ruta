@@ -28,9 +28,7 @@ pub(crate) enum Sandbox {
         headed: bool,
     },
     Restart {
-        // `None` reuses the recorded arguments.
         arguments: Option<Vec<String>>,
-        // `None` reuses the recorded mode.
         headed: Option<bool>,
     },
     Shot {
@@ -77,7 +75,6 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Sandbox, UsageError> {
 
 struct Options {
     headed: bool,
-    // `--` was given, so the arguments are explicit even when empty.
     ended: bool,
     arguments: Vec<String>,
 }
@@ -114,7 +111,6 @@ fn find_program(name: &str, path: &str) -> Option<PathBuf> {
         .find(|candidate| is_executable_file(candidate))
 }
 
-// A file the current user cannot run would fail at exec, so it does not count as the tool.
 fn is_executable_file(path: &Path) -> bool {
     let runnable = rustix::fs::access(path, rustix::fs::Access::EXEC_OK).is_ok();
 
