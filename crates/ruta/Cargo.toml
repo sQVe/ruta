@@ -1,0 +1,11 @@
+[package]
+name = "ruta"
+version = "0.0.0"
+description = "Throwaway app windows on a private headless display, for agents and tests."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
