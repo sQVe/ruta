@@ -7,8 +7,10 @@ mod display_start;
 mod environment;
 mod identity;
 mod input;
+mod log_tail;
 mod orchestration;
 mod process;
+mod process_stat;
 mod root;
 #[cfg(test)]
 mod test_support;

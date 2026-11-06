@@ -31,6 +31,8 @@ fn command_config(folder: &Path, app: CommandLine, probe: CommandLine, label: &s
 
 #[test]
 fn start_app_fails_at_once_when_the_app_exits_during_a_slow_probe() {
+    crate::test_support::in_test_namespace!();
+
     let root = temporary_sandbox_root("start-exits");
     let config = command_config(
         root.path(),
@@ -58,6 +60,8 @@ fn start_app_fails_at_once_when_the_app_exits_during_a_slow_probe() {
 
 #[test]
 fn start_app_in_command_mode_writes_no_ready_json() {
+    crate::test_support::in_test_namespace!();
+
     let root = temporary_sandbox_root("start-command");
     let config = command_config(
         root.path(),
@@ -83,6 +87,8 @@ fn start_app_in_command_mode_writes_no_ready_json() {
 
 #[test]
 fn start_app_stops_the_app_group_when_the_app_record_fails() {
+    crate::test_support::in_test_namespace!();
+
     let root = temporary_sandbox_root("start-record");
     fs::create_dir(root.path().join("pid")).expect("block the app record");
     let config = command_config(
@@ -110,6 +116,8 @@ fn start_app_stops_the_app_group_when_the_app_record_fails() {
 
 #[test]
 fn start_app_records_an_app_that_a_launch_script_execs() {
+    crate::test_support::in_test_namespace!();
+
     for attempt in 0..5 {
         let root = temporary_sandbox_root("start-exec");
         let launcher = root.path().join("launch");
@@ -147,6 +155,8 @@ fn start_app_records_an_app_that_a_launch_script_execs() {
 
 #[test]
 fn start_app_fails_at_once_when_the_app_exits_while_a_probe_descendant_holds_its_output() {
+    crate::test_support::in_test_namespace!();
+
     let root = temporary_sandbox_root("start-held");
     let config = command_config(
         root.path(),

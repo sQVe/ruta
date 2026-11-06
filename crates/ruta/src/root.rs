@@ -5,9 +5,12 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use thiserror::Error;
 
+use crate::process_stat::boot_ticks_now;
+
 const ROOT_PARENT: &str = "/var/tmp";
 const ROOT_PREFIX: &str = "ruta-";
 const SOCKET_PREFIX: &str = "ruta-";
+const CREATED: &str = "created";
 
 pub(crate) fn root_path(name: &str) -> PathBuf {
     Path::new(ROOT_PARENT).join(format!("{ROOT_PREFIX}{name}"))
@@ -15,6 +18,43 @@ pub(crate) fn root_path(name: &str) -> PathBuf {
 
 pub(crate) fn socket_name(name: &str) -> String {
     format!("{SOCKET_PREFIX}{name}")
+}
+
+// The private folders each sandbox root holds, which the app gets as its home and XDG folders.
+pub(crate) struct PrivateFolders {
+    pub(crate) home: PathBuf,
+    pub(crate) config: PathBuf,
+    pub(crate) state: PathBuf,
+    pub(crate) data: PathBuf,
+    pub(crate) cache: PathBuf,
+    pub(crate) runtime: PathBuf,
+    pub(crate) bin: PathBuf,
+}
+
+impl PrivateFolders {
+    pub(crate) fn under(root: &Path) -> Self {
+        Self {
+            home: root.join("home"),
+            config: root.join("config"),
+            state: root.join("state"),
+            data: root.join("data"),
+            cache: root.join("cache"),
+            runtime: root.join("run"),
+            bin: root.join("bin"),
+        }
+    }
+
+    fn in_creation_order(&self) -> [&Path; 7] {
+        [
+            &self.runtime,
+            &self.config,
+            &self.state,
+            &self.data,
+            &self.cache,
+            &self.home,
+            &self.bin,
+        ]
+    }
 }
 
 pub(crate) struct RootMetadata {
@@ -81,7 +121,7 @@ pub(crate) fn root_metadata_problem(
 }
 
 pub(crate) fn linked_paths(root: &Path) -> Vec<PathBuf> {
-    [
+    let records = [
         "display",
         "weston.pid",
         "xwayland.pid",
@@ -89,22 +129,20 @@ pub(crate) fn linked_paths(root: &Path) -> Vec<PathBuf> {
         "window",
         "arguments",
         "mode",
-        "bin",
-        "home",
         "opened",
         "app.log",
         "weston.log",
         "ready.json",
         "shot.png",
-        "run",
-        "config",
-        "state",
-        "data",
-        "cache",
+        CREATED,
     ]
-    .iter()
-    .map(|name| root.join(name))
-    .collect()
+    .map(|name| root.join(name));
+    let folders = PrivateFolders::under(root);
+
+    records
+        .into_iter()
+        .chain(folders.in_creation_order().map(Path::to_path_buf))
+        .collect()
 }
 
 pub(crate) fn remove_root_allowed(root: &Path) -> bool {
@@ -129,17 +167,15 @@ pub(crate) fn prepare_root(root: &Path) -> anyhow::Result<()> {
         fs::create_dir(root).with_context(|| format!("Could not create {}", root.display()))?;
         fs::set_permissions(root, fs::Permissions::from_mode(0o700))
             .with_context(|| format!("Could not secure {}", root.display()))?;
+        record_root_creation(root)?;
     }
 
     refuse_unsafe_root(root)?;
 
-    for folder in ["run", "config", "state", "data", "cache", "home", "bin"] {
-        let path = root.join(folder);
-
+    for path in PrivateFolders::under(root).in_creation_order() {
         if !path.exists() {
-            fs::create_dir(&path)
-                .with_context(|| format!("Could not create {}", path.display()))?;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+            fs::create_dir(path).with_context(|| format!("Could not create {}", path.display()))?;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
                 .with_context(|| format!("Could not secure {}", path.display()))?;
         }
     }
@@ -215,6 +251,29 @@ pub(crate) fn write_unlinked(path: &Path, contents: &str) -> anyhow::Result<()> 
     }
 
     fs::write(path, contents).with_context(|| format!("Could not write {}", path.display()))
+}
+
+// Records when the root was made, in the clock of process start times, then waits for the clock to
+// pass that tick. So every process this sandbox starts has a later start time, and a process that
+// started before the root, even in the same tick, does not.
+pub(crate) fn record_root_creation(root: &Path) -> anyhow::Result<()> {
+    let created = boot_ticks_now();
+
+    write_unlinked(&root.join(CREATED), &format!("{created}\n"))?;
+
+    while boot_ticks_now() <= created {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn root_created(root: &Path) -> Option<u64> {
+    fs::read_to_string(root.join(CREATED))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 pub(crate) fn install_openers(root: &Path) -> anyhow::Result<()> {

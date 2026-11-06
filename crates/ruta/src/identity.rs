@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -8,6 +9,8 @@ use thiserror::Error;
 use crate::cleanup;
 use crate::environment::ROOT_MARKER;
 use crate::process::poll_until;
+use crate::process_stat::ProcessStat;
+use crate::root::root_created;
 
 pub(crate) const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -66,33 +69,16 @@ fn child_pids(parent: u32) -> Vec<u32> {
                 .to_str()
                 .and_then(|name| name.parse::<u32>().ok())
         })
-        .filter(|pid| process_parent(*pid) == Some(parent))
+        .filter(|pid| ProcessStat::read(*pid).is_some_and(|stat| stat.parent == parent))
         .collect()
 }
 
-fn process_parent(pid: u32) -> Option<u32> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let tail = stat.rsplit_once(')')?.1;
-
-    tail.split_whitespace().nth(1)?.parse().ok()
-}
-
 pub(crate) fn process_is_zombie(pid: u32) -> bool {
-    let Some(stat) = fs::read_to_string(format!("/proc/{pid}/stat")).ok() else {
-        return false;
-    };
-    let Some(tail) = stat.rsplit_once(')').map(|(_, tail)| tail) else {
-        return false;
-    };
-
-    tail.split_whitespace().next() == Some("Z")
+    ProcessStat::read(pid).is_some_and(|stat| stat.is_zombie())
 }
 
 pub(crate) fn process_start(pid: u32) -> Option<u64> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let tail = stat.rsplit_once(')')?.1;
-
-    tail.split_whitespace().nth(19)?.parse().ok()
+    ProcessStat::read(pid).map(|stat| stat.start)
 }
 
 // The recorded identity still names the same process. Read again after the pidfd is open so a
@@ -108,8 +94,8 @@ pub(crate) fn record_marked_process(
     timeout: Duration,
 ) -> anyhow::Result<()> {
     let recorded = poll_until(timeout, || {
-        let started = process_start(pid).filter(|_| !process_is_zombie(pid));
-        let Some(started) = started else {
+        let live = ProcessStat::read(pid).filter(|stat| !stat.is_zombie());
+        let Some(started) = live.map(|stat| stat.start) else {
             return Err(IdentityError::MissingProcess {
                 pid,
                 expected: "app".to_string(),
@@ -199,19 +185,23 @@ pub(crate) fn record_matches(path: &Path) -> bool {
 }
 
 fn process_is_ours(pid: u32, root: &Path) -> bool {
-    let marker = format!("{ROOT_MARKER}={}", root.display());
-    let Ok(environment) = fs::read(format!("/proc/{pid}/environ")) else {
-        return false;
-    };
+    fs::read(format!("/proc/{pid}/environ"))
+        .is_ok_and(|environment| environment_holds_marker(&environment, root))
+}
 
-    String::from_utf8_lossy(&environment)
-        .replace('\0', "\n")
-        .lines()
-        .any(|line| line == marker)
+// The kernel separates environment entries with NUL bytes only. A value may hold a newline, so
+// only a whole entry counts as the marker.
+fn environment_holds_marker(environment: &[u8], root: &Path) -> bool {
+    let marker = format!("{ROOT_MARKER}={}", root.display());
+
+    environment
+        .split(|byte| *byte == 0)
+        .any(|entry| entry == marker.as_bytes())
 }
 
 pub(crate) fn stop_window(root: &Path) -> anyhow::Result<()> {
-    stop_group(root, STOP_TIMEOUT)
+    stop_group(root, STOP_TIMEOUT)?;
+    stop_marked(root, std::process::id(), STOP_TIMEOUT)
 }
 
 fn stop_group(root: &Path, timeout: Duration) -> anyhow::Result<()> {
@@ -222,36 +212,119 @@ fn stop_group(root: &Path, timeout: Duration) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    let members = || group_members(leader, root);
-
-    if members().is_empty() {
-        cleanup::remove_file(&path);
-        return Ok(());
-    }
-
-    signal_members(&members(), rustix::process::Signal::TERM);
-    let stopped = poll_until(timeout, || Ok(members().is_empty().then_some(())))?;
-
-    if stopped.is_none() {
-        let killed = poll_until(timeout, || {
-            let alive = members();
-            signal_members(&alive, rustix::process::Signal::KILL);
-
-            Ok(alive.is_empty().then_some(()))
-        })?;
-
-        if killed.is_none() {
-            return Err(IdentityError::DidNotStop {
-                pid: leader.0,
-                path,
-            }
-            .into());
+    if stop_all(|| group_members(leader, root), timeout)?.is_some() {
+        return Err(IdentityError::DidNotStop {
+            pid: leader.0,
+            path,
         }
+        .into());
     }
 
     cleanup::remove_file(&path);
 
     Ok(())
+}
+
+// A process can leave the app's group with `setsid`, such as a daemon that the app or a ready
+// check starts. It still holds this root's marker, so the marker alone finds it.
+fn stop_marked(root: &Path, ruta: u32, timeout: Duration) -> anyhow::Result<()> {
+    let Some(created) = root_created(root) else {
+        return Ok(());
+    };
+    let spared = self_and_ancestors(ruta);
+
+    match stop_all(|| marked_processes(root, created, &spared), timeout)? {
+        Some(pid) => Err(IdentityError::DidNotStop {
+            pid,
+            path: root.to_path_buf(),
+        }
+        .into()),
+        None => Ok(()),
+    }
+}
+
+// Sends TERM, then KILL after `timeout`, until `members` finds no process. Returns a process that
+// is still alive after both waits.
+fn stop_all(
+    members: impl Fn() -> Vec<(u32, u64)>,
+    timeout: Duration,
+) -> anyhow::Result<Option<u32>> {
+    if members().is_empty() {
+        return Ok(None);
+    }
+
+    signal_members(&members(), rustix::process::Signal::TERM);
+
+    if poll_until(timeout, || Ok(members().is_empty().then_some(())))?.is_some() {
+        return Ok(None);
+    }
+
+    let killed = poll_until(timeout, || {
+        let alive = members();
+        signal_members(&alive, rustix::process::Signal::KILL);
+
+        Ok(alive.is_empty().then_some(()))
+    })?;
+
+    if killed.is_some() {
+        return Ok(None);
+    }
+
+    Ok(members().first().map(|&(pid, _)| pid))
+}
+
+// The live processes of the current user that hold this root's marker and started after the root
+// was made, with their start times.
+fn marked_processes(root: &Path, created: u64, spared: &[u32]) -> Vec<(u32, u64)> {
+    let user = rustix::process::getuid().as_raw();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+
+            Some(SweepCandidate {
+                pid,
+                owner: entry.metadata().ok()?.uid(),
+                stat: ProcessStat::read(pid)?,
+            })
+        })
+        .filter(|candidate| may_sweep(candidate, user, created, spared))
+        .filter(|candidate| process_is_ours(candidate.pid, root))
+        .map(|candidate| (candidate.pid, candidate.stat.start))
+        .collect()
+}
+
+struct SweepCandidate {
+    pid: u32,
+    owner: u32,
+    stat: ProcessStat,
+}
+
+// A marker is only an environment value that anyone can copy, so the sweep also needs the process
+// to belong to this user and to have started strictly after the root's creation tick, which
+// `record_root_creation` leaves before ruta starts anything. It never takes ruta or an ancestor.
+fn may_sweep(candidate: &SweepCandidate, user: u32, created: u64, spared: &[u32]) -> bool {
+    let is_new = candidate.stat.start > created;
+    let is_spared = spared.contains(&candidate.pid);
+
+    candidate.owner == user && is_new && !is_spared && !candidate.stat.is_zombie()
+}
+
+fn self_and_ancestors(pid: u32) -> Vec<u32> {
+    let mut chain = vec![pid];
+
+    while let Some(parent) = ProcessStat::read(*chain.last().expect("the chain starts with pid"))
+        .map(|stat| stat.parent)
+        .filter(|parent| !chain.contains(parent))
+    {
+        chain.push(parent);
+    }
+
+    chain
 }
 
 fn group_members((leader, started): (u32, u64), root: &Path) -> Vec<(u32, u64)> {
@@ -263,8 +336,8 @@ fn group_members((leader, started): (u32, u64), root: &Path) -> Vec<(u32, u64)> 
         .flatten()
         .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
         .filter_map(|pid| {
-            let stat = process_stat(pid)?;
-            let in_group = stat.group == leader && stat.state != "Z";
+            let stat = ProcessStat::read(pid)?;
+            let in_group = stat.group == leader && !stat.is_zombie();
             let is_leader = pid == leader;
             let is_recorded_leader = is_leader && stat.start == started;
             let is_marked_member = !is_leader && process_is_ours(pid, root);
@@ -272,23 +345,6 @@ fn group_members((leader, started): (u32, u64), root: &Path) -> Vec<(u32, u64)> 
             (in_group && (is_recorded_leader || is_marked_member)).then_some((pid, stat.start))
         })
         .collect()
-}
-
-struct ProcessStat {
-    state: String,
-    group: u32,
-    start: u64,
-}
-
-fn process_stat(pid: u32) -> Option<ProcessStat> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
-
-    Some(ProcessStat {
-        state: fields.first()?.to_string(),
-        group: fields.get(2)?.parse().ok()?,
-        start: fields.get(19)?.parse().ok()?,
-    })
 }
 
 #[expect(

@@ -12,6 +12,8 @@ use crate::identity::tests::{
 use crate::root::{RootError, RootReason};
 
 mod down;
+mod failed_start;
+mod restart;
 
 #[derive(Debug, Error)]
 #[error("the process will not stop")]
@@ -55,6 +57,8 @@ fn cleanup_order(root: &Path) -> [StopTarget; 3] {
 
 #[test]
 fn cleanup_keeps_the_root_when_a_recorded_process_will_not_stop() {
+    crate::test_support::in_test_namespace!();
+
     for failing in 0..3 {
         let root = crate::test_support::temporary_sandbox_root("will-not-stop");
         let mut visited = Vec::new();
@@ -85,6 +89,8 @@ fn cleanup_keeps_the_root_when_a_recorded_process_will_not_stop() {
 
 #[test]
 fn cleanup_stops_every_record_in_order_and_removes_the_root() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("all-stopped");
     let mut visited = Vec::new();
 
@@ -100,6 +106,8 @@ fn cleanup_stops_every_record_in_order_and_removes_the_root() {
 
 #[test]
 fn cleanup_refuses_a_symlinked_root_and_leaves_its_target() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let target = crate::test_support::temporary_directory();
     let marker = target.path().join("marker");
@@ -133,6 +141,8 @@ fn cleanup_refuses_a_symlinked_root_and_leaves_its_target() {
 
 #[test]
 fn cleanup_refuses_a_root_that_is_not_private() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("mode");
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).expect("set the mode");
 
@@ -158,6 +168,8 @@ fn cleanup_refuses_a_root_that_is_not_private() {
 
 #[test]
 fn require_up_refuses_a_symlinked_root() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let target = crate::test_support::temporary_directory();
     let marker = target.path().join("marker");
@@ -190,19 +202,9 @@ fn require_up_refuses_a_symlinked_root() {
 }
 
 #[test]
-fn restart_plan_reports_a_missing_record() {
-    let root = crate::test_support::temporary_sandbox_root("recorded-arguments");
-
-    let error = restart_plan(root.path(), None, None).expect_err("a missing record fails");
-
-    assert_eq!(
-        error.to_string(),
-        "The sandbox is not up; run 'ruta up' first."
-    );
-}
-
-#[test]
 fn a_failed_start_keeps_its_error_when_cleanup_fails() {
+    crate::test_support::in_test_namespace!();
+
     let root = live_sandbox("failed-start");
     fs::write(root.path().join("mode"), "headless\n").expect("write the mode");
     prepare_root(root.path()).expect("the root is prepared");
@@ -237,6 +239,8 @@ fn a_failed_start_keeps_its_error_when_cleanup_fails() {
 
 #[test]
 fn stop_target_stops_a_recorded_child_and_removes_its_record() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("stop-target");
     let window_record = root.path().join("pid");
     let recorded = root.path().join("xwayland.pid");
@@ -270,6 +274,8 @@ fn stop_target_stops_a_recorded_child_and_removes_its_record() {
 
 #[test]
 fn stop_target_leaves_a_window_without_the_sandbox_marker_running() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("stop-target-unmarked");
     let window_record = root.path().join("pid");
     let mut window = spawn_without_marker();
@@ -303,6 +309,8 @@ fn assert_not_up(error: &anyhow::Error, case: &str) {
 
 #[test]
 fn require_up_returns_the_display_of_a_live_sandbox() {
+    crate::test_support::in_test_namespace!();
+
     let root = live_sandbox("require-up");
 
     assert_eq!(
@@ -313,6 +321,8 @@ fn require_up_returns_the_display_of_a_live_sandbox() {
 
 #[test]
 fn require_up_refuses_a_stale_display() {
+    crate::test_support::in_test_namespace!();
+
     for (case, make_stale) in stale_display_cases() {
         let root = live_sandbox("require-stale");
         make_stale(root.path());
@@ -325,6 +335,8 @@ fn require_up_refuses_a_stale_display() {
 
 #[test]
 fn require_up_refuses_a_missing_window() {
+    crate::test_support::in_test_namespace!();
+
     let root = live_sandbox("require-window");
     fs::remove_file(root.path().join("window")).expect("remove the window");
 
@@ -332,93 +344,6 @@ fn require_up_refuses_a_missing_window() {
 
     assert_not_up(&error, "missing window");
     assert_eq!(display_up(root.path()), Some(":7".to_string()));
-}
-
-#[test]
-fn restart_plan_reuses_the_recorded_arguments_and_headed_mode() {
-    let root = crate::test_support::temporary_sandbox_root("restart-recorded");
-    fs::write(
-        root.path().join("arguments"),
-        "[\"--fast\",\"a b\"]
-",
-    )
-    .expect("write the arguments");
-    fs::write(
-        root.path().join("mode"),
-        "headed
-",
-    )
-    .expect("write the mode");
-
-    assert_eq!(
-        restart_plan(root.path(), None, None).expect("the records are read"),
-        (strings(&["--fast", "a b"]), true)
-    );
-}
-
-#[test]
-fn restart_plan_reuses_a_recorded_headless_mode() {
-    let root = crate::test_support::temporary_sandbox_root("restart-headless");
-    fs::write(
-        root.path().join("arguments"),
-        "[]
-",
-    )
-    .expect("write the arguments");
-    fs::write(
-        root.path().join("mode"),
-        "headless
-",
-    )
-    .expect("write the mode");
-
-    assert_eq!(
-        restart_plan(root.path(), None, None).expect("the records are read"),
-        (Vec::new(), false)
-    );
-}
-
-#[test]
-fn restart_plan_prefers_the_given_arguments_and_mode() {
-    let root = crate::test_support::temporary_sandbox_root("restart-explicit");
-    fs::write(
-        root.path().join("arguments"),
-        "[\"--fast\"]
-",
-    )
-    .expect("write the arguments");
-    fs::write(
-        root.path().join("mode"),
-        "headless
-",
-    )
-    .expect("write the mode");
-
-    assert_eq!(
-        restart_plan(root.path(), Some(strings(&["--slow"])), Some(true))
-            .expect("the given values win"),
-        (strings(&["--slow"]), true)
-    );
-}
-
-#[test]
-fn restart_plan_refuses_an_unsafe_root_even_with_given_arguments() {
-    let root = crate::test_support::temporary_sandbox_root("restart-unsafe");
-    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).expect("set the mode");
-
-    let error = restart_plan(root.path(), Some(strings(&["--slow"])), Some(false))
-        .expect_err("the root is refused");
-
-    assert!(
-        matches!(
-            error.downcast_ref::<RootError>(),
-            Some(RootError::Unsafe {
-                path,
-                reason: RootReason::WrongMode { mode: 0o755 },
-            }) if path.as_path() == root.path()
-        ),
-        "unexpected error: {error:#}"
-    );
 }
 
 fn io_kind(error: &anyhow::Error) -> Option<std::io::ErrorKind> {
@@ -429,6 +354,8 @@ fn io_kind(error: &anyhow::Error) -> Option<std::io::ErrorKind> {
 
 #[test]
 fn opened_accepts_a_missing_or_normal_file_and_fails_on_a_folder() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("opened");
 
     opened(root.path()).expect("a missing file means nothing opened");
@@ -445,6 +372,8 @@ fn opened_accepts_a_missing_or_normal_file_and_fails_on_a_folder() {
 
 #[test]
 fn log_fails_on_a_missing_log_and_prints_a_normal_one() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("log");
 
     let error = log(root.path()).expect_err("a missing log fails");
@@ -457,6 +386,8 @@ fn log_fails_on_a_missing_log_and_prints_a_normal_one() {
 
 #[test]
 fn a_failed_command_exits_with_failure() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("dispatch");
     let base = root
         .path()
@@ -473,6 +404,8 @@ fn a_failed_command_exits_with_failure() {
 
 #[test]
 fn display_size_leaves_room_around_the_window() {
+    crate::test_support::in_test_namespace!();
+
     assert_eq!(display_size((640, 480)), (840, 680));
     assert_eq!(display_size((u32::MAX, 1)), (u32::MAX, 201));
 }

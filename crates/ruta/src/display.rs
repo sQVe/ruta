@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::cleanup;
 use crate::process::{TOOL_TIMEOUT, poll_until, run_with_timeout};
+use crate::process_stat::ProcessStat;
 
 pub(crate) const WESTON_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -64,14 +65,7 @@ fn lock_owner(lock: &Path) -> Option<u32> {
 }
 
 fn lock_owner_is_alive(pid: u32) -> bool {
-    let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    let Some(tail) = stat.rsplit_once(')').map(|(_, tail)| tail) else {
-        return false;
-    };
-
-    tail.split_whitespace().next() != Some("Z")
+    ProcessStat::read(pid).is_some_and(|stat| !stat.is_zombie())
 }
 
 fn base_weston_command(

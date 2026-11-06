@@ -158,6 +158,8 @@ mod tests {
 
     #[test]
     fn run_with_timeout_collects_output_larger_than_a_pipe() {
+        crate::test_support::in_test_namespace!();
+
         let mut command = Command::new("sh");
         command.args(["-c", "seq 1 200000"]);
 
@@ -174,6 +176,8 @@ mod tests {
 
     #[test]
     fn run_with_timeout_kills_and_reaps_a_hung_child() {
+        crate::test_support::in_test_namespace!();
+
         let mut command = Command::new("sh");
         command.args(["-c", "sleep 30"]);
 
@@ -194,6 +198,8 @@ mod tests {
 
     #[test]
     fn run_with_timeout_stops_waiting_for_output_a_descendant_outside_the_group_holds() {
+        crate::test_support::in_test_namespace!();
+
         for (held, script) in [
             ("stdout", "setsid sleep 3 2>/dev/null &"),
             ("stderr", "setsid sleep 3 >/dev/null &"),
@@ -223,6 +229,8 @@ mod tests {
 
     #[test]
     fn run_with_timeout_stops_the_whole_group_of_a_command_that_times_out() {
+        crate::test_support::in_test_namespace!();
+
         let marker = "RUTA_TEST_GROUP=process-timeout";
         let mut command = Command::new("sh");
         command
@@ -245,6 +253,8 @@ mod tests {
 
     #[test]
     fn a_timeout_names_the_program_and_seconds() {
+        crate::test_support::in_test_namespace!();
+
         let timeout = ProcessError::Timeout {
             program: "weston".to_string(),
             duration: Duration::from_secs(30),
@@ -255,6 +265,8 @@ mod tests {
 
     #[test]
     fn run_with_timeout_prints_a_start_failure_once() {
+        crate::test_support::in_test_namespace!();
+
         let missing = "ruta-no-such-program";
         let os_error = Command::new(missing)
             .spawn()
@@ -274,6 +286,8 @@ mod tests {
 
     #[test]
     fn poll_until_returns_the_value_of_a_later_attempt() {
+        crate::test_support::in_test_namespace!();
+
         let mut attempts = 0;
         let value = poll_until(Duration::from_secs(1), || {
             attempts += 1;
@@ -287,6 +301,8 @@ mod tests {
 
     #[test]
     fn poll_until_passes_an_attempt_error_through_at_once() {
+        crate::test_support::in_test_namespace!();
+
         let mut attempts = 0;
         let error = poll_until::<()>(Duration::from_secs(1), || {
             attempts += 1;
@@ -301,6 +317,8 @@ mod tests {
 
     #[test]
     fn poll_until_returns_none_after_a_short_timeout() {
+        crate::test_support::in_test_namespace!();
+
         let mut attempts = 0;
         let value = poll_until(Duration::from_millis(250), || {
             attempts += 1;

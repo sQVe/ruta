@@ -66,7 +66,7 @@ fn assert_no_caller_session(environment: &[(String, String)]) {
 
 #[test]
 fn drops_caller_desktop_and_keeps_sandbox_paths() {
-    let dirs = ChildDirs::under(Path::new(ROOT));
+    let dirs = PrivateFolders::under(Path::new(ROOT));
     let environment = child_environment(&caller(), &dirs, &[("DISPLAY", ":7")]);
 
     assert_eq!(value(&environment, "DISPLAY"), Some(":7"));
@@ -97,7 +97,7 @@ fn drops_caller_desktop_and_keeps_sandbox_paths() {
 fn extras_replace_the_caller_value() {
     let environment = child_environment(
         &caller(),
-        &ChildDirs::under(Path::new(ROOT)),
+        &PrivateFolders::under(Path::new(ROOT)),
         &[("WAYLAND_DISPLAY", "wayland-1"), ("DISPLAY", ":7")],
     );
 

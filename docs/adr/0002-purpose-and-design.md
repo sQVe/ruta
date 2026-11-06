@@ -53,6 +53,18 @@ The app leads its own process group, and `down` stops that group. It stops the r
 its PID and start time alone, because the leader may `exec` into an environment without the marker.
 It stops another member of the group only when that member holds the marker.
 
+A process can leave the group with `setsid`, such as a daemon that the app or a ready check starts.
+So after the group stops, and before the root is removed, ruta also stops every process of the
+current user whose environment holds this root's marker and that started after the root was made.
+ruta records the root's creation time in the clock that process start times use. A marker is only
+an environment value that any process can copy, so the start time keeps the sweep to processes
+this sandbox could have started, and ruta never stops itself or one of its own ancestors. It checks
+the start time again through a pidfd before each signal. A process with another root's marker, with
+none, or from before the root keeps running.
+
+ruta's own tests that send signals run in a user and PID namespace with its own `/proc`, so a bug
+in this selection, or a mutant during mutation testing, can reach only test processes.
+
 ### What each project owns
 
 Each project has a small `ruta.toml`. It names the launch command, how ruta detects that the window

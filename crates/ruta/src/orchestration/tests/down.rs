@@ -6,6 +6,8 @@ use crate::test_support::live_processes_with;
 
 #[test]
 fn down_succeeds_for_an_absent_root() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let root = folder.path().join("ruta-absent");
 
@@ -16,6 +18,8 @@ fn down_succeeds_for_an_absent_root() {
 
 #[test]
 fn down_removes_a_private_root_without_records() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("down");
     fs::write(root.path().join("arguments"), "[]\n").expect("write the arguments");
 
@@ -26,6 +30,8 @@ fn down_removes_a_private_root_without_records() {
 
 #[test]
 fn down_stops_a_member_that_ignores_term_before_it_removes_the_root() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("down-stubborn");
     let marker = format!("RUTA_ROOT={}", root.path().display());
     let leader = spawn_stubborn_group(root.path());
@@ -43,6 +49,8 @@ fn down_stops_a_member_that_ignores_term_before_it_removes_the_root() {
 
 #[test]
 fn down_stops_a_recorded_app_that_dropped_the_marker() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("down-unmarked");
     let launcher = root.path().join("launch");
     // The pause lets ruta record the launcher while it still holds the marker.

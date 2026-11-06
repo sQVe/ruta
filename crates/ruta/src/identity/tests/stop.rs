@@ -2,6 +2,8 @@ use super::*;
 
 #[test]
 fn stop_window_leaves_a_child_without_the_marker_running() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("stop-window-plain");
     let path = root.path().join("pid");
     let mut child = spawn_without_marker();
@@ -18,6 +20,8 @@ fn stop_window_leaves_a_child_without_the_marker_running() {
 
 #[test]
 fn stop_window_stops_a_child_with_the_matching_marker() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("stop-window-ours");
     let path = root.path().join("pid");
     let mut child = spawn_with_marker(root.path());
@@ -34,6 +38,8 @@ fn stop_window_stops_a_child_with_the_matching_marker() {
 
 #[test]
 fn stop_window_leaves_group_members_without_this_roots_marker_running() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("stop-window-root");
     let other = crate::test_support::temporary_sandbox_root("stop-window-other");
     let path = root.path().join("pid");
@@ -77,6 +83,8 @@ fn stop_window_leaves_group_members_without_this_roots_marker_running() {
 
 #[test]
 fn stop_recorded_stops_a_recorded_child() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let mut child = spawn_ready_sleep();
@@ -93,6 +101,8 @@ fn stop_recorded_stops_a_recorded_child() {
 
 #[test]
 fn stop_recorded_leaves_a_child_with_a_changed_start_time_running() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let mut child = spawn_ready_sleep();
@@ -110,6 +120,8 @@ fn stop_recorded_leaves_a_child_with_a_changed_start_time_running() {
 
 #[test]
 fn stop_process_stops_a_child_and_removes_the_record() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let mut child = spawn_ready_sleep();
@@ -132,6 +144,8 @@ fn stop_process_stops_a_child_and_removes_the_record() {
 
 #[test]
 fn stop_process_keeps_the_record_when_the_child_ignores_term() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let mut child = spawn_term_ignorer();
@@ -161,6 +175,8 @@ fn stop_process_keeps_the_record_when_the_child_ignores_term() {
 
 #[test]
 fn stop_loop_treats_a_zombie_as_stopped() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let child = spawn_exiting();
@@ -175,6 +191,8 @@ fn stop_loop_treats_a_zombie_as_stopped() {
 
 #[test]
 fn stop_process_removes_the_record_when_a_failed_open_meets_a_changed_identity() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let mut child = spawn_ready_sleep();
@@ -192,6 +210,8 @@ fn stop_process_removes_the_record_when_a_failed_open_meets_a_changed_identity()
 
 #[test]
 fn stop_process_reports_a_failed_open_with_an_unchanged_identity() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let child = spawn_ready_sleep();
@@ -212,6 +232,8 @@ fn stop_process_reports_a_failed_open_with_an_unchanged_identity() {
 
 #[test]
 fn identity_still_matches_rejects_a_changed_start_time() {
+    crate::test_support::in_test_namespace!();
+
     let pid = std::process::id();
     let started = process_start(pid).expect("the test process has a start time");
 
@@ -221,6 +243,8 @@ fn identity_still_matches_rejects_a_changed_start_time() {
 
 #[test]
 fn stop_process_skips_a_mismatched_start_time() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let pid = std::process::id();
@@ -240,6 +264,8 @@ fn stop_process_skips_a_mismatched_start_time() {
 
 #[test]
 fn stop_after_open_refuses_a_changed_identity_without_signaling() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let pid = std::process::id();
@@ -273,6 +299,8 @@ fn spawn_marked_group(root: &Path) -> (ChildGuard, u32) {
 
 #[test]
 fn stop_window_stops_the_whole_process_group() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("stop-window-group");
     let path = root.path().join("pid");
     let (mut leader, member) = spawn_marked_group(root.path());
@@ -294,6 +322,8 @@ fn stop_window_stops_the_whole_process_group() {
 
 #[test]
 fn stop_recorded_signals_only_the_recorded_process() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let (mut leader, member) = spawn_marked_group(directory.path());
@@ -344,6 +374,8 @@ fn marker(root: &Path) -> String {
 
 #[test]
 fn stop_window_kills_a_group_member_that_ignores_term() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("stop-window-stubborn");
     let path = root.path().join("pid");
     let leader = spawn_stubborn_group(root.path());
@@ -361,6 +393,8 @@ fn stop_window_kills_a_group_member_that_ignores_term() {
 
 #[test]
 fn stop_window_stops_the_members_of_a_leader_that_already_exited() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("stop-window-orphans");
     let path = root.path().join("pid");
     let mut command = Command::new("sh");

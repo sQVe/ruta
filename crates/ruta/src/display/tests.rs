@@ -19,6 +19,8 @@ fn value<'a>(command: &'a Command, key: &str) -> Option<&'a OsStr> {
 
 #[test]
 fn display_from_log_reads_the_xwayland_display() {
+    crate::test_support::in_test_namespace!();
+
     let log = "some line\nxserver listening on display :7\nanother line\n";
 
     assert_eq!(display_from_log(log), Some(":7".to_string()));
@@ -31,6 +33,8 @@ fn display_from_log_reads_the_xwayland_display() {
 
 #[test]
 fn headless_weston_drops_the_wayland_session() {
+    crate::test_support::in_test_namespace!();
+
     let command = weston_command(
         "ruta-mock",
         1400,
@@ -50,6 +54,8 @@ fn headless_weston_drops_the_wayland_session() {
 
 #[test]
 fn nested_weston_gets_the_caller_wayland_session() {
+    crate::test_support::in_test_namespace!();
+
     let mut caller = environment();
     caller.push(("WAYLAND_DISPLAY".to_string(), "wayland-1".to_string()));
     let command = nested_weston_command(
@@ -91,6 +97,8 @@ fn display_files_for(folder: &Path, number: &str, owner: u32) -> (PathBuf, PathB
 
 #[test]
 fn clean_display_files_removes_the_files_of_a_dead_owner() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let (lock, socket) = display_files(folder.path(), u32::MAX);
 
@@ -102,6 +110,8 @@ fn clean_display_files_removes_the_files_of_a_dead_owner() {
 
 #[test]
 fn clean_display_files_keeps_the_files_of_a_live_owner() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let (lock, socket) = display_files(folder.path(), std::process::id());
 
@@ -113,6 +123,8 @@ fn clean_display_files_keeps_the_files_of_a_live_owner() {
 
 #[test]
 fn clean_display_files_keeps_the_files_of_a_new_owner() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let mut dying = Command::new("sleep").arg("30").spawn().expect("sleep");
     let (lock, socket) = display_files(folder.path(), dying.id());
@@ -132,6 +144,8 @@ fn clean_display_files_keeps_the_files_of_a_new_owner() {
 
 #[test]
 fn clean_display_files_ignores_a_display_that_is_not_a_number() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let (lock, socket) = display_files(folder.path(), u32::MAX);
 
@@ -143,6 +157,8 @@ fn clean_display_files_ignores_a_display_that_is_not_a_number() {
 
 #[test]
 fn clean_display_files_ignores_a_display_without_a_number() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let (lock, socket) = display_files_for(folder.path(), "", u32::MAX);
 
@@ -154,6 +170,8 @@ fn clean_display_files_ignores_a_display_without_a_number() {
 
 #[test]
 fn clean_display_files_waits_for_an_owner_that_exits_later() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let mut owner = Command::new("sleep").arg("30").spawn().expect("sleep");
     let (lock, socket) = display_files(folder.path(), owner.id());
@@ -171,6 +189,8 @@ fn clean_display_files_waits_for_an_owner_that_exits_later() {
 
 #[test]
 fn wait_for_display_returns_a_display_that_appears_later() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("weston.log");
     let writer_path = log.clone();
@@ -187,6 +207,8 @@ fn wait_for_display_returns_a_display_that_appears_later() {
 
 #[test]
 fn wait_for_display_reports_a_timeout() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("weston.log");
     let timeout = Duration::from_millis(150);
@@ -205,6 +227,8 @@ fn wait_for_display_reports_a_timeout() {
 
 #[test]
 fn the_display_errors_render_their_messages() {
+    crate::test_support::in_test_namespace!();
+
     let error = DisplayError::DisplayTimeout {
         timeout: Duration::from_secs(3),
         log: PathBuf::from("/tmp/weston.log"),

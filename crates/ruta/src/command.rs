@@ -123,6 +123,7 @@ fn tool_error(name: &str) -> String {
         "weston" => "the weston package",
         "Xwayland" => "the xorg-xwayland package",
         "import" => "the imagemagick package",
+        "cat" => "the coreutils package",
         _ => name,
     };
 
@@ -336,6 +337,7 @@ mod tests {
         assert!(tool_error("xdotool").contains("xdotool"));
         assert!(tool_error("Xwayland").contains("xorg-xwayland"));
         assert!(tool_error("import").contains("imagemagick"));
+        assert!(tool_error("cat").contains("coreutils"));
         assert!(tool_error("weston").contains("the weston package"));
     }
 }

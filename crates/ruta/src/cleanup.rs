@@ -76,6 +76,8 @@ mod tests {
 
     #[test]
     fn a_missing_target_is_ignored_and_other_failures_are_reported() {
+        crate::test_support::in_test_namespace!();
+
         let missing = std::io::Error::from(ErrorKind::NotFound);
         assert_eq!(cleanup_warning("remove /tmp/x", &missing), None);
 
@@ -90,6 +92,8 @@ mod tests {
 
     #[test]
     fn a_process_that_is_gone_is_an_expected_failure() {
+        crate::test_support::in_test_namespace!();
+
         let gone = std::io::Error::from(rustix::io::Errno::SRCH);
 
         assert_eq!(cleanup_warning("stop the process 1", &gone), None);

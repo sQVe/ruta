@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use crate::root::PrivateFolders;
 
 const ALLOWED_KEYS: &[&str] = &[
     "TERM",
@@ -40,7 +42,7 @@ pub(crate) fn sandbox_environment(
     display: &str,
 ) -> Vec<(String, String)> {
     let marker = root.to_string_lossy().into_owned();
-    let dirs = ChildDirs::under(root);
+    let dirs = PrivateFolders::under(root);
 
     child_environment(
         caller,
@@ -68,7 +70,7 @@ pub(crate) fn weston_environment(
     caller: &[(String, String)],
     root: &Path,
 ) -> Vec<(String, String)> {
-    child_environment(caller, &ChildDirs::under(root), &[])
+    child_environment(caller, &PrivateFolders::under(root), &[])
 }
 
 pub(crate) fn nested_weston_environment(
@@ -76,7 +78,7 @@ pub(crate) fn nested_weston_environment(
     root: &Path,
     runtime: &Path,
 ) -> Vec<(String, String)> {
-    let mut dirs = ChildDirs::under(root);
+    let mut dirs = PrivateFolders::under(root);
     dirs.runtime = runtime.to_path_buf();
 
     child_environment(caller, &dirs, &[])
@@ -89,30 +91,6 @@ fn caller_key_is_allowed(key: &str) -> bool {
             .any(|prefix| key.starts_with(prefix))
 }
 
-struct ChildDirs {
-    home: PathBuf,
-    config: PathBuf,
-    state: PathBuf,
-    data: PathBuf,
-    cache: PathBuf,
-    runtime: PathBuf,
-    bin: PathBuf,
-}
-
-impl ChildDirs {
-    fn under(root: &Path) -> Self {
-        Self {
-            home: root.join("home"),
-            config: root.join("config"),
-            state: root.join("state"),
-            data: root.join("data"),
-            cache: root.join("cache"),
-            runtime: root.join("run"),
-            bin: root.join("bin"),
-        }
-    }
-}
-
 fn set(environment: &mut Vec<(String, String)>, key: &str, value: &str) {
     environment.retain(|(existing, _)| existing != key);
     environment.push((key.to_string(), value.to_string()));
@@ -120,7 +98,7 @@ fn set(environment: &mut Vec<(String, String)>, key: &str, value: &str) {
 
 fn child_environment(
     caller: &[(String, String)],
-    dirs: &ChildDirs,
+    dirs: &PrivateFolders,
     extras: &[(&str, &str)],
 ) -> Vec<(String, String)> {
     let host_path = caller

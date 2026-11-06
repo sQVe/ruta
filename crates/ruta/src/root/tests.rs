@@ -57,8 +57,20 @@ fn prepare_root_creates_private_control_folders_and_runs_again() {
     let root = fixture.path();
     fs::remove_dir(root).expect("remove the fixture folder");
 
+    let before = crate::process_stat::boot_ticks_now();
     prepare_root(root).expect("the root is prepared");
+    let created = root_created(root).expect("the creation time is recorded");
     prepare_root(root).expect("a prepared root is prepared again");
+
+    assert!(
+        created >= before,
+        "the root was made after {before}, not at {created}"
+    );
+    assert_eq!(
+        root_created(root),
+        Some(created),
+        "a second prepare keeps the record"
+    );
 
     assert_eq!(mode(root), 0o700);
 
@@ -405,4 +417,17 @@ fn write_unlinked_refuses_a_symlink_and_leaves_its_target() {
         "unexpected error: {error}"
     );
     assert_eq!(fs::read_to_string(&marker).expect("the marker"), "keep");
+}
+
+#[test]
+fn record_root_creation_returns_after_the_clock_passes_the_recorded_tick() {
+    let root = crate::test_support::temporary_directory();
+
+    record_root_creation(root.path()).expect("record the root creation");
+    let created = root_created(root.path()).expect("the creation time is recorded");
+
+    assert!(
+        crate::process_stat::boot_ticks_now() > created,
+        "a process started now starts after the recorded tick"
+    );
 }

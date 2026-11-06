@@ -59,6 +59,8 @@ fn wait_for_zombie(pid: u32) {
 
 #[test]
 fn read_ready_line_returns_the_first_json_object_and_logs_the_lines_before_it() {
+    crate::test_support::in_test_namespace!();
+
     let ReadReady { found, logged, .. } = read_ready(
         r#"echo noise; echo '[1]'; echo '{"title":"t"}'; echo '{"title":"later"}'; exec sleep 30"#,
         Duration::from_secs(5),
@@ -73,6 +75,8 @@ fn read_ready_line_returns_the_first_json_object_and_logs_the_lines_before_it() 
 
 #[test]
 fn read_ready_line_reports_an_app_that_exited() {
+    crate::test_support::in_test_namespace!();
+
     let ReadReady {
         found,
         logged,
@@ -93,6 +97,8 @@ fn read_ready_line_reports_an_app_that_exited() {
 
 #[test]
 fn read_ready_line_prefers_a_printed_ready_line_over_the_exit() {
+    crate::test_support::in_test_namespace!();
+
     for attempt in 0..10 {
         let ReadReady { found, .. } = read_ready_after(
             r#"echo '{"ready":true}'"#,
@@ -110,6 +116,8 @@ fn read_ready_line_prefers_a_printed_ready_line_over_the_exit() {
 
 #[test]
 fn read_ready_line_reports_an_exited_app_whose_output_stays_open_before_the_timeout() {
+    crate::test_support::in_test_namespace!();
+
     let started = Instant::now();
 
     let ReadReady {
@@ -137,6 +145,8 @@ fn read_ready_line_reports_an_exited_app_whose_output_stays_open_before_the_time
 
 #[test]
 fn read_ready_line_reports_a_timeout() {
+    crate::test_support::in_test_namespace!();
+
     let timeout = Duration::from_millis(300);
 
     let ReadReady {
@@ -157,6 +167,8 @@ fn read_ready_line_reports_a_timeout() {
 
 #[test]
 fn copy_rest_keeps_copying_output_after_the_ready_line() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let (log, log_path) = log_file(folder.path());
     let (started, stdout) =
@@ -200,6 +212,8 @@ fn counting_probe(folder: &Path) -> Command {
 
 #[test]
 fn wait_for_ready_command_polls_until_the_probe_exits_0() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("app.log");
 
@@ -219,6 +233,8 @@ fn wait_for_ready_command_polls_until_the_probe_exits_0() {
 
 #[test]
 fn wait_for_ready_command_reports_a_timeout_when_the_probe_never_passes() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("app.log");
     let timeout = Duration::from_millis(300);
@@ -245,6 +261,8 @@ fn sleeping_probe(seconds: &str) -> Command {
 
 #[test]
 fn wait_for_ready_command_lets_a_slow_probe_finish() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("app.log");
 
@@ -259,6 +277,8 @@ fn wait_for_ready_command_lets_a_slow_probe_finish() {
 
 #[test]
 fn wait_for_ready_command_counts_a_hung_probe_as_not_ready() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("app.log");
     let timeout = Duration::from_millis(300);
@@ -277,6 +297,8 @@ fn wait_for_ready_command_counts_a_hung_probe_as_not_ready() {
 
 #[test]
 fn wait_for_ready_command_leaves_no_process_of_a_timed_out_probe() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("app.log");
 
@@ -314,6 +336,8 @@ fn wait_for_ready_command_leaves_no_process_of_a_timed_out_probe() {
 
 #[test]
 fn wait_for_ready_command_reports_an_app_that_exited_before_the_timeout() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("app.log");
     let mut child = Command::new("true").spawn().expect("spawn the app");
@@ -347,6 +371,8 @@ fn wait_for_ready_command_reports_an_app_that_exited_before_the_timeout() {
 
 #[test]
 fn wait_for_ready_command_reports_a_probe_that_cannot_start() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("app.log");
 
@@ -369,6 +395,8 @@ fn wait_for_ready_command_reports_a_probe_that_cannot_start() {
 
 #[test]
 fn probe_command_runs_in_the_config_folder_with_the_given_environment() {
+    crate::test_support::in_test_namespace!();
+
     let folder = crate::test_support::temporary_directory();
     let probe = CommandLine {
         program: PathBuf::from("sh"),
@@ -397,6 +425,8 @@ fn probe_command_runs_in_the_config_folder_with_the_given_environment() {
 
 #[test]
 fn the_app_start_errors_render_their_messages() {
+    crate::test_support::in_test_namespace!();
+
     let cases = [
         (
             AppStartError::AppExited {

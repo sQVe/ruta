@@ -38,6 +38,10 @@ Every Cargo build runs with `--locked`, so a stale `Cargo.lock` fails too.
 `cargo xtask check tidy` runs only the checks that do not compile code. `cargo xtask check build`
 runs only the ones that do.
 
+Tests that send signals run themselves in a new user and PID namespace through `unshare`, so they
+can reach only test processes. They fail instead of running on the host when the namespace cannot
+be made, such as when `unshare` is missing or the system blocks unprivileged user namespaces.
+
 The end-to-end tests start real sandboxes, so the check leaves them out. They need Weston,
 Xwayland, xdotool, and ImageMagick, in the versions that [ADR 0005](adr/0005-linux-only.md)
 names. Run them with:

@@ -8,6 +8,20 @@ use crate::process::poll_until;
 
 use tempfile::{Builder, TempDir};
 
+pub(crate) mod namespace;
+
+// The first statement of every test that sends a signal, or calls code that does. On the host it
+// runs the test in a test namespace instead; see `namespace.rs`.
+macro_rules! in_test_namespace {
+    () => {
+        if crate::test_support::namespace::rerun_outside_test_namespace() {
+            return;
+        }
+    };
+}
+
+pub(crate) use in_test_namespace;
+
 pub(crate) fn temporary_directory() -> TempDir {
     Builder::new()
         .prefix("ruta-unit-test-")
@@ -171,5 +185,59 @@ pub(crate) fn stop_process_group(child_id: u32) {
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         self.reap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The body records the PID it ran under in the file that `RUTA_TEST_CANARY` names. Inside the
+    // namespace that PID is 1, so any other value means the body ran on the host.
+    #[test]
+    fn a_guarded_test_runs_its_body_only_inside_the_namespace() {
+        in_test_namespace!();
+
+        assert!(namespace::inside_test_namespace());
+
+        if let Some(canary) = std::env::var_os("RUTA_TEST_CANARY") {
+            fs::write(canary, std::process::id().to_string()).expect("write the canary");
+        }
+    }
+
+    #[expect(
+        clippy::print_stderr,
+        reason = "the process list is the evidence that the namespace hides the host"
+    )]
+    #[test]
+    fn the_namespace_shows_no_process_of_the_host() {
+        in_test_namespace!();
+
+        let processes: Vec<(u32, String)> = fs::read_dir("/proc")
+            .expect("list /proc")
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+            .map(|pid| {
+                let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+
+                (pid, String::from_utf8_lossy(&command).replace('\0', " "))
+            })
+            .collect();
+        let test_binary = std::env::current_exe().expect("the test binary has a path");
+
+        for (pid, command) in &processes {
+            eprintln!("namespace process {pid}: {command}");
+        }
+
+        assert_eq!(
+            processes.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+            [1],
+            "only the test binary is visible"
+        );
+        assert_eq!(
+            fs::read_link("/proc/1/exe").expect("read the init binary"),
+            test_binary,
+            "PID 1 is the test binary"
+        );
     }
 }

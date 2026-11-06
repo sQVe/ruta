@@ -110,21 +110,31 @@ fn wait_for_zombie(pid: u32, timeout: Duration) {
 }
 
 pub(crate) mod stop;
+mod sweep;
 
 #[test]
 fn process_start_is_none_for_a_missing_pid() {
+    crate::test_support::in_test_namespace!();
+
     assert_eq!(process_start(u32::MAX), None);
 }
 
 #[test]
-fn process_parent_names_the_test_process() {
+fn the_stat_parent_names_the_test_process() {
+    crate::test_support::in_test_namespace!();
+
     let child = spawn_sleep();
 
-    assert_eq!(process_parent(child.id()), Some(std::process::id()));
+    assert_eq!(
+        ProcessStat::read(child.id()).map(|stat| stat.parent),
+        Some(std::process::id())
+    );
 }
 
 #[test]
 fn child_pids_finds_a_child_and_not_a_stranger() {
+    crate::test_support::in_test_namespace!();
+
     let child = spawn_sleep();
 
     assert!(child_pids(std::process::id()).contains(&child.id()));
@@ -133,6 +143,8 @@ fn child_pids_finds_a_child_and_not_a_stranger() {
 
 #[test]
 fn record_process_writes_the_pid_and_start_time() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let child = spawn_ready_sleep();
@@ -149,6 +161,8 @@ fn record_process_writes_the_pid_and_start_time() {
 
 #[test]
 fn record_process_rejects_a_wrong_name_and_writes_no_file() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let child = spawn_ready_sleep();
@@ -176,6 +190,8 @@ fn record_process_rejects_a_wrong_name_and_writes_no_file() {
 
 #[test]
 fn record_process_rejects_a_missing_pid_and_writes_no_file() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
 
@@ -195,6 +211,8 @@ fn record_process_rejects_a_missing_pid_and_writes_no_file() {
 
 #[test]
 fn record_process_reports_an_empty_name_in_time() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let child = spawn_exiting();
@@ -218,6 +236,8 @@ fn record_process_reports_an_empty_name_in_time() {
 
 #[test]
 fn record_xwayland_records_a_matching_child() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("xwayland-match");
     let path = root.path().join("xwayland.pid");
     let (weston, child) = spawn_fake_weston("Xwayland :97");
@@ -231,6 +251,8 @@ fn record_xwayland_records_a_matching_child() {
 
 #[test]
 fn record_xwayland_ignores_a_different_display() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("xwayland-display");
     let path = root.path().join("xwayland.pid");
     let (weston, _child) = spawn_fake_weston("Xwayland :97");
@@ -243,6 +265,8 @@ fn record_xwayland_ignores_a_different_display() {
 
 #[test]
 fn record_xwayland_ignores_a_child_with_another_name() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("xwayland-name");
     let path = root.path().join("xwayland.pid");
     let (weston, _child) = spawn_fake_weston("OtherProcess");
@@ -255,6 +279,8 @@ fn record_xwayland_ignores_a_child_with_another_name() {
 
 #[test]
 fn record_process_waits_for_the_command_line_to_change() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let mut command = Command::new("bash");
@@ -271,6 +297,8 @@ fn record_process_waits_for_the_command_line_to_change() {
 
 #[test]
 fn the_identity_errors_render_their_messages() {
+    crate::test_support::in_test_namespace!();
+
     let cases = [
         (
             IdentityError::DidNotStop {
@@ -314,6 +342,8 @@ fn the_identity_errors_render_their_messages() {
 
 #[test]
 fn record_matches_rejects_a_changed_start_time() {
+    crate::test_support::in_test_namespace!();
+
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let pid = std::process::id();
@@ -328,6 +358,8 @@ fn record_matches_rejects_a_changed_start_time() {
 
 #[test]
 fn record_marked_process_records_a_marked_child_whatever_its_name() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("record-marked");
     let path = root.path().join("pid");
     let child = spawn_with_marker(root.path());
@@ -346,6 +378,8 @@ fn record_marked_process_records_a_marked_child_whatever_its_name() {
 
 #[test]
 fn record_marked_process_refuses_a_child_without_the_marker_and_writes_no_file() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("record-unmarked");
     let other = crate::test_support::temporary_sandbox_root("record-other");
     let path = root.path().join("pid");
@@ -371,6 +405,8 @@ fn record_marked_process_refuses_a_child_without_the_marker_and_writes_no_file()
 
 #[test]
 fn record_marked_process_reports_a_missing_or_exited_process_at_once() {
+    crate::test_support::in_test_namespace!();
+
     let root = crate::test_support::temporary_sandbox_root("record-gone");
     let path = root.path().join("pid");
     let exited = spawn_exiting();

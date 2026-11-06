@@ -15,6 +15,7 @@ use crate::display_start::{
 use crate::environment::{caller_environment, sandbox_environment};
 use crate::identity::{STOP_TIMEOUT, record_xwayland, stop_recorded, stop_window};
 use crate::input::{focus_window, window_id};
+use crate::log_tail::last_lines;
 use crate::root::{
     install_openers, prepare_root, refuse_linked_paths, refuse_unsafe_root, remove_root,
     require_trusted_root, root_path,
@@ -87,6 +88,7 @@ fn require_display_tools() -> anyhow::Result<()> {
     require_program("weston")?;
     require_program("Xwayland")?;
     require_program("xdotool")?;
+    require_program("cat")?;
 
     Ok(())
 }
@@ -137,11 +139,22 @@ where
         return Ok(());
     };
 
+    // The cleanup removes the app log, so its end goes into the error first. A refused root is not
+    // read, since its log may be anything, such as a FIFO.
+    let log_tail = match require_trusted_root(root) {
+        Ok(()) => last_lines(&root.join("app.log"), LOG_TAIL_LINES),
+        Err(_) => Vec::new(),
+    };
+
     if let Err(cleanup_error) = cleanup(root, stop) {
         eprintln!("Could not clean up after the failed start: {cleanup_error:#}");
     }
 
-    Err(error)
+    if log_tail.is_empty() {
+        return Err(error);
+    }
+
+    Err(FailedStart { error, log_tail }.into())
 }
 
 #[expect(
@@ -179,6 +192,15 @@ fn display_size((width, height): (u32, u32)) -> (u32, u32) {
         width.saturating_add(DISPLAY_MARGIN),
         height.saturating_add(DISPLAY_MARGIN),
     )
+}
+
+const LOG_TAIL_LINES: usize = 20;
+
+#[derive(Debug, Error)]
+#[error("{error:#}\n\nThe app log ended with:\n{}", log_tail.join("\n"))]
+struct FailedStart {
+    error: anyhow::Error,
+    log_tail: Vec<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
