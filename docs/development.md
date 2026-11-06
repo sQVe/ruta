@@ -19,6 +19,8 @@
 ## Workspace
 
 - `crates/ruta` is the `ruta` binary. `cargo run` starts it.
+- `crates/ruta-test-app` is a small X11 app that the end-to-end tests open in a sandbox. It is not
+  published.
 - `xtask` holds repository tasks, run as `cargo xtask <task>`.
 
 ## Check your work
@@ -35,6 +37,14 @@ Every Cargo build runs with `--locked`, so a stale `Cargo.lock` fails too.
 
 `cargo xtask check tidy` runs only the checks that do not compile code. `cargo xtask check build`
 runs only the ones that do.
+
+The end-to-end tests start real sandboxes, so the check leaves them out. They need Weston,
+Xwayland, xdotool, and ImageMagick, in the versions that [ADR 0005](adr/0005-linux-only.md)
+names. Run them with:
+
+```sh
+cargo test -p ruta --test end_to_end -- --ignored
+```
 
 Fix problems with these commands:
 
@@ -76,6 +86,8 @@ advisories fail cargo-deny without a code change.
 - `Check` runs `cargo xtask check tidy` on Linux.
 - `Test (Linux)` runs `cargo xtask check build`. ruta supports Linux only; see
   [ADR 0005](adr/0005-linux-only.md).
+- `End to end (Linux)` runs the end-to-end tests in an Arch Linux container on pull requests and
+  pushes. On failure it uploads the sandbox logs and shots.
 - `Mutation (changed)` runs on pull requests. It runs `cargo xtask mutation changed` against the
   pull request's base, prints the JSON report, and lists survivors in the job summary. Survivors
   pass the job; an error or an unmutated file fails it.

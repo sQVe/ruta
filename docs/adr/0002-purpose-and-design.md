@@ -22,8 +22,9 @@ separate the display and the input instead.
 ## Decision
 
 ruta is one standalone binary that gives agents and people a throwaway app window on a private
-headless Weston and Xwayland display. Each project installs it with `cargo install --git` and calls
-it, instead of keeping its own copy.
+headless Weston and Xwayland display. Each project installs a tagged release with
+`cargo install --git https://github.com/sQVe/ruta --tag <tag> --locked` and calls it, instead of
+keeping its own copy.
 
 ### What ruta owns
 
@@ -41,11 +42,23 @@ ruta owns the parts every project shares:
 Input is xdotool XTest, and a shot is ImageMagick `import` of the private window, so a shot's pixels
 and an input coordinate share one scale.
 
+### How ruta knows its own processes
+
+ruta identifies a process it started by its PID and start time, plus the `RUTA_ROOT` marker in its
+environment, not by its command line. A launch script may `exec` the app, which replaces the command
+line but keeps the PID, the start time, and the environment. ruta records the app once it holds the
+marker.
+
+The app leads its own process group, and `down` stops that group. It stops the recorded leader by
+its PID and start time alone, because the leader may `exec` into an environment without the marker.
+It stops another member of the group only when that member holds the marker.
+
 ### What each project owns
 
-Each project has a small config file. It names the launch command, how ruta detects that the window
+Each project has a small `ruta.toml`. It names the launch command, how ruta detects that the window
 is ready, the window title, the window size, and extra environment. A window is ready when the app
-prints a JSON ready line on stdout, or when a given command exits 0.
+prints a JSON ready line on stdout, or when a given command exits 0. ruta saves the JSON ready line
+in the sandbox, so later commands and project scripts can read what the app reported.
 
 Commands that only one app needs stay in that project and call ruta.
 
@@ -84,6 +97,12 @@ Run the app on a private headless Sway and drive it with wtype, a virtual-pointe
 Rejected because Weston advertises no virtual keyboard, virtual pointer, or wlr-screencopy
 protocol. Switching the compositor and the input and capture tools together adds risk without a
 shown benefit.
+
+### Matching a process by its command line
+
+Record the launch command and check that the process still names it. Rejected because a launch
+script that `exec`s the app replaces its command line, so a valid start fails at random, depending
+on when ruta reads it.
 
 ### The developer's real display
 

@@ -6,7 +6,7 @@ ruta is a command-line tool that opens an app in a throwaway window on a private
 and Xwayland display. Agents and people can take shots of the window and send it input, and nothing
 reaches the real screen, pointer, or keyboard. It runs on Linux.
 
-ruta is in early development. The `ruta` binary does nothing yet.
+ruta is in early development.
 
 ## Install
 
