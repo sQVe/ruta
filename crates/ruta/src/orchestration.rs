@@ -140,15 +140,14 @@ fn capture_inner(
     arguments: &[String],
 ) -> anyhow::Result<()> {
     record_root_creation(root)?;
-    require_display_tools()?;
-    require_program("import")?;
-    require_program("magick")?;
     prepare_capture_folder(out)?;
 
     let resolved_root = fs::canonicalize(root).context("Could not resolve the capture root")?;
     let resolved_out =
         fs::canonicalize(out).context("Could not resolve the capture output folder")?;
     refuse_capture_output_in_root(&resolved_root, &resolved_out)?;
+    require_display_tools()?;
+    require_program("import")?;
 
     start_window(config, root, arguments, &Session::Headless)?;
 
