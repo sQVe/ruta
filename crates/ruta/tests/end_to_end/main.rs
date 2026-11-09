@@ -1,3 +1,4 @@
+mod capture;
 mod display;
 mod escape;
 mod input;

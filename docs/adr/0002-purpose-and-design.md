@@ -38,6 +38,8 @@ ruta owns the parts every project shares:
 - Stub openers that log a link instead of opening it.
 - Input through xdotool, window shots, the app's log, the logged links, and teardown.
 - Side-by-side sandboxes, each with its own name.
+- One-shot capture with an optional app-reported crop and teardown, under a separate root so it
+  leaves a running sandbox untouched.
 
 Input is xdotool XTest, and a shot is ImageMagick `import` of the private window, so a shot's pixels
 and an input coordinate share one scale.

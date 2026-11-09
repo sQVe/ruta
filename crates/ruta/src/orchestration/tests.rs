@@ -11,6 +11,7 @@ use crate::identity::tests::{
 };
 use crate::root::{RootError, RootReason};
 
+mod capture;
 mod down;
 mod failed_start;
 mod restart;
@@ -53,6 +54,56 @@ fn cleanup_order(root: &Path) -> [StopTarget; 3] {
             path: root.join("weston.pid"),
         },
     ]
+}
+
+#[test]
+fn failed_capture_stops_every_target_and_returns_capture_error() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("capture-failed");
+    let mut visited = Vec::new();
+    let error = finish_capture(
+        root.path(),
+        Err(crate::capture::CaptureError::PartialGeometry {
+            missing: vec!["scale"],
+        }
+        .into()),
+        |target| {
+            visited.push(target);
+            Ok(())
+        },
+    )
+    .expect_err("capture fails");
+
+    assert!(
+        matches!(error.downcast_ref::<crate::capture::CaptureError>(),
+        Some(crate::capture::CaptureError::PartialGeometry { missing }) if missing == &["scale"])
+    );
+    assert_eq!(visited, cleanup_order(root.path()));
+    assert!(!root.path().exists());
+}
+
+#[test]
+fn capture_refuses_an_existing_root_before_starting() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("capture-existing");
+    let out = crate::test_support::temporary_directory();
+    fs::write(root.path().join("marker"), "keep").expect("write marker");
+    let error = capture(&test_config("test"), root.path(), out.path(), &[])
+        .expect_err("existing capture root is refused");
+
+    assert!(
+        error
+            .to_string()
+            .contains("RUTA_NAME=test-capture ruta down")
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("marker")).expect("marker stays"),
+        "keep"
+    );
+    assert_eq!(fs::read_dir(root.path()).expect("root stays").count(), 1);
+    assert_eq!(fs::read_dir(out.path()).expect("out stays").count(), 0);
 }
 
 #[test]

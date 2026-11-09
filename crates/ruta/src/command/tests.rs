@@ -5,6 +5,46 @@ fn strings(values: &[&str]) -> Vec<String> {
 }
 
 #[test]
+fn capture_requires_out_and_passes_app_arguments() {
+    let parsed = parse(&strings(&["capture", "--out", "shots", "--", "smoke-2"]));
+    assert_eq!(
+        parsed,
+        Ok(Sandbox::Capture {
+            out: PathBuf::from("shots"),
+            arguments: strings(&["smoke-2"]),
+        })
+    );
+    for arguments in [
+        strings(&["capture"]),
+        strings(&["capture", "--out"]),
+        strings(&["capture", "shots"]),
+        strings(&["capture", "--wrong", "shots"]),
+        strings(&["nonsense", "--out", "shots"]),
+        strings(&["capture", "--headed", "--out", "shots"]),
+        strings(&["capture", "--out", "--"]),
+        strings(&["capture", "--out", ""]),
+    ] {
+        assert_eq!(parse(&arguments), Err(ParseError::Usage), "{arguments:?}");
+    }
+    for arguments in [strings(&[]), strings(&["--headed", "--"])] {
+        let mut input = strings(&["capture", "--out", "shots"]);
+        input.extend(arguments.clone());
+        assert_eq!(
+            parse(&input),
+            Ok(Sandbox::Capture {
+                out: PathBuf::from("shots"),
+                arguments,
+            })
+        );
+    }
+}
+
+#[test]
+fn usage_lists_capture() {
+    assert!(USAGE.contains("ruta capture --out <folder>"));
+}
+
+#[test]
 fn parse_reads_every_command() {
     let cases = [
         (

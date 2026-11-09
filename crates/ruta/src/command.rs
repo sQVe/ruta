@@ -8,6 +8,7 @@ pub(crate) const USAGE: &str = "\
 Usage:
   ruta up [--headed] [--] [arguments]
   ruta restart [--headed] [--] [arguments]
+  ruta capture --out <folder> [--] [arguments]
   ruta shot [file]
   ruta move <x0> <y0> <x1> <y1>
   ruta click <x> <y> [button]
@@ -43,6 +44,10 @@ pub(crate) enum Sandbox {
     Restart {
         arguments: Option<Vec<String>>,
         headed: Option<bool>,
+    },
+    Capture {
+        out: PathBuf,
+        arguments: Vec<String>,
     },
     Shot {
         file: Option<PathBuf>,
@@ -113,6 +118,20 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Sandbox, ParseError> {
             Ok(Sandbox::Restart {
                 arguments: given.then_some(options.arguments),
                 headed: options.headed.then_some(true),
+            })
+        }
+        [command, option, folder, rest @ ..] if command == "capture" && option == "--out" => {
+            if folder.is_empty() || folder.starts_with('-') {
+                return Err(ParseError::Usage);
+            }
+
+            let arguments = rest
+                .strip_prefix(&[END_OF_OPTIONS.to_string()])
+                .unwrap_or(rest);
+
+            Ok(Sandbox::Capture {
+                out: PathBuf::from(folder),
+                arguments: arguments.to_vec(),
             })
         }
         [command] if command == "shot" => Ok(Sandbox::Shot { file: None }),

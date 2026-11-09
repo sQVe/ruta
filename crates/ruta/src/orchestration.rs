@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -17,8 +18,8 @@ use crate::identity::{STOP_TIMEOUT, record_xwayland, stop_recorded, stop_window}
 use crate::input::{focus_window, send, window_id};
 use crate::log_tail::last_lines;
 use crate::root::{
-    install_openers, prepare_root, refuse_linked_paths, refuse_unsafe_root, remove_root,
-    require_trusted_root, root_path,
+    install_openers, prepare_root, record_root_creation, refuse_linked_paths, refuse_unsafe_root,
+    remove_root, require_trusted_root, root_path,
 };
 
 const DISPLAY_MARGIN: u32 = 200;
@@ -44,6 +45,12 @@ fn execute(config: &Config, command: Sandbox) -> anyhow::Result<()> {
     match command {
         Sandbox::Up { arguments, headed } => up(config, &root, &arguments, headed),
         Sandbox::Restart { arguments, headed } => restart(config, &root, arguments, headed),
+        Sandbox::Capture { out, arguments } => capture(
+            config,
+            &root_path(&format!("{name}-capture")),
+            &out,
+            &arguments,
+        ),
         Sandbox::Shot { file } => shot(name, &root, file),
         Sandbox::Move { from, to } => with_window(name, &root, |display, window| {
             send::glide(&root, display, window, from, to)
@@ -73,6 +80,126 @@ fn execute(config: &Config, command: Sandbox) -> anyhow::Result<()> {
         Sandbox::Opened => opened(&root),
         Sandbox::Down => down(name, &root),
     }
+}
+
+fn capture(config: &Config, root: &Path, out: &Path, arguments: &[String]) -> anyhow::Result<()> {
+    let name = crate::config::valid_name("RUTA_NAME", &format!("{}-capture", config.name))?;
+    refuse_capture_output_in_root(root, out)?;
+
+    match fs::DirBuilder::new().mode(0o700).create(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => anyhow::bail!(
+            "The capture root already exists; run 'RUTA_NAME={name} ruta down' first."
+        ),
+        Ok(()) => {}
+        Err(error) => return Err(error).context("Could not create the capture root"),
+    }
+
+    let captured = capture_inner(config, root, out, arguments);
+
+    finish_capture(root, captured, stop_target)
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("The capture output folder {} must not be the capture root {} or inside it.", out.display(), root.display())]
+struct CaptureOutputInsideRoot {
+    out: PathBuf,
+    root: PathBuf,
+}
+
+fn refuse_capture_output_in_root(root: &Path, out: &Path) -> anyhow::Result<()> {
+    let root = lexical_absolute_path(root)?;
+    let out = lexical_absolute_path(out)?;
+
+    if out.starts_with(&root) {
+        return Err(CaptureOutputInsideRoot { out, root }.into());
+    }
+
+    Ok(())
+}
+
+fn lexical_absolute_path(path: &Path) -> anyhow::Result<PathBuf> {
+    let absolute = std::path::absolute(path)
+        .with_context(|| format!("Could not make {} absolute", path.display()))?;
+    let mut normalized = PathBuf::new();
+
+    for component in absolute.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component),
+        }
+    }
+
+    Ok(normalized)
+}
+
+fn capture_inner(
+    config: &Config,
+    root: &Path,
+    out: &Path,
+    arguments: &[String],
+) -> anyhow::Result<()> {
+    record_root_creation(root)?;
+    require_display_tools()?;
+    require_program("import")?;
+    require_program("magick")?;
+    prepare_capture_folder(out)?;
+    start_window(config, root, arguments, &Session::Headless)?;
+
+    capture_window(&config.name, root, out)
+}
+
+fn prepare_capture_folder(folder: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(folder).with_context(|| format!("Could not create {}", folder.display()))?;
+
+    for name in ["shot.png", "crop.png", "capture.json"] {
+        let path = folder.join(name);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("Could not remove {}", path.display()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn capture_window(name: &str, root: &Path, out: &Path) -> anyhow::Result<()> {
+    let display = require_up(name, root)?;
+    let window = window_id(root)?;
+    let environment = sandbox_environment(&caller_environment(), root, &display);
+    let ready_line = match fs::read_to_string(root.join("ready.json")) {
+        Ok(line) => Some(line),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("Could not read the saved ready line"),
+    };
+
+    display::import_window(&display, &window, &out.join("shot.png"), &environment)?;
+    crate::capture::write_capture(out, ready_line.as_deref(), &environment)
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "cleanup must not hide the capture error"
+)]
+fn finish_capture<F>(root: &Path, captured: anyhow::Result<()>, stop: F) -> anyhow::Result<()>
+where
+    F: FnMut(StopTarget) -> anyhow::Result<()>,
+{
+    let cleaned = cleanup(root, stop);
+
+    if let Err(error) = captured {
+        if let Err(cleanup_error) = cleaned {
+            eprintln!("Could not clean up after capture: {cleanup_error:#}");
+        }
+
+        return Err(error);
+    }
+
+    cleaned
 }
 
 #[mutants::skip]

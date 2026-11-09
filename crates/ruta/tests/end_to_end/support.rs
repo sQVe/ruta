@@ -86,8 +86,8 @@ impl Sandbox {
         PathBuf::from(format!("/var/tmp/ruta-{}", self.name))
     }
 
-    pub(crate) fn marker(&self) -> String {
-        format!("RUTA_ROOT={}", self.root().display())
+    pub(crate) fn capture_root(&self) -> PathBuf {
+        PathBuf::from(format!("/var/tmp/ruta-{}-capture", self.name))
     }
 
     pub(crate) fn run(&self, arguments: &[&str]) -> Output {
@@ -128,13 +128,7 @@ impl Sandbox {
     }
 
     pub(crate) fn assert_gone(&self) {
-        assert!(!self.root().exists(), "{}: the root is removed", self.name);
-        assert_eq!(
-            processes_with_marker(&self.marker()),
-            Vec::<PathBuf>::new(),
-            "{}: every process is stopped",
-            self.name
-        );
+        assert_gone(&self.root());
     }
 
     // `down` deletes the root, so its logs and shots are copied out first for CI to upload.
@@ -279,6 +273,17 @@ pub(crate) fn png_size(path: &Path) -> (u32, u32) {
     let height = u32::from_be_bytes(bytes[20..24].try_into().expect("four height bytes"));
 
     (width, height)
+}
+
+pub(crate) fn assert_gone(root: &Path) {
+    assert!(!root.exists(), "{}: the root is removed", root.display());
+    let marker = format!("RUTA_ROOT={}", root.display());
+    assert_eq!(
+        processes_with_marker(&marker),
+        Vec::<PathBuf>::new(),
+        "{}: every process is stopped",
+        root.display()
+    );
 }
 
 pub(crate) fn processes_with_marker(marker: &str) -> Vec<PathBuf> {
