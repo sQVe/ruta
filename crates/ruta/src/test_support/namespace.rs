@@ -136,6 +136,13 @@ fn isolate_inside() {
         })
         .unwrap_or_else(|error| refuse("could not create the private X socket folder", &error));
 
+    // Without these bits a program run as user 0, such as in a CI container, gets every capability
+    // back. Setting them needs a capability, so it comes before the drop.
+    rustix::thread::set_capabilities_secure_bits(
+        rustix::thread::CapabilitiesSecureBits::NO_ROOT
+            | rustix::thread::CapabilitiesSecureBits::NO_ROOT_LOCKED,
+    )
+    .unwrap_or_else(|error| refuse("could not keep user 0 from regaining capabilities", &error));
     rustix::thread::set_capabilities(
         None,
         rustix::thread::CapabilitySets {

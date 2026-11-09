@@ -100,7 +100,10 @@ jobs:
       - name: Run the sandbox end to end
         env:
           RUTA_E2E_ARTIFACTS: ${{ runner.temp }}/end-to-end
-        run: cargo test --locked -p ruta --test end_to_end -- --ignored
+        # The tests run as a user 0 without capabilities, which cannot write to the runner's folder.
+        run: |
+          install -d -m 1777 "$RUTA_E2E_ARTIFACTS"
+          cargo test --locked -p ruta --test end_to_end -- --ignored
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:

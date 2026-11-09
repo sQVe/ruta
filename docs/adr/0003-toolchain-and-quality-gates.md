@@ -81,6 +81,8 @@ PID namespace.
   shared `/tmp` parallel tests take over each other's displays and could remove the host's locks.
   The mount stays in the test's own mount namespace. When it fails, the test fails, and the test
   binary refuses to run from a path under `/tmp`, so mutation testing copies the tree elsewhere.
+- The test body and every program it starts run without capabilities, even as user 0 in a CI
+  container. The guard sets the secure bits that stop user 0 from regaining them.
 - The namespace also has its own network namespace. X clients connect first to an abstract socket,
   which belongs to the network namespace, so a private `/tmp` alone still lets parallel tests reach
   each other's X servers.

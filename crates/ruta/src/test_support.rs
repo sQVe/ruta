@@ -216,6 +216,28 @@ mod tests {
         }
     }
 
+    // Run as root, such as in a CI container, this fails unless the guard keeps a program the body
+    // starts from gaining every capability as user 0.
+    #[test]
+    fn a_program_the_body_starts_gets_no_capabilities() {
+        in_test_namespace!();
+
+        let output = std::process::Command::new("cat")
+            .arg("/proc/self/status")
+            .output()
+            .expect("run cat");
+        let status = String::from_utf8_lossy(&output.stdout);
+
+        for set in ["CapPrm", "CapEff", "CapAmb"] {
+            assert!(
+                status
+                    .lines()
+                    .any(|line| line == format!("{set}:\t0000000000000000")),
+                "a program the body starts has no capabilities: {set}\n{status}"
+            );
+        }
+    }
+
     // The host picks a file name, the body writes that file to `/tmp` inside the namespace, and the
     // host then finds no such file in its own `/tmp`.
     #[test]
