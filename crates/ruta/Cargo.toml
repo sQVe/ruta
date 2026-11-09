@@ -10,7 +10,7 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 mutants = "0.0.3"
-rustix = { version = "1", features = ["fs", "param", "process", "time"] }
+rustix = { version = "1", features = ["fs", "mount", "param", "process", "thread", "time"] }
 serde_json.workspace = true
 thiserror.workspace = true
 toml = "1.2.0"

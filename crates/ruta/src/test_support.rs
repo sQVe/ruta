@@ -22,9 +22,10 @@ macro_rules! in_test_namespace {
 
 pub(crate) use in_test_namespace;
 
+// The prefix never matches a sandbox root, even when `TMPDIR` is `/var/tmp`.
 pub(crate) fn temporary_directory() -> TempDir {
     Builder::new()
-        .prefix("ruta-unit-test-")
+        .prefix("unit-test-ruta-")
         .tempdir()
         .expect("create a temporary directory")
 }
@@ -200,9 +201,52 @@ mod tests {
 
         assert!(namespace::inside_test_namespace());
 
+        let status = fs::read_to_string("/proc/thread-self/status").expect("read the status");
+        for set in ["CapPrm", "CapEff", "CapAmb"] {
+            assert!(
+                status
+                    .lines()
+                    .any(|line| line == format!("{set}:\t0000000000000000")),
+                "the body runs without the capabilities that unshare kept: {set}\n{status}"
+            );
+        }
+
         if let Some(canary) = std::env::var_os("RUTA_TEST_CANARY") {
             fs::write(canary, std::process::id().to_string()).expect("write the canary");
         }
+    }
+
+    // The host picks a file name, the body writes that file to `/tmp` inside the namespace, and the
+    // host then finds no such file in its own `/tmp`.
+    #[test]
+    fn a_file_written_to_tmp_in_the_namespace_is_not_on_the_host() {
+        let probe = format!(
+            "ruta-private-tmp-{}-{}",
+            std::process::id(),
+            crate::process_stat::boot_ticks_now()
+        );
+
+        if namespace::rerun_outside_test_namespace_with(&[("RUTA_TEST_TMP_PROBE", &probe)]) {
+            assert!(
+                !std::path::Path::new("/tmp").join(&probe).exists(),
+                "the namespace's /tmp file {probe} must not reach the host"
+            );
+            return;
+        }
+
+        let probe = std::env::var("RUTA_TEST_TMP_PROBE").expect("the host names the probe file");
+        let path = std::path::Path::new("/tmp").join(&probe);
+        let mounts = fs::read_to_string("/proc/self/mountinfo").expect("read the mounts");
+
+        fs::write(&path, "inside").expect("write the probe file");
+
+        assert_eq!(fs::read_to_string(&path).expect("read the probe"), "inside");
+        assert!(
+            mounts
+                .lines()
+                .any(|line| line.split(' ').nth(4) == Some("/tmp") && line.contains(" - tmpfs ")),
+            "/tmp is a tmpfs mount: {mounts}"
+        );
     }
 
     #[expect(

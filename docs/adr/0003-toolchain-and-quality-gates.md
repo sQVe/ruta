@@ -76,6 +76,11 @@ PID namespace.
   each test that sends signals re-runs itself through `unshare` in a new user and PID namespace with
   its own `/proc`, where it sees only test processes. It fails instead of running on the host when
   the namespace cannot be made.
+- Inside the namespace, `/tmp` is a private tmpfs before the test body runs. An X server judges a
+  lock file in `/tmp` by the PID it names, and a PID from another namespace never answers, so with a
+  shared `/tmp` parallel tests take over each other's displays and could remove the host's locks.
+  The mount stays in the test's own mount namespace. When it fails, the test fails, and the test
+  binary refuses to run from a path under `/tmp`, so mutation testing copies the tree elsewhere.
 - The re-run lives in the test binary, so every route to the tests gets it: `cargo test`, nextest,
   `cargo xtask check`, cargo-mutants, and CI. `cargo run` and an installed `ruta` do not change.
 - CI must allow the namespace. The test jobs on the Ubuntu runner lift Ubuntu's AppArmor limit on

@@ -37,6 +37,25 @@ fn stop_window_stops_a_child_with_the_matching_marker() {
 }
 
 #[test]
+fn stop_window_leaves_a_leader_whose_start_time_changed_running() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("stop-window-reused");
+    let path = root.path().join("pid");
+    let mut child = spawn_with_marker(root.path());
+    let started = process_start(child.id()).expect("the child has a start time");
+    fs::write(&path, format!("{} {}\n", child.id(), started + 1)).expect("write the record");
+
+    stop_window(root.path()).expect("stop_window");
+
+    assert!(
+        !child.wait_for_exit(Duration::from_millis(500)),
+        "a reused PID in the leader's place keeps running"
+    );
+    assert!(!path.exists(), "the stale record is removed");
+}
+
+#[test]
 fn stop_window_leaves_group_members_without_this_roots_marker_running() {
     crate::test_support::in_test_namespace!();
 

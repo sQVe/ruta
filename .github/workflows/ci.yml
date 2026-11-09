@@ -171,6 +171,9 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0,cargo-nextest
       - name: Mutate the whole workspace
+        # ruta's signal tests refuse to run from a binary under /tmp, the default copy target.
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: |
           status=0
           cargo mutants --workspace --test-tool nextest || status=$?
