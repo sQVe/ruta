@@ -1,0 +1,247 @@
+use std::path::Path;
+use std::time::Duration;
+
+use super::{INPUT_SETTLE, move_pointer, xdotool};
+
+const CLICK_SETTLE: Duration = Duration::from_millis(200);
+const STEP_DELAY: Duration = Duration::from_millis(16);
+const DRAG_STEPS: u32 = 24;
+const TYPE_DELAY_MILLISECONDS: &str = "30";
+const NOTCH_DELAY_MILLISECONDS: &str = "50";
+const WHEEL_UP: u8 = 4;
+const WHEEL_DOWN: u8 = 5;
+
+#[mutants::skip]
+fn warm_up(root: &Path, display: &str, window: &str) -> anyhow::Result<()> {
+    move_pointer(root, display, window, 0, 0)?;
+    std::thread::sleep(INPUT_SETTLE);
+
+    Ok(())
+}
+
+#[mutants::skip]
+pub(crate) fn glide(
+    root: &Path,
+    display: &str,
+    window: &str,
+    from: (i32, i32),
+    to: (i32, i32),
+) -> anyhow::Result<()> {
+    warm_up(root, display, window)?;
+    glide_steps(root, display, window, from, to)
+}
+
+#[mutants::skip]
+fn glide_steps(
+    root: &Path,
+    display: &str,
+    window: &str,
+    from: (i32, i32),
+    to: (i32, i32),
+) -> anyhow::Result<()> {
+    for step in 0..=DRAG_STEPS {
+        let x = interpolate(from.0, to.0, step);
+        let y = interpolate(from.1, to.1, step);
+
+        move_pointer(root, display, window, x, y)?;
+        std::thread::sleep(STEP_DELAY);
+    }
+
+    Ok(())
+}
+
+#[mutants::skip]
+pub(crate) fn click(
+    root: &Path,
+    display: &str,
+    window: &str,
+    (x, y): (i32, i32),
+    button: u8,
+) -> anyhow::Result<()> {
+    point_at(root, display, window, (x, y))?;
+    xdotool(root, display, &["click".to_string(), button.to_string()])
+}
+
+// Presses button 1, glides, and always releases after a successful press. When both the motion and
+// the release fail, the motion error is returned, so the caller sees the first cause.
+#[mutants::skip]
+pub(crate) fn drag(
+    root: &Path,
+    display: &str,
+    window: &str,
+    from: (i32, i32),
+    to: (i32, i32),
+) -> anyhow::Result<()> {
+    point_at(root, display, window, from)?;
+    xdotool(root, display, &["mousedown".to_string(), "1".to_string()])?;
+
+    let motion = (|| {
+        std::thread::sleep(CLICK_SETTLE);
+        glide_steps(root, display, window, from, to)?;
+        std::thread::sleep(INPUT_SETTLE);
+
+        Ok(())
+    })();
+    let released = xdotool(root, display, &["mouseup".to_string(), "1".to_string()]);
+
+    motion.and(released)
+}
+
+#[mutants::skip]
+pub(crate) fn scroll(
+    root: &Path,
+    display: &str,
+    window: &str,
+    (x, y): (i32, i32),
+    notches: i32,
+) -> anyhow::Result<()> {
+    point_at(root, display, window, (x, y))?;
+    xdotool(root, display, &scroll_arguments(notches))
+}
+
+#[mutants::skip]
+pub(crate) fn type_text(
+    root: &Path,
+    display: &str,
+    window: &str,
+    text: &str,
+) -> anyhow::Result<()> {
+    warm_up(root, display, window)?;
+    xdotool(
+        root,
+        display,
+        &[
+            "type".to_string(),
+            "--delay".to_string(),
+            TYPE_DELAY_MILLISECONDS.to_string(),
+            "--".to_string(),
+            text.to_string(),
+        ],
+    )
+}
+
+// No `--clearmodifiers`: it would release the keys that `hold` keeps down.
+#[mutants::skip]
+pub(crate) fn key(
+    root: &Path,
+    display: &str,
+    window: &str,
+    key: &str,
+    modifiers: &[String],
+) -> anyhow::Result<()> {
+    warm_up(root, display, window)?;
+    xdotool(
+        root,
+        display,
+        &["key".to_string(), key_combo(key, modifiers)],
+    )
+}
+
+#[mutants::skip]
+pub(crate) fn hold(root: &Path, display: &str, keys: &[String]) -> anyhow::Result<()> {
+    xdotool(root, display, &key_arguments("keydown", keys))
+}
+
+#[mutants::skip]
+pub(crate) fn release(root: &Path, display: &str, keys: &[String]) -> anyhow::Result<()> {
+    xdotool(root, display, &key_arguments("keyup", keys))
+}
+
+#[mutants::skip]
+fn point_at(root: &Path, display: &str, window: &str, (x, y): (i32, i32)) -> anyhow::Result<()> {
+    warm_up(root, display, window)?;
+    move_pointer(root, display, window, x, y)?;
+    std::thread::sleep(CLICK_SETTLE);
+
+    Ok(())
+}
+
+fn interpolate(from: i32, to: i32, step: u32) -> i32 {
+    let distance = i64::from(to) - i64::from(from);
+    let moved = distance * i64::from(step) / i64::from(DRAG_STEPS);
+
+    i32::try_from(i64::from(from) + moved).expect("a point between two i32 values fits in i32")
+}
+
+// X11 reports the wheel as buttons 4 (up) and 5 (down), one press per notch.
+fn scroll_arguments(notches: i32) -> Vec<String> {
+    let button = if notches > 0 { WHEEL_DOWN } else { WHEEL_UP };
+
+    vec![
+        "click".to_string(),
+        "--repeat".to_string(),
+        notches.unsigned_abs().to_string(),
+        "--delay".to_string(),
+        NOTCH_DELAY_MILLISECONDS.to_string(),
+        button.to_string(),
+    ]
+}
+
+fn key_combo(key: &str, modifiers: &[String]) -> String {
+    let mut combo = modifiers.to_vec();
+    combo.push(key.to_string());
+
+    combo.join("+")
+}
+
+fn key_arguments(action: &str, keys: &[String]) -> Vec<String> {
+    let mut arguments = vec![action.to_string()];
+    arguments.extend_from_slice(keys);
+
+    arguments
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn interpolate_hits_both_ends_and_the_middle() {
+        assert_eq!(interpolate(10, 20, 0), 10);
+        assert_eq!(interpolate(10, 20, DRAG_STEPS), 20);
+        assert_eq!(interpolate(20, 10, DRAG_STEPS / 2), 15);
+        assert_eq!(interpolate(i32::MIN, i32::MAX, DRAG_STEPS), i32::MAX);
+    }
+
+    #[test]
+    fn scroll_presses_one_wheel_button_per_notch() {
+        let cases = [
+            (
+                3,
+                strings(&["click", "--repeat", "3", "--delay", "50", "5"]),
+            ),
+            (
+                1,
+                strings(&["click", "--repeat", "1", "--delay", "50", "5"]),
+            ),
+            (
+                -2,
+                strings(&["click", "--repeat", "2", "--delay", "50", "4"]),
+            ),
+        ];
+
+        for (notches, expected) in cases {
+            assert_eq!(scroll_arguments(notches), expected, "{notches}");
+        }
+    }
+
+    #[test]
+    fn key_combo_puts_the_modifiers_before_the_key() {
+        assert_eq!(key_combo("Return", &[]), "Return");
+        assert_eq!(key_combo("s", &strings(&["ctrl", "shift"])), "ctrl+shift+s");
+    }
+
+    #[test]
+    fn hold_and_release_name_every_key() {
+        let keys = strings(&["Shift_L", "Control_L"]);
+
+        assert_eq!(
+            key_arguments("keydown", &keys),
+            strings(&["keydown", "Shift_L", "Control_L"])
+        );
+    }
+}

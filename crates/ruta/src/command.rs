@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use thiserror::Error;
 
@@ -8,6 +9,14 @@ Usage:
   ruta up [--headed] [--] [arguments]
   ruta restart [--headed] [--] [arguments]
   ruta shot [file]
+  ruta move <x0> <y0> <x1> <y1>
+  ruta click <x> <y> [button]
+  ruta drag <x0> <y0> <x1> <y1>
+  ruta type <text>
+  ruta key <keysym> [modifier]...
+  ruta scroll <x> <y> [notches]
+  ruta hold <keysym>...
+  ruta release <keysym>...
   ruta log
   ruta opened
   ruta down
@@ -15,6 +24,10 @@ Usage:
 ruta reads ruta.toml from the current folder or a folder above it. Arguments after up go to the
 app; --headed counts only before the first of them, and -- ends ruta's options. restart without
 arguments reuses the arguments and the mode of the last up.
+
+Input goes to the app window, in window pixels. scroll turns the wheel 1 notch by default; a
+positive count scrolls down and a negative one up. hold keeps keys down for later commands until
+release lets them go.
 
 Set RUTA_NAME=<name> to run a second sandbox side by side.";
 
@@ -34,16 +47,56 @@ pub(crate) enum Sandbox {
     Shot {
         file: Option<PathBuf>,
     },
+    Move {
+        from: (i32, i32),
+        to: (i32, i32),
+    },
+    Click {
+        x: i32,
+        y: i32,
+        button: u8,
+    },
+    Drag {
+        from: (i32, i32),
+        to: (i32, i32),
+    },
+    Type {
+        text: String,
+    },
+    Key {
+        key: String,
+        modifiers: Vec<String>,
+    },
+    Scroll {
+        x: i32,
+        y: i32,
+        notches: i32,
+    },
+    Hold {
+        keys: Vec<String>,
+    },
+    Release {
+        keys: Vec<String>,
+    },
     Log,
     Opened,
     Down,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
-#[error("{USAGE}")]
-pub(crate) struct UsageError;
+pub(crate) enum ParseError {
+    #[error("{USAGE}")]
+    Usage,
+    #[error("{argument} must be a whole number, not \"{value}\"")]
+    NotANumber {
+        argument: &'static str,
+        value: String,
+    },
+    #[error("scroll needs a nonzero number of notches")]
+    NoNotches,
+}
 
-pub(crate) fn parse(arguments: &[String]) -> Result<Sandbox, UsageError> {
+pub(crate) fn parse(arguments: &[String]) -> Result<Sandbox, ParseError> {
     match arguments {
         [command, rest @ ..] if command == "up" => {
             let options = split_options(rest);
@@ -66,11 +119,67 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Sandbox, UsageError> {
         [command, file] if command == "shot" => Ok(Sandbox::Shot {
             file: Some(PathBuf::from(file)),
         }),
+        [command, x0, y0, x1, y1] if command == "move" => Ok(Sandbox::Move {
+            from: (number(x0, "x0")?, number(y0, "y0")?),
+            to: (number(x1, "x1")?, number(y1, "y1")?),
+        }),
+        [command, x0, y0, x1, y1] if command == "drag" => Ok(Sandbox::Drag {
+            from: (number(x0, "x0")?, number(y0, "y0")?),
+            to: (number(x1, "x1")?, number(y1, "y1")?),
+        }),
+        [command, x, y] if command == "click" => Ok(Sandbox::Click {
+            x: number(x, "x")?,
+            y: number(y, "y")?,
+            button: 1,
+        }),
+        [command, x, y, button] if command == "click" => Ok(Sandbox::Click {
+            x: number(x, "x")?,
+            y: number(y, "y")?,
+            button: number(button, "button")?,
+        }),
+        [command, text @ ..] if command == "type" && !text.is_empty() => Ok(Sandbox::Type {
+            text: text.join(" "),
+        }),
+        [command, key, modifiers @ ..] if command == "key" => Ok(Sandbox::Key {
+            key: key.clone(),
+            modifiers: modifiers.to_vec(),
+        }),
+        [command, x, y] if command == "scroll" => Ok(Sandbox::Scroll {
+            x: number(x, "x")?,
+            y: number(y, "y")?,
+            notches: 1,
+        }),
+        [command, x, y, notches] if command == "scroll" => scroll(x, y, notches),
+        [command, keys @ ..] if command == "hold" && !keys.is_empty() => Ok(Sandbox::Hold {
+            keys: keys.to_vec(),
+        }),
+        [command, keys @ ..] if command == "release" && !keys.is_empty() => Ok(Sandbox::Release {
+            keys: keys.to_vec(),
+        }),
         [command] if command == "log" => Ok(Sandbox::Log),
         [command] if command == "opened" => Ok(Sandbox::Opened),
         [command] if command == "down" => Ok(Sandbox::Down),
-        _ => Err(UsageError),
+        _ => Err(ParseError::Usage),
     }
+}
+
+fn scroll(x: &str, y: &str, notches: &str) -> Result<Sandbox, ParseError> {
+    let x = number(x, "x")?;
+    let y = number(y, "y")?;
+    let notches = number(notches, "notches")?;
+
+    if notches == 0 {
+        return Err(ParseError::NoNotches);
+    }
+
+    Ok(Sandbox::Scroll { x, y, notches })
+}
+
+fn number<T: FromStr>(value: &str, argument: &'static str) -> Result<T, ParseError> {
+    value.parse().map_err(|_| ParseError::NotANumber {
+        argument,
+        value: value.to_string(),
+    })
 }
 
 struct Options {
@@ -151,193 +260,4 @@ fn require_program_in(name: &str, path: &str) -> Result<(), MissingTool> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn strings(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| value.to_string()).collect()
-    }
-
-    #[test]
-    fn parse_reads_every_command() {
-        let cases = [
-            (
-                strings(&["up"]),
-                Sandbox::Up {
-                    arguments: Vec::new(),
-                    headed: false,
-                },
-            ),
-            (
-                strings(&["up", "--headed", "smoke-2", "--fast"]),
-                Sandbox::Up {
-                    arguments: strings(&["smoke-2", "--fast"]),
-                    headed: true,
-                },
-            ),
-            (
-                strings(&["restart"]),
-                Sandbox::Restart {
-                    arguments: None,
-                    headed: None,
-                },
-            ),
-            (
-                strings(&["restart", "--headed", "smoke-3"]),
-                Sandbox::Restart {
-                    arguments: Some(strings(&["smoke-3"])),
-                    headed: Some(true),
-                },
-            ),
-            (strings(&["shot"]), Sandbox::Shot { file: None }),
-            (
-                strings(&["shot", "/tmp/a.png"]),
-                Sandbox::Shot {
-                    file: Some(PathBuf::from("/tmp/a.png")),
-                },
-            ),
-            (strings(&["log"]), Sandbox::Log),
-            (strings(&["opened"]), Sandbox::Opened),
-            (strings(&["down"]), Sandbox::Down),
-        ];
-
-        for (arguments, expected) in cases {
-            assert_eq!(parse(&arguments), Ok(expected), "{arguments:?}");
-        }
-    }
-
-    #[test]
-    fn headed_after_the_first_app_argument_goes_to_the_app() {
-        assert_eq!(
-            parse(&strings(&["up", "smoke-2", "--headed"])),
-            Ok(Sandbox::Up {
-                arguments: strings(&["smoke-2", "--headed"]),
-                headed: false,
-            })
-        );
-        assert_eq!(
-            parse(&strings(&["restart", "smoke-2", "--headed"])),
-            Ok(Sandbox::Restart {
-                arguments: Some(strings(&["smoke-2", "--headed"])),
-                headed: None,
-            })
-        );
-    }
-
-    #[test]
-    fn end_of_options_passes_the_rest_to_the_app() {
-        assert_eq!(
-            parse(&strings(&["up", "--headed", "--", "--headed", "--"])),
-            Ok(Sandbox::Up {
-                arguments: strings(&["--headed", "--"]),
-                headed: true,
-            })
-        );
-    }
-
-    #[test]
-    fn restart_with_only_end_of_options_clears_the_arguments() {
-        assert_eq!(
-            parse(&strings(&["restart", "--"])),
-            Ok(Sandbox::Restart {
-                arguments: Some(Vec::new()),
-                headed: None,
-            })
-        );
-        assert_eq!(
-            parse(&strings(&["restart", "--headed"])),
-            Ok(Sandbox::Restart {
-                arguments: None,
-                headed: Some(true),
-            })
-        );
-    }
-
-    #[test]
-    fn parse_rejects_bad_shapes() {
-        for arguments in [
-            strings(&[]),
-            strings(&["shot", "a.png", "b.png"]),
-            strings(&["log", "extra"]),
-            strings(&["opened", "extra"]),
-            strings(&["down", "extra"]),
-            strings(&["click", "1", "2"]),
-            strings(&["nonsense"]),
-        ] {
-            assert_eq!(parse(&arguments), Err(UsageError), "{arguments:?}");
-        }
-    }
-
-    #[test]
-    fn find_program_uses_the_given_path() {
-        let directory = crate::test_support::temporary_directory();
-        let program = directory.path().join("fake-tool");
-        std::fs::write(&program, "#!/bin/sh\n").expect("write the fake tool");
-        std::fs::set_permissions(
-            &program,
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .expect("make the tool runnable");
-
-        let found = find_program("fake-tool", &directory.path().to_string_lossy());
-        assert_eq!(found, Some(program));
-        assert_eq!(find_program("fake-tool", "/nonexistent"), None);
-    }
-
-    #[test]
-    fn find_program_skips_a_file_that_is_not_executable() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let plain = crate::test_support::temporary_directory();
-        let runnable = crate::test_support::temporary_directory();
-        let skipped = plain.path().join("fake-tool");
-        let program = runnable.path().join("fake-tool");
-        for path in [&skipped, &program] {
-            std::fs::write(path, "#!/bin/sh\n").expect("write the fake tool");
-        }
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
-            .expect("make the tool runnable");
-        let plain_path = plain.path().to_string_lossy().into_owned();
-        let both = format!("{plain_path}:{}", runnable.path().display());
-
-        // 0o641 lets only others run a file that the current user owns. Root may run any file with
-        // an execute bit, so that case applies only to other users.
-        let modes: &[u32] = if rustix::process::geteuid().is_root() {
-            &[0o644]
-        } else {
-            &[0o644, 0o641]
-        };
-
-        for &mode in modes {
-            std::fs::set_permissions(&skipped, std::fs::Permissions::from_mode(mode))
-                .expect("set the tool mode");
-
-            assert_eq!(find_program("fake-tool", &plain_path), None, "{mode:o}");
-            assert_eq!(
-                find_program("fake-tool", &both),
-                Some(program.clone()),
-                "{mode:o}"
-            );
-        }
-    }
-
-    #[test]
-    fn require_program_reports_a_missing_tool() {
-        let error = require_program_in("no-such-tool", "/nonexistent").expect_err("missing tool");
-
-        assert!(matches!(error, MissingTool { ref name } if name == "no-such-tool"));
-        assert_eq!(
-            error.to_string(),
-            "The tool \"no-such-tool\" is missing. Install no-such-tool and try again."
-        );
-    }
-
-    #[test]
-    fn tool_error_names_the_tool_and_package() {
-        assert!(tool_error("xdotool").contains("xdotool"));
-        assert!(tool_error("Xwayland").contains("xorg-xwayland"));
-        assert!(tool_error("import").contains("imagemagick"));
-        assert!(tool_error("cat").contains("coreutils"));
-        assert!(tool_error("weston").contains("the weston package"));
-    }
-}
+mod tests;

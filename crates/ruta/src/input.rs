@@ -9,6 +9,8 @@ use thiserror::Error;
 use crate::environment::{caller_environment, sandbox_environment};
 use crate::process::{self, poll_until};
 
+pub(crate) mod send;
+
 const WINDOW_TIMEOUT: Duration = Duration::from_secs(10);
 const INPUT_SETTLE: Duration = Duration::from_millis(150);
 const FOCUS_X: i32 = 5;

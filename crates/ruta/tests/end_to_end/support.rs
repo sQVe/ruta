@@ -78,6 +78,10 @@ pub(crate) struct Sandbox {
 }
 
 impl Sandbox {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
     pub(crate) fn root(&self) -> PathBuf {
         PathBuf::from(format!("/var/tmp/ruta-{}", self.name))
     }
