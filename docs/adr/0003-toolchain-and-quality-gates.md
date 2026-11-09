@@ -81,6 +81,9 @@ PID namespace.
   shared `/tmp` parallel tests take over each other's displays and could remove the host's locks.
   The mount stays in the test's own mount namespace. When it fails, the test fails, and the test
   binary refuses to run from a path under `/tmp`, so mutation testing copies the tree elsewhere.
+- The namespace also has its own network namespace. X clients connect first to an abstract socket,
+  which belongs to the network namespace, so a private `/tmp` alone still lets parallel tests reach
+  each other's X servers.
 - The re-run lives in the test binary, so every route to the tests gets it: `cargo test`, nextest,
   `cargo xtask check`, cargo-mutants, and CI. `cargo run` and an installed `ruta` do not change.
 - CI must allow the namespace. The test jobs on the Ubuntu runner lift Ubuntu's AppArmor limit on

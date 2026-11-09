@@ -8,7 +8,9 @@
 // `/proc/self` names PID 1 only when `/proc` belongs to that namespace.
 //
 // Inside, `/tmp` is a private tmpfs before the body runs. X lock files and sockets, which X servers
-// judge by a PID that another namespace cannot see, then never cross tests or reach the host.
+// judge by a PID that another namespace cannot see, then never cross tests or reach the host. The
+// network namespace is new too, because X clients connect first to an abstract socket, which
+// belongs to the network namespace and not to `/tmp`.
 //
 // This file is shared by the unit tests and the end-to-end harness, so it uses no crate paths.
 
@@ -68,6 +70,7 @@ pub(crate) fn rerun_outside_test_namespace_with(variables: &[(&str, &str)]) -> b
             "--map-current-user",
             "--keep-caps",
             "--pid",
+            "--net",
             "--fork",
             "--mount-proc",
             "--kill-child",
