@@ -1,0 +1,16 @@
+[package]
+name = "ruta-test-app"
+version = "0.0.0"
+description = "A small X11 app that ruta's end-to-end tests open in a sandbox."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+x11rb = "0.14"
+
+[lints]
+workspace = true

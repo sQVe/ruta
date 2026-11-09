@@ -90,6 +90,7 @@ enum PathError {
     Outside { path: String },
 }
 
+const MUTANTS_TEMPORARY_FOLDER: &str = "/var/tmp";
 const OUTPUT_DIRECTORY: &str = "target/mutants";
 const MAX_JOBS: usize = 4;
 
@@ -297,6 +298,9 @@ fn run_mutants(cargo: &str, root: &Path, output: &Path, scope: &Scope) -> anyhow
         .arg(output)
         .args(scope.arguments())
         .current_dir(root)
+        // cargo-mutants copies the tree into the temporary folder. ruta's signal tests hide `/tmp`
+        // behind a private mount and refuse to run from a binary there.
+        .env("TMPDIR", MUTANTS_TEMPORARY_FOLDER)
         .stdout(std::io::stderr())
         .status()
         .context("Could not start cargo mutants")?;
