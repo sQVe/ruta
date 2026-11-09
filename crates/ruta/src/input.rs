@@ -9,6 +9,8 @@ use thiserror::Error;
 use crate::environment::{caller_environment, sandbox_environment};
 use crate::process::{self, poll_until};
 
+pub(crate) mod send;
+
 const WINDOW_TIMEOUT: Duration = Duration::from_secs(10);
 const INPUT_SETTLE: Duration = Duration::from_millis(150);
 const FOCUS_X: i32 = 5;
@@ -153,13 +155,21 @@ fn xdotool_output(
     environment: &[(String, String)],
     arguments: &[&str],
 ) -> anyhow::Result<std::process::Output> {
+    xdotool_output_within(environment, arguments, process::TOOL_TIMEOUT)
+}
+
+fn xdotool_output_within(
+    environment: &[(String, String)],
+    arguments: &[&str],
+    timeout: Duration,
+) -> anyhow::Result<std::process::Output> {
     let mut command = Command::new("xdotool");
     command
         .args(arguments)
         .env_clear()
         .envs(environment.iter().cloned());
 
-    process::run_with_timeout(command, process::TOOL_TIMEOUT)
+    process::run_with_timeout(command, timeout)
 }
 
 fn title_pattern(title: &str) -> String {
@@ -206,9 +216,19 @@ fn move_pointer(root: &Path, display: &str, window: &str, x: i32, y: i32) -> any
 
 #[mutants::skip]
 fn xdotool(root: &Path, display: &str, arguments: &[String]) -> anyhow::Result<()> {
+    xdotool_within(root, display, arguments, process::TOOL_TIMEOUT)
+}
+
+#[mutants::skip]
+fn xdotool_within(
+    root: &Path,
+    display: &str,
+    arguments: &[String],
+    timeout: Duration,
+) -> anyhow::Result<()> {
     let environment = sandbox_environment(&caller_environment(), root, display);
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
-    let output = xdotool_output(&environment, &arguments)?;
+    let output = xdotool_output_within(&environment, &arguments, timeout)?;
 
     if !output.status.success() {
         anyhow::bail!(

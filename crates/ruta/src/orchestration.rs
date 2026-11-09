@@ -14,7 +14,7 @@ use crate::display_start::{
 };
 use crate::environment::{caller_environment, sandbox_environment};
 use crate::identity::{STOP_TIMEOUT, record_xwayland, stop_recorded, stop_window};
-use crate::input::{focus_window, window_id};
+use crate::input::{focus_window, send, window_id};
 use crate::log_tail::last_lines;
 use crate::root::{
     install_openers, prepare_root, refuse_linked_paths, refuse_unsafe_root, remove_root,
@@ -45,6 +45,30 @@ fn execute(config: &Config, command: Sandbox) -> anyhow::Result<()> {
         Sandbox::Up { arguments, headed } => up(config, &root, &arguments, headed),
         Sandbox::Restart { arguments, headed } => restart(config, &root, arguments, headed),
         Sandbox::Shot { file } => shot(name, &root, file),
+        Sandbox::Move { from, to } => with_window(name, &root, |display, window| {
+            send::glide(&root, display, window, from, to)
+        }),
+        Sandbox::Click { x, y, button } => with_window(name, &root, |display, window| {
+            send::click(&root, display, window, (x, y), button)
+        }),
+        Sandbox::Drag { from, to } => with_window(name, &root, |display, window| {
+            send::drag(&root, display, window, from, to)
+        }),
+        Sandbox::Type { text } => with_window(name, &root, |display, window| {
+            send::type_text(&root, display, window, &text)
+        }),
+        Sandbox::Key { key, modifiers } => with_window(name, &root, |display, window| {
+            send::key(&root, display, window, &key, &modifiers)
+        }),
+        Sandbox::Scroll { x, y, notches } => with_window(name, &root, |display, window| {
+            send::scroll(&root, display, window, (x, y), notches)
+        }),
+        Sandbox::Hold { keys } => {
+            with_window(name, &root, |display, _| send::hold(&root, display, &keys))
+        }
+        Sandbox::Release { keys } => with_window(name, &root, |display, _| {
+            send::release(&root, display, &keys)
+        }),
         Sandbox::Log => log(&root),
         Sandbox::Opened => opened(&root),
         Sandbox::Down => down(name, &root),
@@ -201,6 +225,18 @@ const LOG_TAIL_LINES: usize = 20;
 struct FailedStart {
     error: anyhow::Error,
     log_tail: Vec<String>,
+}
+
+fn with_window<F>(name: &str, root: &Path, action: F) -> anyhow::Result<()>
+where
+    F: FnOnce(&str, &str) -> anyhow::Result<()>,
+{
+    require_program("xdotool")?;
+
+    let display = require_up(name, root)?;
+    let window = window_id(root)?;
+
+    action(&display, &window)
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

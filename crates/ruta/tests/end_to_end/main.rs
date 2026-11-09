@@ -1,5 +1,6 @@
 mod display;
 mod escape;
+mod input;
 mod lifecycle;
 #[path = "../../src/test_support/namespace.rs"]
 mod namespace;

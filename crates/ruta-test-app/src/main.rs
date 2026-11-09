@@ -4,7 +4,8 @@ use anyhow::Context as _;
 use x11rb::connection::Connection as _;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, PropMode, WindowClass,
+    AtomEnum, ButtonPressEvent, ConnectionExt as _, CreateWindowAux, EventMask, KeyPressEvent,
+    MotionNotifyEvent, PropMode, WindowClass,
 };
 use x11rb::wrapper::ConnectionExt as _;
 
@@ -33,7 +34,15 @@ fn main() -> anyhow::Result<()> {
     let id = connection.generate_id()?;
     let attributes = CreateWindowAux::new()
         .background_pixel(screen.white_pixel)
-        .event_mask(EventMask::EXPOSURE | EventMask::STRUCTURE_NOTIFY);
+        .event_mask(
+            EventMask::EXPOSURE
+                | EventMask::STRUCTURE_NOTIFY
+                | EventMask::POINTER_MOTION
+                | EventMask::BUTTON_PRESS
+                | EventMask::BUTTON_RELEASE
+                | EventMask::KEY_PRESS
+                | EventMask::KEY_RELEASE,
+        );
 
     connection.create_window(
         screen.root_depth,
@@ -69,8 +78,68 @@ fn main() -> anyhow::Result<()> {
     print_ready(&window)?;
 
     loop {
-        connection.wait_for_event()?;
+        let event = connection.wait_for_event()?;
+
+        if let Some(line) = describe_input(&connection, &event)? {
+            let mut stdout = std::io::stdout().lock();
+
+            writeln!(stdout, "ruta-test-app: {line}")?;
+            stdout.flush()?;
+        }
     }
+}
+
+// One log line per input event, in window coordinates. The state is the X modifier and button mask
+// before the event.
+fn describe_input(
+    connection: &impl x11rb::connection::Connection,
+    event: &Event,
+) -> anyhow::Result<Option<String>> {
+    let line = match event {
+        Event::MotionNotify(motion) => describe_motion(motion),
+        Event::ButtonPress(button) => describe_button("button-press", button),
+        Event::ButtonRelease(button) => describe_button("button-release", button),
+        Event::KeyPress(key) => describe_key(connection, "key-press", key)?,
+        Event::KeyRelease(key) => describe_key(connection, "key-release", key)?,
+        _ => return Ok(None),
+    };
+
+    Ok(Some(line))
+}
+
+fn describe_motion(motion: &MotionNotifyEvent) -> String {
+    format!(
+        "motion x={} y={} state={:#x}",
+        motion.event_x,
+        motion.event_y,
+        u16::from(motion.state)
+    )
+}
+
+fn describe_button(kind: &str, button: &ButtonPressEvent) -> String {
+    format!(
+        "{kind} x={} y={} button={} state={:#x}",
+        button.event_x,
+        button.event_y,
+        button.detail,
+        u16::from(button.state)
+    )
+}
+
+// The keymap is read at each key, since another client, such as xdotool, may change it at any time.
+fn describe_key(
+    connection: &impl x11rb::connection::Connection,
+    kind: &str,
+    key: &KeyPressEvent,
+) -> anyhow::Result<String> {
+    let mapping = connection.get_keyboard_mapping(key.detail, 1)?.reply()?;
+    let keysym = mapping.keysyms.first().copied().unwrap_or(0);
+
+    Ok(format!(
+        "{kind} keycode={} keysym={keysym:#x} state={:#x}",
+        key.detail,
+        u16::from(key.state)
+    ))
 }
 
 fn parse_arguments(arguments: Vec<String>) -> anyhow::Result<Window> {
