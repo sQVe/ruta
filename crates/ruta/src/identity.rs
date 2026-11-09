@@ -30,6 +30,11 @@ pub(crate) enum IdentityError {
     DidNotNameItself { pid: u32, expected: String },
     #[error("The app process {pid} does not hold this sandbox's {ROOT_MARKER}.")]
     Unmarked { pid: u32 },
+    #[error(
+        "Xwayland for {display} did not start within {} seconds.",
+        timeout.as_secs()
+    )]
+    XwaylandNotRecorded { display: String, timeout: Duration },
 }
 
 pub(crate) fn record_xwayland(root: &Path, display: &str, timeout: Duration) -> anyhow::Result<()> {
@@ -37,7 +42,7 @@ pub(crate) fn record_xwayland(root: &Path, display: &str, timeout: Duration) -> 
         return Ok(());
     };
 
-    poll_until(timeout, || {
+    let recorded = poll_until(timeout, || {
         for pid in child_pids(weston) {
             let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) else {
                 continue;
@@ -53,7 +58,13 @@ pub(crate) fn record_xwayland(root: &Path, display: &str, timeout: Duration) -> 
         Ok(None)
     })?;
 
-    Ok(())
+    recorded.ok_or_else(|| {
+        IdentityError::XwaylandNotRecorded {
+            display: display.to_string(),
+            timeout,
+        }
+        .into()
+    })
 }
 
 fn child_pids(parent: u32) -> Vec<u32> {

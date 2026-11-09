@@ -129,6 +129,7 @@ pub(crate) fn linked_paths(root: &Path) -> Vec<PathBuf> {
         "window",
         "arguments",
         "mode",
+        "size",
         "opened",
         "app.log",
         "weston.log",

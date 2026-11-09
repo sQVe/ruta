@@ -180,20 +180,32 @@ impl Drop for Sandbox {
 }
 
 pub(crate) fn config_text(title_to_find: &str, ready: &str) -> String {
-    let app = test_app().to_str().expect("the test app path is UTF-8");
-    let (width, height) = WINDOW_SIZE;
+    config_text_at_size(title_to_find, ready, WINDOW_SIZE)
+}
 
-    config_for_app(
+pub(crate) fn config_text_at_size(title_to_find: &str, ready: &str, size: (u32, u32)) -> String {
+    let app = test_app().to_str().expect("the test app path is UTF-8");
+    let (width, height) = size;
+
+    config_for_app_at_size(
         &format!(r#"["{app}", "{TITLE}", "{width}", "{height}"]"#),
         title_to_find,
         ready,
+        size,
     )
 }
 
 // `command` is the TOML list that launches the app.
 pub(crate) fn config_for_app(command: &str, title_to_find: &str, ready: &str) -> String {
-    let (width, height) = WINDOW_SIZE;
+    config_for_app_at_size(command, title_to_find, ready, WINDOW_SIZE)
+}
 
+fn config_for_app_at_size(
+    command: &str,
+    title_to_find: &str,
+    ready: &str,
+    (width, height): (u32, u32),
+) -> String {
     format!(
         r#"name = "e2e"
 
@@ -205,9 +217,6 @@ height = {height}
 
 [ready]
 {ready}
-
-[environment]
-RUST_BACKTRACE = "1"
 "#
     )
 }

@@ -33,7 +33,18 @@ const ALLOWED_PREFIXES: &[&str] = &[
 pub(crate) const ROOT_MARKER: &str = "RUTA_ROOT";
 
 pub(crate) fn caller_environment() -> Vec<(String, String)> {
-    std::env::vars().collect()
+    utf8_entries(std::env::vars_os())
+}
+
+// Only allowlisted names reach a child, and none of them needs a value that is not UTF-8, so such
+// an entry is dropped instead of failing the command.
+fn utf8_entries(
+    variables: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(String, String)> {
+    variables
+        .into_iter()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect()
 }
 
 pub(crate) fn sandbox_environment(

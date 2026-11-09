@@ -206,7 +206,11 @@ fn a_failed_start_keeps_its_error_when_cleanup_fails() {
     crate::test_support::in_test_namespace!();
 
     let root = live_sandbox("failed-start");
+    let config = test_config("test");
+    let (width, height) = display_size((config.app.width, config.app.height));
+    // The live display matches the config, so the start reuses it and stops nothing.
     fs::write(root.path().join("mode"), "headless\n").expect("write the mode");
+    fs::write(root.path().join("size"), format!("{width}x{height}\n")).expect("write the size");
     prepare_root(root.path()).expect("the root is prepared");
     let target = crate::test_support::temporary_directory();
     let marker = target.path().join("marker");
@@ -215,7 +219,7 @@ fn a_failed_start_keeps_its_error_when_cleanup_fails() {
     std::os::unix::fs::symlink(&marker, &link).expect("link the opener");
     let mut visited = Vec::new();
 
-    let started = start_window_inner(&test_config("test"), root.path(), &[], &Session::Headless);
+    let started = start_window_inner(&config, root.path(), &[], &Session::Headless);
     let error = clean_up_failed_start(root.path(), started, |target| {
         visited.push(target);
         Err(WillNotStop.into())

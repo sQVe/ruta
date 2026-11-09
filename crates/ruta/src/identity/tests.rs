@@ -249,6 +249,17 @@ fn record_xwayland_records_a_matching_child() {
     assert_eq!(pid, child);
 }
 
+fn assert_xwayland_not_recorded(error: &anyhow::Error, display: &str) {
+    assert!(
+        matches!(
+            error.downcast_ref::<IdentityError>(),
+            Some(IdentityError::XwaylandNotRecorded { display: recorded, timeout })
+                if recorded == display && *timeout == Duration::from_millis(200)
+        ),
+        "unexpected error: {error:#}"
+    );
+}
+
 #[test]
 fn record_xwayland_ignores_a_different_display() {
     crate::test_support::in_test_namespace!();
@@ -258,8 +269,10 @@ fn record_xwayland_ignores_a_different_display() {
     let (weston, _child) = spawn_fake_weston("Xwayland :97");
     write_weston_record(root.path(), weston.id());
 
-    record_xwayland(root.path(), ":98", Duration::from_millis(200)).expect("record_xwayland");
+    let error = record_xwayland(root.path(), ":98", Duration::from_millis(200))
+        .expect_err("a different display is not Xwayland for :98");
 
+    assert_xwayland_not_recorded(&error, ":98");
     assert!(!path.exists(), "a different display is not recorded");
 }
 
@@ -272,8 +285,10 @@ fn record_xwayland_ignores_a_child_with_another_name() {
     let (weston, _child) = spawn_fake_weston("OtherProcess");
     write_weston_record(root.path(), weston.id());
 
-    record_xwayland(root.path(), ":97", Duration::from_millis(200)).expect("record_xwayland");
+    let error = record_xwayland(root.path(), ":97", Duration::from_millis(200))
+        .expect_err("a child with another name is not Xwayland");
 
+    assert_xwayland_not_recorded(&error, ":97");
     assert!(!path.exists(), "a child with another name is not recorded");
 }
 

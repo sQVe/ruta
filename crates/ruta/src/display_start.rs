@@ -22,11 +22,11 @@ pub(crate) fn ensure_display(
 ) -> anyhow::Result<String> {
     let mode = session.mode();
 
-    if let Some(display) = display_up(root) {
-        if recorded_mode(root).as_deref() == Some(mode) {
-            return Ok(display);
-        }
+    if let Some(display) = reusable_display(root, mode, (width, height)) {
+        return Ok(display);
+    }
 
+    if display_up(root).is_some() {
         stop_recorded(&root.join("weston.pid"))?;
         clean_display_files(root);
     }
@@ -36,6 +36,7 @@ pub(crate) fn ensure_display(
     let log = root.join("weston.log");
     cleanup::remove_file(&log);
     cleanup::remove_file(&root.join("display"));
+    cleanup::remove_file(&root.join("size"));
     cleanup::remove_file(&root.join("xwayland.pid"));
 
     let mut command = match session {
@@ -80,8 +81,24 @@ pub(crate) fn ensure_display(
         .with_context(|| "Could not write the display file")?;
     fs::write(root.join("mode"), format!("{mode}\n"))
         .with_context(|| "Could not write the sandbox mode")?;
+    fs::write(root.join("size"), size_record((width, height)))
+        .with_context(|| "Could not write the display size")?;
 
     Ok(display)
+}
+
+// A running display is reused only in the same mode and at the same output size, so a changed
+// `width` or `height` in `ruta.toml` gets a new display.
+fn reusable_display(root: &Path, mode: &str, size: (u32, u32)) -> Option<String> {
+    let display = display_up(root)?;
+    let same_mode = recorded_mode(root).as_deref() == Some(mode);
+    let same_size = fs::read_to_string(root.join("size")).ok()? == size_record(size);
+
+    (same_mode && same_size).then_some(display)
+}
+
+fn size_record((width, height): (u32, u32)) -> String {
+    format!("{width}x{height}\n")
 }
 
 pub(crate) fn display_up(root: &Path) -> Option<String> {
@@ -183,6 +200,33 @@ pub(crate) mod tests {
         record_live_display(root.path(), ":7\n");
 
         assert_eq!(display_up(root.path()), Some(":7".to_string()));
+    }
+
+    #[test]
+    fn reusable_display_needs_the_same_mode_and_size() {
+        let cases = [
+            ("same mode and size", "headless", "840x680\n", true),
+            ("another width", "headless", "640x680\n", false),
+            ("another height", "headless", "840x600\n", false),
+            ("another mode", "headed", "840x680\n", false),
+            ("no size record", "headless", "", false),
+        ];
+
+        for (case, mode, size, reused) in cases {
+            let root = crate::test_support::temporary_sandbox_root("display-reuse");
+            record_live_display(root.path(), ":7\n");
+            fs::write(root.path().join("mode"), format!("{mode}\n")).expect("write the mode");
+
+            if !size.is_empty() {
+                fs::write(root.path().join("size"), size).expect("write the size");
+            }
+
+            assert_eq!(
+                reusable_display(root.path(), "headless", (840, 680)),
+                reused.then(|| ":7".to_string()),
+                "{case}"
+            );
+        }
     }
 
     pub(crate) type StaleDisplayCase = (&'static str, fn(&Path));

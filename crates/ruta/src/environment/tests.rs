@@ -197,3 +197,30 @@ fn nested_weston_environment_gets_only_the_given_runtime_folder() {
         assert_eq!(value(&environment, key), expected, "{key}");
     }
 }
+
+#[test]
+fn utf8_entries_skips_an_entry_that_is_not_utf8() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let variables = vec![
+        (OsString::from("LANG"), OsString::from("C.UTF-8")),
+        (
+            OsString::from("LC_BAD_VALUE"),
+            OsString::from_vec(vec![0xff, 0xfe]),
+        ),
+        (
+            OsString::from_vec(b"LC_BAD_\xffNAME".to_vec()),
+            OsString::from("x"),
+        ),
+        (OsString::from("LC_ALL"), OsString::from("C")),
+    ];
+
+    assert_eq!(
+        utf8_entries(variables),
+        [
+            ("LANG".to_string(), "C.UTF-8".to_string()),
+            ("LC_ALL".to_string(), "C".to_string()),
+        ]
+    );
+}
