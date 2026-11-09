@@ -1,5 +1,4 @@
 use std::fs;
-use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -18,8 +17,8 @@ use crate::identity::{STOP_TIMEOUT, record_xwayland, stop_recorded, stop_window}
 use crate::input::{focus_window, send, window_id};
 use crate::log_tail::last_lines;
 use crate::root::{
-    install_openers, prepare_root, record_root_creation, refuse_linked_paths, refuse_unsafe_root,
-    remove_root, require_trusted_root, root_path,
+    create_root, install_openers, prepare_root, record_root_creation, refuse_linked_paths,
+    refuse_unsafe_root, remove_root, require_trusted_root, root_path,
 };
 
 const DISPLAY_MARGIN: u32 = 200;
@@ -86,7 +85,7 @@ fn capture(config: &Config, root: &Path, out: &Path, arguments: &[String]) -> an
     let name = crate::config::valid_name("RUTA_NAME", &format!("{}-capture", config.name))?;
     refuse_capture_output_in_root(root, out)?;
 
-    match fs::DirBuilder::new().mode(0o700).create(root) {
+    match create_root(root) {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => anyhow::bail!(
             "The capture root already exists; run 'RUTA_NAME={name} ruta down' first."
         ),
