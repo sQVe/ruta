@@ -1,13 +1,14 @@
 use std::path::Path;
 use std::time::Duration;
 
-use super::{INPUT_SETTLE, move_pointer, xdotool};
+use super::{INPUT_SETTLE, move_pointer, xdotool, xdotool_within};
+use crate::process::TOOL_TIMEOUT;
 
 const CLICK_SETTLE: Duration = Duration::from_millis(200);
 const STEP_DELAY: Duration = Duration::from_millis(16);
 const DRAG_STEPS: u32 = 24;
-const TYPE_DELAY_MILLISECONDS: &str = "30";
-const NOTCH_DELAY_MILLISECONDS: &str = "50";
+const TYPE_DELAY: Duration = Duration::from_millis(30);
+const NOTCH_DELAY: Duration = Duration::from_millis(50);
 const WHEEL_UP: u8 = 4;
 const WHEEL_DOWN: u8 = 5;
 
@@ -95,8 +96,15 @@ pub(crate) fn scroll(
     (x, y): (i32, i32),
     notches: i32,
 ) -> anyhow::Result<()> {
+    let steps = usize::try_from(notches.unsigned_abs()).unwrap_or(usize::MAX);
+
     point_at(root, display, window, (x, y))?;
-    xdotool(root, display, &scroll_arguments(notches))
+    xdotool_within(
+        root,
+        display,
+        &scroll_arguments(notches),
+        paced_timeout(steps, NOTCH_DELAY),
+    )
 }
 
 #[mutants::skip]
@@ -107,16 +115,17 @@ pub(crate) fn type_text(
     text: &str,
 ) -> anyhow::Result<()> {
     warm_up(root, display, window)?;
-    xdotool(
+    xdotool_within(
         root,
         display,
         &[
             "type".to_string(),
             "--delay".to_string(),
-            TYPE_DELAY_MILLISECONDS.to_string(),
+            TYPE_DELAY.as_millis().to_string(),
             "--".to_string(),
             text.to_string(),
         ],
+        paced_timeout(text.chars().count(), TYPE_DELAY),
     )
 }
 
@@ -163,6 +172,13 @@ fn interpolate(from: i32, to: i32, step: u32) -> i32 {
     i32::try_from(i64::from(from) + moved).expect("a point between two i32 values fits in i32")
 }
 
+// A fixed timeout would kill xdotool partway through long paced input, after it sent only a prefix.
+fn paced_timeout(steps: usize, delay: Duration) -> Duration {
+    let steps = u32::try_from(steps).unwrap_or(u32::MAX);
+
+    TOOL_TIMEOUT.saturating_add(delay.saturating_mul(steps))
+}
+
 fn scroll_arguments(notches: i32) -> Vec<String> {
     let button = if notches > 0 { WHEEL_DOWN } else { WHEEL_UP };
 
@@ -171,7 +187,7 @@ fn scroll_arguments(notches: i32) -> Vec<String> {
         "--repeat".to_string(),
         notches.unsigned_abs().to_string(),
         "--delay".to_string(),
-        NOTCH_DELAY_MILLISECONDS.to_string(),
+        NOTCH_DELAY.as_millis().to_string(),
         button.to_string(),
     ]
 }
@@ -225,6 +241,19 @@ mod tests {
 
         for (notches, expected) in cases {
             assert_eq!(scroll_arguments(notches), expected, "{notches}");
+        }
+    }
+
+    #[test]
+    fn paced_timeout_adds_the_delay_of_every_step_to_the_tool_timeout() {
+        let cases = [
+            (0, TOOL_TIMEOUT),
+            (1_000, TOOL_TIMEOUT + Duration::from_secs(30)),
+            (usize::MAX, TOOL_TIMEOUT + TYPE_DELAY * u32::MAX),
+        ];
+
+        for (steps, expected) in cases {
+            assert_eq!(paced_timeout(steps, TYPE_DELAY), expected, "{steps}");
         }
     }
 
