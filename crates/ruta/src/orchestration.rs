@@ -144,6 +144,12 @@ fn capture_inner(
     require_program("import")?;
     require_program("magick")?;
     prepare_capture_folder(out)?;
+
+    let resolved_root = fs::canonicalize(root).context("Could not resolve the capture root")?;
+    let resolved_out =
+        fs::canonicalize(out).context("Could not resolve the capture output folder")?;
+    refuse_capture_output_in_root(&resolved_root, &resolved_out)?;
+
     start_window(config, root, arguments, &Session::Headless)?;
 
     capture_window(&config.name, root, out)

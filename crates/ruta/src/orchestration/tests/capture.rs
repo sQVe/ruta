@@ -1,6 +1,59 @@
 use super::*;
 
 #[test]
+fn capture_refuses_symlinked_output_in_its_root_without_starting_processes() {
+    crate::test_support::in_test_namespace!();
+
+    for suffix in ["", "output"] {
+        let root = crate::test_support::temporary_sandbox_root("capture-linked-output");
+        let folder = crate::test_support::temporary_directory();
+        let link = folder.path().join("out");
+        let resolved_root = fs::canonicalize(root.path()).expect("resolve root");
+        fs::remove_dir(root.path()).expect("capture creates its own root");
+        std::os::unix::fs::symlink(root.path(), &link).expect("link output into capture root");
+        let out = link.join(suffix);
+        let expected_out = if suffix.is_empty() {
+            resolved_root.clone()
+        } else {
+            resolved_root.join(suffix)
+        };
+        let last_pid =
+            fs::read_to_string("/proc/sys/kernel/ns_last_pid").expect("last namespace PID");
+
+        let error = capture(&test_config("test"), root.path(), &out, &[])
+            .expect_err("resolved output would be removed during teardown");
+
+        assert_eq!(
+            error.downcast_ref::<CaptureOutputInsideRoot>(),
+            Some(&CaptureOutputInsideRoot {
+                out: expected_out.clone(),
+                root: resolved_root.clone(),
+            })
+        );
+        assert!(
+            error
+                .to_string()
+                .contains(&expected_out.display().to_string())
+        );
+        assert!(
+            error
+                .to_string()
+                .contains(&resolved_root.display().to_string())
+        );
+        assert_eq!(
+            fs::read_to_string("/proc/sys/kernel/ns_last_pid").expect("last namespace PID"),
+            last_pid,
+            "no app or display process was started"
+        );
+        assert!(!root.path().exists());
+        assert_eq!(
+            fs::read_link(&link).expect("output link stays"),
+            root.path()
+        );
+    }
+}
+
+#[test]
 fn capture_refuses_output_in_its_root_before_creating_it() {
     crate::test_support::in_test_namespace!();
 
