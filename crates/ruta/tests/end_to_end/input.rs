@@ -204,8 +204,6 @@ impl Event {
     }
 }
 
-// Runs one ruta command and returns the input events the app logged after it, once `count` of
-// them are of `kind`.
 fn events_after(sandbox: &Sandbox, arguments: &[&str], kind: &str, count: usize) -> Vec<Event> {
     let before = sandbox.succeed(&["log"]).len();
 

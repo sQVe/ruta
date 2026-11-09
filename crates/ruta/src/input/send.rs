@@ -163,7 +163,6 @@ fn interpolate(from: i32, to: i32, step: u32) -> i32 {
     i32::try_from(i64::from(from) + moved).expect("a point between two i32 values fits in i32")
 }
 
-// X11 reports the wheel as buttons 4 (up) and 5 (down), one press per notch.
 fn scroll_arguments(notches: i32) -> Vec<String> {
     let button = if notches > 0 { WHEEL_DOWN } else { WHEEL_UP };
 
