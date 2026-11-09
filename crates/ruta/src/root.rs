@@ -1,5 +1,5 @@
 use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
@@ -161,13 +161,18 @@ pub(crate) fn require_trusted_root(root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+// Fails with `AlreadyExists` when the root is there, so a caller that needs a fresh root never
+// shares one. The mode is set again because the umask applies to the create.
+pub(crate) fn create_root(root: &Path) -> std::io::Result<()> {
+    fs::DirBuilder::new().mode(0o700).create(root)?;
+    fs::set_permissions(root, fs::Permissions::from_mode(0o700))
+}
+
 pub(crate) fn prepare_root(root: &Path) -> anyhow::Result<()> {
     refuse_unsafe_root(root)?;
 
     if !root.exists() {
-        fs::create_dir(root).with_context(|| format!("Could not create {}", root.display()))?;
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("Could not secure {}", root.display()))?;
+        create_root(root).with_context(|| format!("Could not create {}", root.display()))?;
         record_root_creation(root)?;
     }
 

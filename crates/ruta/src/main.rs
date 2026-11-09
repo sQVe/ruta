@@ -1,4 +1,5 @@
 mod app_start;
+mod capture;
 mod cleanup;
 mod command;
 mod config;
