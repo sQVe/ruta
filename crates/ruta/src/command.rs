@@ -231,7 +231,7 @@ fn tool_error(name: &str) -> String {
         "xdotool" => "the xdotool package",
         "weston" => "the weston package",
         "Xwayland" => "the xorg-xwayland package",
-        "import" => "the imagemagick package",
+        "import" | "magick" => "the imagemagick package",
         "cat" => "the coreutils package",
         _ => name,
     };
@@ -249,7 +249,7 @@ pub(crate) fn require_program(name: &str) -> Result<(), MissingTool> {
     require_program_in(name, &std::env::var("PATH").unwrap_or_default())
 }
 
-fn require_program_in(name: &str, path: &str) -> Result<(), MissingTool> {
+pub(crate) fn require_program_in(name: &str, path: &str) -> Result<(), MissingTool> {
     if find_program(name, path).is_some() {
         return Ok(());
     }

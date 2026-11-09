@@ -1,4 +1,6 @@
 mod app_start;
+#[cfg_attr(not(test), expect(dead_code, reason = "ruta capture calls it next"))]
+mod capture;
 mod cleanup;
 mod command;
 mod config;

@@ -333,6 +333,7 @@ fn tool_error_names_the_tool_and_package() {
     assert!(tool_error("xdotool").contains("xdotool"));
     assert!(tool_error("Xwayland").contains("xorg-xwayland"));
     assert!(tool_error("import").contains("imagemagick"));
+    assert!(tool_error("magick").contains("the imagemagick package"));
     assert!(tool_error("cat").contains("coreutils"));
     assert!(tool_error("weston").contains("the weston package"));
 }
