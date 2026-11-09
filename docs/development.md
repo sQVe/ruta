@@ -47,8 +47,11 @@ Xwayland, xdotool, and ImageMagick, in the versions that [ADR 0005](adr/0005-lin
 names. Run them with:
 
 ```sh
+cargo build -p ruta-test-app
 cargo test -p ruta --test end_to_end -- --ignored
 ```
+
+The tests run without network, so build the test app first to download its dependencies.
 
 Fix problems with these commands:
 

@@ -234,12 +234,14 @@ pub(crate) fn test_app() -> &'static Path {
     APP.get_or_init(build_test_app)
 }
 
+// The test namespace has no network, so the test app's dependencies must already be downloaded.
 fn build_test_app() -> PathBuf {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(cargo)
         .args([
             "build",
             "--locked",
+            "--offline",
             "-p",
             "ruta-test-app",
             "--message-format=json-render-diagnostics",
@@ -250,7 +252,7 @@ fn build_test_app() -> PathBuf {
 
     assert!(
         output.status.success(),
-        "cargo build -p ruta-test-app failed: {}",
+        "cargo build --offline -p ruta-test-app failed; run `cargo build -p ruta-test-app` first: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
