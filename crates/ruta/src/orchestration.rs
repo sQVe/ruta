@@ -8,9 +8,9 @@ use thiserror::Error;
 use crate::app_start::start_app;
 use crate::command::Sandbox;
 use crate::config::Config;
-use crate::display;
+use crate::display::{Session, display_session};
 use crate::display_start::{
-    Session, clean_display_files, display_session, display_up, ensure_display, recorded_mode,
+    clean_recorded_display_files, display_up, ensure_display, recorded_headed,
 };
 use crate::environment::{caller_environment, sandbox_environment};
 use crate::identity::stop::{stop_recorded, stop_window};
@@ -187,7 +187,7 @@ fn capture_window(name: &str, root: &Path, out: &Path) -> anyhow::Result<()> {
         Err(error) => return Err(error).context("Could not read the saved ready line"),
     };
 
-    display::import_window(
+    crate::capture::import_window(
         &display,
         &window,
         &out.join(crate::root::record::SHOT),
@@ -266,7 +266,7 @@ fn restart_plan(
 ) -> anyhow::Result<(Vec<String>, bool)> {
     require_trusted_root(root)?;
 
-    let headed = force_headed || recorded_mode(root).as_deref() == Some("headed");
+    let headed = force_headed || recorded_headed(root);
     let arguments = match arguments {
         Some(arguments) => arguments,
         None => recorded_arguments(root)?,
@@ -412,7 +412,7 @@ fn shot(name: &str, root: &Path, file: Option<PathBuf>) -> anyhow::Result<()> {
     let path = file.unwrap_or_else(|| root.join(crate::root::record::SHOT));
     let environment = sandbox_environment(&caller_environment(), root, &display);
 
-    display::import_window(&display, &window, &path, &environment)?;
+    crate::capture::import_window(&display, &window, &path, &environment)?;
     println!("{}", path.display());
 
     Ok(())
@@ -494,7 +494,7 @@ where
     stop(StopTarget::Recorded {
         path: root.join(crate::root::record::WESTON_PID),
     })?;
-    clean_display_files(root);
+    clean_recorded_display_files(root);
 
     if root.exists() {
         remove_root(root)?;

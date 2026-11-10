@@ -8,6 +8,7 @@ use crate::process::poll_until;
 
 use tempfile::{Builder, TempDir};
 
+pub(crate) mod display;
 pub(crate) mod namespace;
 
 // The first statement of every test that sends a signal, or calls code that does. On the host it

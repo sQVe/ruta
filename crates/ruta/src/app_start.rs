@@ -49,13 +49,11 @@ pub(crate) fn start_app(
     let environment = app_environment(&caller_environment(), root, display, &config.environment);
     let program = &config.app.command.program;
 
-    let mut command = Command::new(program);
+    let mut command = crate::process::sandboxed_command(program, &environment);
     command
         .args(&config.app.command.arguments)
         .args(arguments)
         .current_dir(&config.folder)
-        .env_clear()
-        .envs(environment.iter().cloned())
         .stdin(Stdio::null())
         .stderr(clone_log(&log, &log_path)?)
         .process_group(0);
@@ -196,9 +194,7 @@ fn copy_rest(
     let errors = log.try_clone().context("Could not open the app log")?;
     let group = i32::try_from(group).context("The app's process group is out of range")?;
 
-    Command::new(crate::tool::Tool::Cat.name())
-        .env_clear()
-        .envs(environment.iter().cloned())
+    crate::process::sandboxed_command(crate::tool::Tool::Cat.name(), environment)
         .stdin(Stdio::from(reader.into_inner()))
         .stdout(log)
         .stderr(errors)
@@ -210,12 +206,8 @@ fn copy_rest(
 }
 
 fn probe_command(probe: &CommandLine, environment: &[(String, String)], folder: &Path) -> Command {
-    let mut command = Command::new(&probe.program);
-    command
-        .args(&probe.arguments)
-        .current_dir(folder)
-        .env_clear()
-        .envs(environment.iter().cloned());
+    let mut command = crate::process::sandboxed_command(&probe.program, environment);
+    command.args(&probe.arguments).current_dir(folder);
 
     command
 }

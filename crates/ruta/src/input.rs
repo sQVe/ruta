@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -7,14 +8,15 @@ use anyhow::Context as _;
 use thiserror::Error;
 
 use crate::environment::{caller_environment, sandbox_environment};
-use crate::process::{self, poll_until};
+use crate::process::{self, poll_until, sandboxed_command};
+use crate::tool::Tool;
 
 pub(crate) mod send;
 
 const WINDOW_TIMEOUT: Duration = Duration::from_secs(10);
 const INPUT_SETTLE: Duration = Duration::from_millis(150);
-const FOCUS_X: i32 = 5;
-const FOCUS_Y: i32 = 5;
+const FOCUS_X: &str = "5";
+const FOCUS_Y: &str = "5";
 
 #[derive(Debug, Error, PartialEq, Eq)]
 enum WindowError {
@@ -44,7 +46,7 @@ pub(crate) fn window_id(root: &Path) -> anyhow::Result<String> {
         .with_context(|| "Could not read the window id")?;
     let window = window.trim().to_string();
 
-    if window.is_empty() || !window.chars().all(|character| character.is_ascii_digit()) {
+    if !crate::display::is_decimal(&window) {
         return Err(WindowError::NotNumeric { window }.into());
     }
 
@@ -58,7 +60,8 @@ pub(crate) fn focus_window(
     title: &str,
     size: (u32, u32),
 ) -> anyhow::Result<()> {
-    let window = find_window(root, display, title, size)?;
+    let environment = sandbox_environment(&caller_environment(), root, display);
+    let window = find_window(&environment, title, size)?;
 
     fs::write(
         root.join(crate::root::record::WINDOW),
@@ -66,25 +69,26 @@ pub(crate) fn focus_window(
     )
     .with_context(|| "Could not write the window id")?;
 
-    move_pointer(root, display, &window, FOCUS_X, FOCUS_Y)?;
+    xdotool(
+        &environment,
+        &["mousemove", "--window", &window, FOCUS_X, FOCUS_Y],
+        process::TOOL_TIMEOUT,
+    )?;
     std::thread::sleep(INPUT_SETTLE);
-    xdotool(root, display, &["click".to_string(), "1".to_string()])
+    xdotool(&environment, &["click", "1"], process::TOOL_TIMEOUT)
 }
 
 #[mutants::skip]
 fn find_window(
-    root: &Path,
-    display: &str,
+    environment: &[(String, String)],
     title: &str,
     (width, height): (u32, u32),
 ) -> anyhow::Result<String> {
-    let environment = sandbox_environment(&caller_environment(), root, display);
-
     let window = poll_until(WINDOW_TIMEOUT, || {
         let mut matching = Vec::new();
 
-        for id in search_windows(&environment, title)? {
-            if window_size(&environment, &id)? == Some((width, height)) {
+        for id in search_windows(environment, title)? {
+            if window_size(environment, &id)? == Some((width, height)) {
                 matching.push(id);
             }
         }
@@ -122,10 +126,11 @@ fn pick_window(
 
 #[mutants::skip]
 fn search_windows(environment: &[(String, String)], title: &str) -> anyhow::Result<Vec<String>> {
-    let output = xdotool_output(
+    let command = xdotool_command(
         environment,
         &["search", "--onlyvisible", "--name", &title_pattern(title)],
-    )?;
+    );
+    let output = process::run_with_timeout(command, process::TOOL_TIMEOUT)?;
 
     // xdotool exits 1 when no window matches yet.
     if !output.status.success() {
@@ -145,7 +150,8 @@ fn window_size(
     environment: &[(String, String)],
     window: &str,
 ) -> anyhow::Result<Option<(u32, u32)>> {
-    let output = xdotool_output(environment, &["getwindowgeometry", "--shell", window])?;
+    let command = xdotool_command(environment, &["getwindowgeometry", "--shell", window]);
+    let output = process::run_with_timeout(command, process::TOOL_TIMEOUT)?;
 
     if !output.status.success() {
         return Ok(None);
@@ -154,25 +160,11 @@ fn window_size(
     Ok(parse_geometry(&String::from_utf8_lossy(&output.stdout)))
 }
 
-fn xdotool_output(
-    environment: &[(String, String)],
-    arguments: &[&str],
-) -> anyhow::Result<std::process::Output> {
-    xdotool_output_within(environment, arguments, process::TOOL_TIMEOUT)
-}
+fn xdotool_command(environment: &[(String, String)], arguments: &[impl Borrow<str>]) -> Command {
+    let mut command = sandboxed_command(Tool::Xdotool.name(), environment);
+    command.args(arguments.iter().map(Borrow::borrow));
 
-fn xdotool_output_within(
-    environment: &[(String, String)],
-    arguments: &[&str],
-    timeout: Duration,
-) -> anyhow::Result<std::process::Output> {
-    let mut command = Command::new(crate::tool::Tool::Xdotool.name());
     command
-        .args(arguments)
-        .env_clear()
-        .envs(environment.iter().cloned());
-
-    process::run_with_timeout(command, timeout)
 }
 
 fn title_pattern(title: &str) -> String {
@@ -203,50 +195,38 @@ fn parse_geometry(output: &str) -> Option<(u32, u32)> {
 }
 
 #[mutants::skip]
-fn move_pointer(root: &Path, display: &str, window: &str, x: i32, y: i32) -> anyhow::Result<()> {
-    xdotool(
-        root,
-        display,
-        &[
-            "mousemove".to_string(),
-            "--window".to_string(),
-            window.to_string(),
-            x.to_string(),
-            y.to_string(),
-        ],
-    )
-}
-
-#[mutants::skip]
-fn xdotool(root: &Path, display: &str, arguments: &[String]) -> anyhow::Result<()> {
-    xdotool_within(root, display, arguments, process::TOOL_TIMEOUT)
-}
-
-#[mutants::skip]
-fn xdotool_within(
-    root: &Path,
-    display: &str,
-    arguments: &[String],
+fn xdotool(
+    environment: &[(String, String)],
+    arguments: &[impl Borrow<str>],
     timeout: Duration,
 ) -> anyhow::Result<()> {
-    let environment = sandbox_environment(&caller_environment(), root, display);
-    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
-    let output = xdotool_output_within(&environment, &arguments, timeout)?;
+    let command = xdotool_command(environment, arguments);
+    let label = format!("{} {}", Tool::Xdotool.name(), arguments.join(" "));
 
-    if !output.status.success() {
-        anyhow::bail!(
-            "xdotool {} failed: {}",
-            arguments.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-
-    Ok(())
+    process::run_tool(command, &label, timeout)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xdotool_command_preserves_borrowed_and_owned_arguments() {
+        let arguments = ["type", "--", "two words", ""];
+        let owned: Vec<String> = arguments
+            .iter()
+            .map(|argument| argument.to_string())
+            .collect();
+        let commands = [
+            xdotool_command(&[], &arguments),
+            xdotool_command(&[], &owned),
+        ];
+
+        for command in commands {
+            assert_eq!(command.get_program(), "xdotool");
+            assert_eq!(command.get_args().collect::<Vec<_>>(), arguments);
+        }
+    }
 
     #[test]
     fn window_id_reads_the_trimmed_record() {

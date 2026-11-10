@@ -1,12 +1,11 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::Context as _;
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::process::{TOOL_TIMEOUT, run_with_timeout};
+use crate::process::{TOOL_TIMEOUT, run_tool, run_with_timeout, sandboxed_command};
 use crate::tool::{Tool, require_program_in};
 
 const GEOMETRY_FIELDS: [&str; 3] = ["origin", "size", "scale"];
@@ -59,6 +58,21 @@ pub(crate) enum CaptureError {
     ShortPng,
     #[error("The shot is not a PNG.")]
     NotPng,
+}
+
+#[mutants::skip]
+pub(crate) fn import_window(
+    display: &str,
+    window: &str,
+    path: &Path,
+    environment: &[(String, String)],
+) -> anyhow::Result<()> {
+    let mut command = sandboxed_command(Tool::Import.name(), environment);
+    command
+        .args(["-display", display, "-window", window])
+        .arg(path);
+
+    run_tool(command, Tool::Import.name(), TOOL_TIMEOUT)
 }
 
 pub(crate) fn write_capture(
@@ -199,14 +213,12 @@ fn crop_image(
     require_program_in(Tool::Magick, path)?;
 
     let geometry = crop_geometry(crop);
-    let mut command = Command::new(Tool::Magick.name());
+    let mut command = sandboxed_command(Tool::Magick.name(), environment);
 
     command
         .arg(shot)
         .args(["-crop", &geometry, "+repage"])
-        .arg(crop_path)
-        .env_clear()
-        .envs(environment.iter().cloned());
+        .arg(crop_path);
 
     let output = run_with_timeout(command, TOOL_TIMEOUT)?;
 

@@ -5,11 +5,13 @@ use thiserror::Error;
 
 use super::*;
 use crate::config::{App, CommandLine, Ready};
-use crate::display_start::tests::{record_live_display, stale_display_cases};
 use crate::identity::tests::{
     record_child, spawn_ready_sleep, spawn_with_marker, spawn_without_marker,
 };
 use crate::root::{RootError, RootReason};
+use crate::test_support::display::{
+    record_display_settings, record_live_display, stale_display_cases,
+};
 
 mod capture;
 mod down;
@@ -252,8 +254,7 @@ fn a_failed_start_keeps_its_error_when_cleanup_fails() {
     let config = test_config("test");
     let (width, height) = display_size((config.app.width, config.app.height));
     // The live display matches the config, so the start reuses it and stops nothing.
-    fs::write(root.path().join("mode"), "headless\n").expect("write the mode");
-    fs::write(root.path().join("size"), format!("{width}x{height}\n")).expect("write the size");
+    record_display_settings(root.path(), "headless", (width, height));
     prepare_root(root.path()).expect("the root is prepared");
     let target = crate::test_support::temporary_directory();
     let marker = target.path().join("marker");

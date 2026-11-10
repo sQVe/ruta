@@ -6,28 +6,131 @@ use std::time::Duration;
 use thiserror::Error;
 
 use crate::cleanup;
-use crate::process::{TOOL_TIMEOUT, poll_until, run_with_timeout};
+use crate::environment::{nested_weston_environment, weston_environment};
+use crate::process::{poll_until, sandboxed_command};
 use crate::process_stat::ProcessStat;
+use crate::tool::Tool;
 
 pub(crate) const WESTON_TIMEOUT: Duration = Duration::from_secs(30);
+const DISPLAY_CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 
-#[derive(Debug, Error)]
-enum DisplayError {
-    #[error("weston did not print a display within {} seconds.", timeout.as_secs())]
-    DisplayTimeout {
-        timeout: Duration,
-        #[allow(
-            dead_code,
-            reason = "the timeout is the message contract; the log path is test-visible data"
-        )]
-        log: PathBuf,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Headless,
+    Headed,
+}
+
+impl Mode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Headless => "headless",
+            Self::Headed => "headed",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Session {
+    Headless,
+    Headed {
+        wayland_display: String,
+        runtime: PathBuf,
     },
 }
 
-const DISPLAY_CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
+impl Session {
+    pub(crate) fn mode(&self) -> Mode {
+        match self {
+            Self::Headless => Mode::Headless,
+            Self::Headed { .. } => Mode::Headed,
+        }
+    }
+
+    pub(crate) fn environment(
+        &self,
+        caller: &[(String, String)],
+        root: &Path,
+    ) -> Vec<(String, String)> {
+        match self {
+            Self::Headless => weston_environment(caller, root),
+            Self::Headed { runtime, .. } => nested_weston_environment(caller, root, runtime),
+        }
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub(crate) enum HeadedSessionError {
+    #[error(
+        "Headed mode needs WAYLAND_DISPLAY. Run it from the Wayland session, or leave out --headed."
+    )]
+    NoWaylandDisplay,
+    #[error("Headed mode needs an absolute XDG_RUNTIME_DIR to reach the Wayland socket.")]
+    NoAbsoluteRuntimeDir,
+}
+
+pub(crate) fn display_session(
+    headed: bool,
+    wayland: Option<&str>,
+    runtime: Option<&str>,
+) -> Result<Session, HeadedSessionError> {
+    if !headed {
+        return Ok(Session::Headless);
+    }
+
+    Ok(Session::Headed {
+        wayland_display: wayland_display(wayland)?,
+        runtime: caller_runtime_dir(runtime)?,
+    })
+}
+
+fn wayland_display(value: Option<&str>) -> Result<String, HeadedSessionError> {
+    match value {
+        Some(display) if !display.trim().is_empty() => Ok(display.to_string()),
+        _ => Err(HeadedSessionError::NoWaylandDisplay),
+    }
+}
+
+fn caller_runtime_dir(value: Option<&str>) -> Result<PathBuf, HeadedSessionError> {
+    match value {
+        Some(directory) if directory.starts_with('/') => Ok(PathBuf::from(directory)),
+        _ => Err(HeadedSessionError::NoAbsoluteRuntimeDir),
+    }
+}
+
+pub(crate) fn weston_command(
+    session: &Session,
+    socket: &str,
+    (width, height): (u32, u32),
+    log: &Path,
+    environment: &[(String, String)],
+) -> Command {
+    let mut command = sandboxed_command(Tool::Weston.name(), environment);
+
+    command
+        .arg("--xwayland")
+        .arg(format!("--socket={socket}"))
+        .arg(format!("--width={width}"))
+        .arg(format!("--height={height}"))
+        .arg(format!("--log={}", log.display()));
+
+    match session {
+        Session::Headless => command.arg("--backend=headless"),
+        Session::Headed {
+            wayland_display, ..
+        } => command
+            .arg("--backend=wayland")
+            .env("WAYLAND_DISPLAY", wayland_display),
+    };
+
+    command
+}
 
 pub(crate) fn clean_display_files(display: &str) {
     clean_display_files_in(Path::new("/tmp"), display, DISPLAY_CLEANUP_TIMEOUT);
+}
+
+pub(crate) fn is_decimal(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
 }
 
 fn clean_display_files_in(folder: &Path, display: &str, timeout: Duration) {
@@ -35,7 +138,7 @@ fn clean_display_files_in(folder: &Path, display: &str, timeout: Duration) {
         return;
     };
 
-    if number.is_empty() || !number.chars().all(|character| character.is_ascii_digit()) {
+    if !is_decimal(number) {
         return;
     }
 
@@ -68,56 +171,10 @@ fn lock_owner_is_alive(pid: u32) -> bool {
     ProcessStat::read_live(pid).is_some()
 }
 
-fn base_weston_command(
-    socket: &str,
-    width: u32,
-    height: u32,
-    log: &Path,
-    environment: &[(String, String)],
-) -> Command {
-    let mut command = Command::new(crate::tool::Tool::Weston.name());
-
-    command
-        .arg("--xwayland")
-        .arg(format!("--socket={socket}"))
-        .arg(format!("--width={width}"))
-        .arg(format!("--height={height}"))
-        .arg(format!("--log={}", log.display()))
-        .env_clear()
-        .envs(environment.iter().cloned());
-
-    command
-}
-
-pub(crate) fn weston_command(
-    socket: &str,
-    width: u32,
-    height: u32,
-    log: &Path,
-    environment: &[(String, String)],
-) -> Command {
-    let mut command = base_weston_command(socket, width, height, log, environment);
-
-    command.arg("--backend=headless");
-
-    command
-}
-
-pub(crate) fn nested_weston_command(
-    socket: &str,
-    width: u32,
-    height: u32,
-    log: &Path,
-    wayland_display: &str,
-    environment: &[(String, String)],
-) -> Command {
-    let mut command = base_weston_command(socket, width, height, log, environment);
-
-    command
-        .arg("--backend=wayland")
-        .env("WAYLAND_DISPLAY", wayland_display);
-
-    command
+#[derive(Debug, Error)]
+enum DisplayError {
+    #[error("weston did not print a display within {} seconds.", timeout.as_secs())]
+    DisplayTimeout { timeout: Duration },
 }
 
 pub(crate) fn display_from_log(log: &str) -> Option<String> {
@@ -145,40 +202,7 @@ pub(crate) fn wait_for_display(log_path: &Path, timeout: Duration) -> anyhow::Re
         Ok(None)
     })?;
 
-    display.ok_or_else(|| {
-        DisplayError::DisplayTimeout {
-            timeout,
-            log: log_path.to_path_buf(),
-        }
-        .into()
-    })
-}
-
-#[mutants::skip]
-pub(crate) fn import_window(
-    display: &str,
-    window: &str,
-    path: &Path,
-    environment: &[(String, String)],
-) -> anyhow::Result<()> {
-    let mut command = Command::new(crate::tool::Tool::Import.name());
-
-    command
-        .args(["-display", display, "-window", window])
-        .arg(path)
-        .env_clear()
-        .envs(environment.iter().cloned());
-
-    let output = run_with_timeout(command, TOOL_TIMEOUT)?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "import failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-
-    Ok(())
+    display.ok_or_else(|| DisplayError::DisplayTimeout { timeout }.into())
 }
 
 #[cfg(test)]

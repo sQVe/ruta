@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::io::Read;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Output, Stdio};
@@ -37,6 +38,29 @@ pub(crate) enum ProcessError {
     Timeout { program: String, duration: Duration },
     #[error("{program} was stopped before it finished.")]
     Stopped { program: String },
+}
+
+pub(crate) fn sandboxed_command(
+    program: impl AsRef<OsStr>,
+    environment: &[(String, String)],
+) -> Command {
+    let mut command = Command::new(program);
+    command.env_clear().envs(environment.iter().cloned());
+
+    command
+}
+
+pub(crate) fn run_tool(command: Command, label: &str, timeout: Duration) -> anyhow::Result<()> {
+    let output = run_with_timeout(command, timeout)?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "{label} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    Ok(())
 }
 
 pub(crate) fn run_with_timeout(command: Command, timeout: Duration) -> anyhow::Result<Output> {
@@ -159,6 +183,60 @@ fn read_all(reader: Option<impl Read>) -> std::io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandboxed_command_keeps_only_the_supplied_environment() {
+        crate::test_support::in_test_namespace!();
+
+        let environment = vec![("KEPT".to_string(), "value with spaces".to_string())];
+        let command = sandboxed_command("env", &environment);
+
+        let output = run_with_timeout(command, Duration::from_secs(2)).expect("env finishes");
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"KEPT=value with spaces\n");
+    }
+
+    #[test]
+    fn run_tool_keeps_the_failure_label_and_trims_stderr() {
+        crate::test_support::in_test_namespace!();
+
+        for label in ["import", "xdotool click 1"] {
+            let mut command = sandboxed_command("sh", &[]);
+            command.args(["-c", "printf '  refused \\n' >&2; exit 7"]);
+
+            let error = run_tool(command, label, Duration::from_secs(2))
+                .expect_err("the tool exits unsuccessfully");
+
+            assert_eq!(error.to_string(), format!("{label} failed: refused"));
+        }
+    }
+
+    #[test]
+    fn run_tool_accepts_a_successful_exit() {
+        crate::test_support::in_test_namespace!();
+
+        let mut command = sandboxed_command("sh", &[]);
+        command.args(["-c", "printf warning >&2; exit 0"]);
+
+        run_tool(command, "import", Duration::from_secs(2))
+            .expect("stderr does not turn success into failure");
+    }
+
+    #[test]
+    fn run_tool_keeps_the_timeout_error() {
+        crate::test_support::in_test_namespace!();
+
+        let mut command = sandboxed_command("sleep", &[]);
+        command.arg("30");
+
+        let error =
+            run_tool(command, "xdotool click 1", Duration::ZERO).expect_err("the tool times out");
+
+        assert!(
+            matches!(error.downcast_ref::<ProcessError>(), Some(ProcessError::Timeout { program, duration }) if program == "sleep" && *duration == Duration::ZERO)
+        );
+    }
 
     #[test]
     fn run_with_timeout_collects_output_larger_than_a_pipe() {
