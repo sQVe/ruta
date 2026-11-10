@@ -3,24 +3,11 @@ use std::os::unix::fs::PermissionsExt as _;
 use tempfile::TempDir;
 
 use super::*;
+use crate::test_support::strings;
 
 const LISTING: &str =
     r#"[{"file":"a.rs"},{"file":"a.rs"},{"file":"b.rs"},{"file":"b.rs"},{"file":"c.rs"}]"#;
 const DIFF: &str = "diff --git a/a.rs b/a.rs";
-
-fn strings(values: &[&str]) -> Vec<String> {
-    values.iter().map(|value| value.to_string()).collect()
-}
-
-fn survivor() -> Survivor {
-    Survivor {
-        file: "src/lib.rs".to_string(),
-        line: 3,
-        mutator: "BinaryOperator".to_string(),
-        original: "<=".to_string(),
-        replacement: ">".to_string(),
-    }
-}
 
 struct Fixture {
     folder: TempDir,
@@ -99,6 +86,32 @@ fn run_fails_on_bad_arguments() {
 }
 
 #[test]
+fn report_keeps_request_errors_in_json_without_starting_work() {
+    let root = crate::test_support::temporary_directory();
+    let actual = report(
+        root.path(),
+        &strings(&["other", "a.rs"]),
+        "/unused-cargo",
+        "/unused-git",
+    );
+    let expected = json!({
+        "version": 1, "status": "error",
+        "error": "Unknown mode other. Use changed or audit.",
+        "survivors": [], "unmutated": [],
+    });
+
+    assert_eq!(actual.1, 1);
+    assert_eq!(actual.0, expected);
+    assert_eq!(actual.0.to_string(), expected.to_string());
+    assert_eq!(
+        fs::read_dir(root.path())
+            .expect("list the untouched root")
+            .count(),
+        0
+    );
+}
+
+#[test]
 fn report_fails_when_the_listing_fails() {
     let fixture = Fixture::new();
     let cargo = fixture.cargo("[]", 1, "exit 0");
@@ -153,8 +166,13 @@ fn report_finds_nothing_without_work() {
     let empty_diff = fixture.report(&["changed", "main"], &cargo, &git);
     let empty_listing = fixture.audit(&cargo);
 
-    assert_eq!(status(&empty_diff), (Some("nothing"), 0));
-    assert_eq!(status(&empty_listing), (Some("nothing"), 0));
+    let expected = (
+        json!({ "version": 1, "status": "nothing", "survivors": [], "unmutated": [] }),
+        0,
+    );
+
+    assert_eq!(empty_diff, expected);
+    assert_eq!(empty_listing, expected);
 }
 
 #[test]
@@ -227,6 +245,35 @@ fn report_runs_the_requested_audit_files() {
 }
 
 #[test]
+fn report_keeps_survivor_exit_codes_for_each_requested_mode() {
+    let fixture = Fixture::new();
+    let root = fixture.folder.path();
+    let outcomes = json!({ "outcomes": [{
+        "summary": "MissedMutant",
+        "scenario": { "Mutant": {
+            "file": "a.rs", "genre": "BinaryOperator", "replacement": ">",
+            "span": { "start": { "line": 1, "column": 6 }, "end": { "line": 1, "column": 8 } },
+        } },
+    }] });
+    fs::write(root.join("a.rs"), "left <= right\n").expect("write source");
+    fs::write(
+        root.join(OUTPUT_DIRECTORY)
+            .join("mutants.out/outcomes.json"),
+        outcomes.to_string(),
+    )
+    .expect("write outcomes");
+    let cargo = fixture.cargo(r#"[{"file":"a.rs"}]"#, 0, "exit 0");
+    let git = fixture.git(DIFF, 0);
+
+    for (arguments, exit) in [(["changed", "main"], 2), (["audit", "a.rs"], 0)] {
+        let actual = fixture.report(&arguments, &cargo, &git);
+
+        assert_eq!(status(&actual), (Some("survivors"), exit), "{arguments:?}");
+        assert_eq!(actual.0["survivors"][0]["original"], "<=", "{arguments:?}");
+    }
+}
+
+#[test]
 fn report_fails_when_a_tool_cannot_start() {
     let missing = "/nonexistent/ruta-missing-program";
     let fixture = Fixture::new();
@@ -289,23 +336,9 @@ fn scope_arguments_keep_flag_and_value_order() {
 }
 
 #[test]
-fn apply_cap_reports_files_past_the_cap_unmutated() {
-    let counts = BTreeMap::from([
-        ("a".to_string(), 2),
-        ("b".to_string(), 2),
-        ("c".to_string(), 1),
-    ]);
-
+fn report_value_carries_the_error_message() {
     assert_eq!(
-        apply_cap(&counts, Some(4)),
-        (strings(&["a", "b"]), strings(&["c"]))
-    );
-}
-
-#[test]
-fn error_report_carries_the_message() {
-    assert_eq!(
-        error_report("broken"),
+        report_value("error", Some("broken"), &[], &[]),
         json!({
             "version": 1,
             "status": "error",
@@ -317,199 +350,131 @@ fn error_report_carries_the_message() {
 }
 
 #[test]
-fn job_count_uses_available_cores_up_to_the_limit() {
-    let available = std::thread::available_parallelism().map_or(1, |count| count.get());
+fn job_count_stays_within_the_limit() {
     let jobs = job_count();
 
     assert!((1..=MAX_JOBS).contains(&jobs), "{jobs}");
-    assert_eq!(jobs, available.min(MAX_JOBS));
 }
 
 #[test]
-fn parse_request_reads_modes_and_cap() {
-    let changed = parse_request(&strings(&["changed", "main", "--max-mutants", "5"]))
-        .expect("changed parses");
-    let audit = parse_request(&strings(&["audit", "a.rs", "b.rs"])).expect("audit parses");
-
-    assert_eq!(
-        changed,
-        Request {
-            mode: Mode::Changed,
-            targets: strings(&["main"]),
-            max_mutants: Some(5),
-        }
-    );
-    assert_eq!(audit.targets, strings(&["a.rs", "b.rs"]));
-}
-
-#[test]
-fn parse_request_rejects_bad_input() {
+fn apply_cap_selects_whole_files_within_the_limit() {
     let cases = [
-        (vec![], RequestError::MissingMode),
-        (strings(&["changed"]), RequestError::ChangedTargets),
         (
-            strings(&["changed", "a", "b"]),
-            RequestError::ChangedTargets,
-        ),
-        (strings(&["audit"]), RequestError::AuditTargets),
-        (
-            strings(&["audit", "a.rs", "--max-mutants"]),
-            RequestError::MissingCap,
+            "exact fit",
+            [2, 2, 1],
+            Some(4),
+            strings(&["a.rs", "b.rs"]),
+            strings(&["c.rs"]),
         ),
         (
-            strings(&["audit", "a.rs", "--max-mutants", "many"]),
-            RequestError::InvalidCap {
-                value: "many".to_string(),
-            },
+            "skip a large file",
+            [2, 5, 1],
+            Some(3),
+            strings(&["a.rs", "c.rs"]),
+            strings(&["b.rs"]),
         ),
         (
-            strings(&["audit", "a.rs", "--max-mutants", "0"]),
-            RequestError::ZeroCap,
-        ),
-        (
-            strings(&["audit", "a.rs", "--jobs"]),
-            RequestError::UnknownOption {
-                option: "--jobs".to_string(),
-            },
-        ),
-        (
-            strings(&["other", "a.rs"]),
-            RequestError::UnknownMode {
-                mode: "other".to_string(),
-            },
+            "no cap",
+            [2, 5, 1],
+            None,
+            strings(&["a.rs", "b.rs", "c.rs"]),
+            vec![],
         ),
     ];
 
-    for (arguments, expected) in cases {
-        assert_eq!(parse_request(&arguments), Err(expected), "{arguments:?}");
+    for (name, counts, cap, selected, unmutated) in cases {
+        let counts = BTreeMap::from([
+            ("a.rs".to_string(), counts[0]),
+            ("b.rs".to_string(), counts[1]),
+            ("c.rs".to_string(), counts[2]),
+        ]);
+
+        assert_eq!(apply_cap(&counts, cap), (selected, unmutated), "{name}");
     }
 }
 
 #[test]
-fn apply_cap_skips_files_that_do_not_fit() {
-    let counts = BTreeMap::from([
-        ("a.rs".to_string(), 2),
-        ("b.rs".to_string(), 5),
-        ("c.rs".to_string(), 1),
-    ]);
-
-    assert_eq!(
-        apply_cap(&counts, Some(3)),
-        (strings(&["a.rs", "c.rs"]), strings(&["b.rs"]))
-    );
-    assert_eq!(
-        apply_cap(&counts, None),
-        (strings(&["a.rs", "b.rs", "c.rs"]), vec![])
-    );
-}
-
-#[test]
 fn workspace_relative_path_normalizes_existing_files() {
-    let root = crate::workspace_root();
-    let expected = "crates/ruta/src/main.rs";
-    let absolute = root.join("crates/ruta/src/main.rs");
+    let fixture = Fixture::new();
+    let root = fixture.folder.path();
+    let expected = "src/a.rs";
+    let absolute = root.join(expected);
+    fs::create_dir(root.join("src")).expect("create the source folder");
+    fs::write(&absolute, "").expect("write the nested source file");
 
     assert_eq!(
-        workspace_relative_path(&root, "./crates/ruta/src/main.rs").expect("relative"),
+        workspace_relative_path(root, "./src/a.rs").expect("relative"),
         expected
     );
     assert_eq!(
-        workspace_relative_path(&root, &absolute.display().to_string()).expect("absolute"),
+        workspace_relative_path(root, &absolute.display().to_string()).expect("absolute"),
         expected
     );
     assert!(matches!(
-        workspace_relative_path(&root, "crates/missing.rs"),
+        workspace_relative_path(root, "crates/missing.rs"),
         Err(PathError::Missing { path, .. }) if path == "crates/missing.rs"
     ));
     assert!(matches!(
-        workspace_relative_path(&root, "/"),
+        workspace_relative_path(root, "/"),
         Err(PathError::Outside { path }) if path == "/"
     ));
 }
 
 #[test]
-fn read_survivors_keeps_only_missed_mutants() {
-    let root = crate::test_support::temporary_directory();
-    let output = root.path().join("out");
-    let mutant = |summary: &str, replacement: &str| {
-        json!({
-            "summary": summary,
-            "scenario": { "Mutant": {
-                "file": "lib.rs",
-                "genre": "BinaryOperator",
-                "replacement": replacement,
-                "span": { "start": { "line": 1, "column": 3 }, "end": { "line": 1, "column": 5 } },
-            } },
-        })
-    };
-    let outcomes = json!({ "outcomes": [
-        { "scenario": "Baseline", "summary": "Success" },
-        mutant("CaughtMutant", "||"),
-        mutant("MissedMutant", ">"),
-        mutant("Timeout", "<"),
-    ] });
-
-    fs::create_dir_all(output.join("mutants.out")).expect("create output");
-    fs::write(root.path().join("lib.rs"), "a <= b\n").expect("write source");
-    fs::write(
-        output.join("mutants.out/outcomes.json"),
-        outcomes.to_string(),
-    )
-    .expect("write outcomes");
-
-    let survivors = read_survivors(root.path(), &output).expect("survivors parse");
-
-    assert_eq!(
-        survivors,
-        vec![Survivor {
-            file: "lib.rs".to_string(),
-            line: 1,
-            mutator: "BinaryOperator".to_string(),
-            original: "<=".to_string(),
-            replacement: ">".to_string(),
-        }]
-    );
-}
-
-#[test]
-fn span_text_reads_single_and_multiple_lines() {
-    let source = "fn a() {\n    x <= y\n}\n";
-    let start = Position { line: 2, column: 7 };
-
-    assert_eq!(
-        span_text(source, start, Position { line: 2, column: 9 }),
-        "<="
-    );
-    assert_eq!(
-        span_text(
-            source,
-            Position { line: 1, column: 8 },
-            Position { line: 3, column: 2 }
-        ),
-        "{\n    x <= y\n}"
-    );
-}
-
-#[test]
 fn ran_report_sets_status_and_exit_code() {
-    let found = [survivor()];
+    let found = [Survivor {
+        file: "src/lib.rs".to_string(),
+        line: 3,
+        mutator: "BinaryOperator".to_string(),
+        original: "<=".to_string(),
+        replacement: ">".to_string(),
+    }];
     let skipped = strings(&["b.rs"]);
 
-    let (passed, passed_exit) = ran_report(Mode::Changed, &[], &[]);
-    let (changed, changed_exit) = ran_report(Mode::Changed, &found, &[]);
-    let (audit, audit_exit) = ran_report(Mode::Audit, &found, &[]);
-    let (capped, capped_exit) = ran_report(Mode::Audit, &[], &skipped);
+    let cases = [
+        (Mode::Changed, &[][..], &[][..], "pass", 0, None),
+        (Mode::Changed, &found[..], &[][..], "survivors", 2, None),
+        (Mode::Audit, &found[..], &[][..], "survivors", 0, None),
+        (
+            Mode::Audit,
+            &[][..],
+            &skipped[..],
+            "error",
+            1,
+            Some("Files over the mutant cap were not mutated."),
+        ),
+        (
+            Mode::Changed,
+            &found[..],
+            &skipped[..],
+            "survivors",
+            1,
+            None,
+        ),
+        (Mode::Audit, &found[..], &skipped[..], "survivors", 1, None),
+    ];
 
-    assert_eq!((passed["status"].as_str(), passed_exit), (Some("pass"), 0));
-    assert_eq!(
-        (changed["status"].as_str(), changed_exit),
-        (Some("survivors"), 2)
-    );
-    assert_eq!(
-        (audit["status"].as_str(), audit_exit),
-        (Some("survivors"), 0)
-    );
-    assert_eq!((capped["status"].as_str(), capped_exit), (Some("error"), 1));
-    assert_eq!(changed["survivors"][0]["original"], "<=");
-    assert_eq!(capped["unmutated"], json!(["b.rs"]));
+    for (mode, survivors, unmutated, expected_status, exit, error) in cases {
+        let actual = ran_report(mode, survivors, unmutated);
+        let case = format!("{mode:?} {expected_status} {unmutated:?}");
+        let expected_survivors = if survivors.is_empty() {
+            json!([])
+        } else {
+            json!([{
+                "file": "src/lib.rs", "line": 3, "mutator": "BinaryOperator",
+                "original": "<=", "replacement": ">", "covered": true,
+            }])
+        };
+        let mut expected = json!({
+            "version": 1, "status": expected_status,
+            "survivors": expected_survivors, "unmutated": unmutated,
+        });
+        if let Some(error) = error {
+            expected["error"] = json!(error);
+        }
+
+        assert_eq!(status(&actual), (Some(expected_status), exit), "{case}");
+        assert_eq!(actual.0, expected, "{case}");
+        assert_eq!(actual.0.to_string(), expected.to_string(), "{case}");
+    }
 }

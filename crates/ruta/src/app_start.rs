@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
@@ -11,10 +11,10 @@ use thiserror::Error;
 use crate::cleanup;
 use crate::config::{CommandLine, Config, Ready};
 use crate::environment::{app_environment, caller_environment};
-use crate::identity::{
-    STOP_TIMEOUT, process_is_zombie, process_start, record_marked_process, stop_window,
-};
+use crate::identity::stop::stop_window;
+use crate::identity::{RECORD_TIMEOUT, record_marked_process};
 use crate::process::{POLL, ProcessError, TOOL_TIMEOUT, poll_until, run_until};
+use crate::process_stat::ProcessStat;
 use crate::root::write_unlinked;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -40,8 +40,8 @@ pub(crate) fn start_app(
 ) -> anyhow::Result<()> {
     stop_window(root)?;
 
-    let log_path = root.join("app.log");
-    let ready_path = root.join("ready.json");
+    let log_path = root.join(crate::root::record::APP_LOG);
+    let ready_path = root.join(crate::root::record::READY);
     cleanup::remove_file(&log_path);
     cleanup::remove_file(&ready_path);
     let log = File::create(&log_path)
@@ -49,55 +49,80 @@ pub(crate) fn start_app(
     let environment = app_environment(&caller_environment(), root, display, &config.environment);
     let program = &config.app.command.program;
 
-    let mut command = Command::new(program);
+    let mut command = crate::process::sandboxed_command(program, &environment);
     command
         .args(&config.app.command.arguments)
         .args(arguments)
         .current_dir(&config.folder)
-        .env_clear()
-        .envs(environment.iter().cloned())
         .stdin(Stdio::null())
         .stderr(clone_log(&log, &log_path)?)
         .process_group(0);
 
     match &config.ready {
-        Ready::Line => command.stdout(Stdio::piped()),
-        Ready::Command(_) => command.stdout(clone_log(&log, &log_path)?),
-    };
+        Ready::Line => start_with_ready_line(command, root, log, &environment)?,
+        Ready::Command(probe) => {
+            command.stdout(clone_log(&log, &log_path)?);
+            let child = spawn_recorded(command, root)?;
+            let pid = child.id();
+            drop(child);
 
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("Could not start {}", program.display()))?;
-    let pid = child.id();
-
-    if let Err(error) = record_marked_process(&root.join("pid"), pid, root, STOP_TIMEOUT) {
-        cleanup::stop_child_group(&mut child);
-        return Err(error);
-    }
-
-    let stdout = child.stdout.take();
-    drop(child);
-
-    match &config.ready {
-        Ready::Line => {
-            let stdout = stdout.expect("JSON ready mode pipes the app's stdout");
-            let reader_log = clone_log(&log, &log_path)?;
-            let (line, rest) = read_ready_line(stdout, reader_log, &log_path, pid, READY_TIMEOUT)?;
-
-            copy_rest(rest, log, &environment, pid)?;
-            write_unlinked(&ready_path, &format!("{line}\n"))?;
+            wait_for_ready_command(
+                || probe_command(probe, &environment, &config.folder),
+                pid,
+                &log_path,
+                READY_TIMEOUT,
+            )?;
         }
-        Ready::Command(probe) => wait_for_ready_command(
-            || probe_command(probe, &environment, &config.folder),
-            pid,
-            &log_path,
-            READY_TIMEOUT,
-        )?,
     }
 
     let recorded = serde_json::to_string(arguments).context("Could not encode the arguments")?;
 
-    write_unlinked(&root.join("arguments"), &format!("{recorded}\n"))
+    write_unlinked(
+        &root.join(crate::root::record::ARGUMENTS),
+        &format!("{recorded}\n"),
+    )
+}
+
+fn start_with_ready_line(
+    mut command: Command,
+    root: &Path,
+    log: File,
+    environment: &[(String, String)],
+) -> anyhow::Result<()> {
+    command.stdout(Stdio::piped());
+    let mut child = spawn_recorded(command, root)?;
+    let stdout = child
+        .stdout
+        .take()
+        .expect("JSON ready mode pipes the app's stdout");
+    let pid = child.id();
+    drop(child);
+
+    let log_path = root.join(crate::root::record::APP_LOG);
+    let reader_log = clone_log(&log, &log_path)?;
+    let (line, rest) = read_ready_line(stdout, reader_log, &log_path, pid, READY_TIMEOUT)?;
+
+    copy_rest(rest, log, environment, pid)?;
+    write_unlinked(&root.join(crate::root::record::READY), &format!("{line}\n"))
+}
+
+fn spawn_recorded(mut command: Command, root: &Path) -> anyhow::Result<Child> {
+    let program = PathBuf::from(command.get_program());
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("Could not start {}", program.display()))?;
+
+    if let Err(error) = record_marked_process(
+        &root.join(crate::root::record::PID),
+        child.id(),
+        root,
+        RECORD_TIMEOUT,
+    ) {
+        cleanup::stop_child_group(&mut child);
+        return Err(error);
+    }
+
+    Ok(child)
 }
 
 fn clone_log(log: &File, path: &Path) -> anyhow::Result<File> {
@@ -133,11 +158,7 @@ fn read_ready_line(
     })?;
 
     if finished.is_none() {
-        return Err(AppStartError::ReadyTimeout {
-            timeout,
-            log: log_path.to_path_buf(),
-        }
-        .into());
+        return Err(ready_timeout_error(timeout, log_path));
     }
 
     let found = reader
@@ -188,9 +209,7 @@ fn copy_rest(
     let errors = log.try_clone().context("Could not open the app log")?;
     let group = i32::try_from(group).context("The app's process group is out of range")?;
 
-    Command::new("cat")
-        .env_clear()
-        .envs(environment.iter().cloned())
+    crate::process::sandboxed_command(crate::tool::Tool::Cat.name(), environment)
         .stdin(Stdio::from(reader.into_inner()))
         .stdout(log)
         .stderr(errors)
@@ -202,12 +221,8 @@ fn copy_rest(
 }
 
 fn probe_command(probe: &CommandLine, environment: &[(String, String)], folder: &Path) -> Command {
-    let mut command = Command::new(&probe.program);
-    command
-        .args(&probe.arguments)
-        .current_dir(folder)
-        .env_clear()
-        .envs(environment.iter().cloned());
+    let mut command = crate::process::sandboxed_command(&probe.program, environment);
+    command.args(&probe.arguments).current_dir(folder);
 
     command
 }
@@ -239,17 +254,19 @@ fn wait_for_ready_command(
         Ok(None)
     })?;
 
-    ready.ok_or_else(|| {
-        AppStartError::ReadyTimeout {
-            timeout,
-            log: log_path.to_path_buf(),
-        }
-        .into()
-    })
+    ready.ok_or_else(|| ready_timeout_error(timeout, log_path))
 }
 
 fn app_exited(pid: u32) -> bool {
-    process_start(pid).is_none() || process_is_zombie(pid)
+    ProcessStat::read_live(pid).is_none()
+}
+
+fn ready_timeout_error(timeout: Duration, log_path: &Path) -> anyhow::Error {
+    AppStartError::ReadyTimeout {
+        timeout,
+        log: log_path.to_path_buf(),
+    }
+    .into()
 }
 
 fn app_exited_error(log_path: &Path) -> anyhow::Error {

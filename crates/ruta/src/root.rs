@@ -10,7 +10,40 @@ use crate::process_stat::boot_ticks_now;
 const ROOT_PARENT: &str = "/var/tmp";
 const ROOT_PREFIX: &str = "ruta-";
 const SOCKET_PREFIX: &str = "ruta-";
-const CREATED: &str = "created";
+
+pub(crate) mod record {
+    pub(crate) const DISPLAY: &str = "display";
+    pub(crate) const WESTON_PID: &str = "weston.pid";
+    pub(crate) const XWAYLAND_PID: &str = "xwayland.pid";
+    pub(crate) const PID: &str = "pid";
+    pub(crate) const WINDOW: &str = "window";
+    pub(crate) const ARGUMENTS: &str = "arguments";
+    pub(crate) const MODE: &str = "mode";
+    pub(crate) const SIZE: &str = "size";
+    pub(crate) const OPENED: &str = "opened";
+    pub(crate) const APP_LOG: &str = "app.log";
+    pub(crate) const WESTON_LOG: &str = "weston.log";
+    pub(crate) const READY: &str = "ready.json";
+    pub(crate) const SHOT: &str = "shot.png";
+    pub(crate) const CREATED: &str = "created";
+
+    pub(crate) const ALL: [&str; 14] = [
+        DISPLAY,
+        WESTON_PID,
+        XWAYLAND_PID,
+        PID,
+        WINDOW,
+        ARGUMENTS,
+        MODE,
+        SIZE,
+        OPENED,
+        APP_LOG,
+        WESTON_LOG,
+        READY,
+        SHOT,
+        CREATED,
+    ];
+}
 
 pub(crate) fn root_path(name: &str) -> PathBuf {
     Path::new(ROOT_PARENT).join(format!("{ROOT_PREFIX}{name}"))
@@ -121,23 +154,7 @@ pub(crate) fn root_metadata_problem(
 }
 
 pub(crate) fn linked_paths(root: &Path) -> Vec<PathBuf> {
-    let records = [
-        "display",
-        "weston.pid",
-        "xwayland.pid",
-        "pid",
-        "window",
-        "arguments",
-        "mode",
-        "size",
-        "opened",
-        "app.log",
-        "weston.log",
-        "ready.json",
-        "shot.png",
-        CREATED,
-    ]
-    .map(|name| root.join(name));
+    let records = record::ALL.map(|name| root.join(name));
     let folders = PrivateFolders::under(root);
 
     records
@@ -249,11 +266,18 @@ pub(crate) fn remove_root(root: &Path) -> anyhow::Result<()> {
 }
 
 pub(crate) fn write_unlinked(path: &Path, contents: &str) -> anyhow::Result<()> {
-    if is_symlink(path) {
-        return Err(RootError::LinkedPath {
+    write_unlinked_with(
+        path,
+        contents,
+        RootError::LinkedPath {
             path: path.to_path_buf(),
-        }
-        .into());
+        },
+    )
+}
+
+fn write_unlinked_with(path: &Path, contents: &str, linked_error: RootError) -> anyhow::Result<()> {
+    if is_symlink(path) {
+        return Err(linked_error.into());
     }
 
     fs::write(path, contents).with_context(|| format!("Could not write {}", path.display()))
@@ -265,7 +289,7 @@ pub(crate) fn write_unlinked(path: &Path, contents: &str) -> anyhow::Result<()> 
 pub(crate) fn record_root_creation(root: &Path) -> anyhow::Result<()> {
     let created = boot_ticks_now();
 
-    write_unlinked(&root.join(CREATED), &format!("{created}\n"))?;
+    write_unlinked(&root.join(record::CREATED), &format!("{created}\n"))?;
 
     while boot_ticks_now() <= created {
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -275,7 +299,7 @@ pub(crate) fn record_root_creation(root: &Path) -> anyhow::Result<()> {
 }
 
 pub(crate) fn root_created(root: &Path) -> Option<u64> {
-    fs::read_to_string(root.join(CREATED))
+    fs::read_to_string(root.join(record::CREATED))
         .ok()?
         .trim()
         .parse()
@@ -283,21 +307,21 @@ pub(crate) fn root_created(root: &Path) -> Option<u64> {
 }
 
 pub(crate) fn install_openers(root: &Path) -> anyhow::Result<()> {
-    let opened = root.join("opened");
+    let opened = root.join(record::OPENED);
 
     for opener in ["xdg-open", "open"] {
         let path = root.join("bin").join(opener);
-
-        if is_symlink(&path) {
-            return Err(RootError::LinkedOpener { path }.into());
-        }
 
         let log = shell_quote(&opened.to_string_lossy());
         let script = format!(
             "#!/bin/sh\nif [ -L {log} ]; then\n  echo 'refusing the symlinked opened log' >&2\n  exit 1\nfi\nprintf '%s\\n' \"$*\" >>{log}\n"
         );
 
-        fs::write(&path, script).with_context(|| format!("Could not write {}", path.display()))?;
+        write_unlinked_with(
+            &path,
+            &script,
+            RootError::LinkedOpener { path: path.clone() },
+        )?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
             .with_context(|| format!("Could not make {} runnable", path.display()))?;
     }

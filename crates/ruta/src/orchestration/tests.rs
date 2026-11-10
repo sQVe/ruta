@@ -5,11 +5,14 @@ use thiserror::Error;
 
 use super::*;
 use crate::config::{App, CommandLine, Ready};
-use crate::display_start::tests::{record_live_display, stale_display_cases};
 use crate::identity::tests::{
     record_child, spawn_ready_sleep, spawn_with_marker, spawn_without_marker,
 };
 use crate::root::{RootError, RootReason};
+use crate::test_support::display::{
+    record_display_settings, record_live_display, stale_display_cases,
+};
+use crate::test_support::strings;
 
 mod capture;
 mod down;
@@ -38,28 +41,8 @@ fn test_config(name: &str) -> Config {
     }
 }
 
-fn strings(values: &[&str]) -> Vec<String> {
-    values.iter().map(|value| value.to_string()).collect()
-}
-
-fn cleanup_order(root: &Path) -> [StopTarget; 3] {
-    [
-        StopTarget::Window {
-            root: root.to_path_buf(),
-        },
-        StopTarget::Recorded {
-            path: root.join("xwayland.pid"),
-        },
-        StopTarget::Recorded {
-            path: root.join("weston.pid"),
-        },
-    ]
-}
-
 #[test]
 fn failed_capture_stops_every_target_and_returns_capture_error() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("capture-failed");
     let mut visited = Vec::new();
     let error = finish_capture(
@@ -68,8 +51,8 @@ fn failed_capture_stops_every_target_and_returns_capture_error() {
             missing: vec!["scale"],
         }
         .into()),
-        |target| {
-            visited.push(target);
+        |root, target| {
+            visited.push((root.to_path_buf(), target));
             Ok(())
         },
     )
@@ -79,7 +62,11 @@ fn failed_capture_stops_every_target_and_returns_capture_error() {
         matches!(error.downcast_ref::<crate::capture::CaptureError>(),
         Some(crate::capture::CaptureError::PartialGeometry { missing }) if missing == &["scale"])
     );
-    assert_eq!(visited, cleanup_order(root.path()));
+    assert_eq!(
+        visited,
+        [StopTarget::Window, StopTarget::Xwayland, StopTarget::Weston]
+            .map(|target| (root.path().to_path_buf(), target))
+    );
     assert!(!root.path().exists());
 }
 
@@ -90,8 +77,14 @@ fn capture_refuses_an_existing_root_before_starting() {
     let root = crate::test_support::temporary_sandbox_root("capture-existing");
     let out = crate::test_support::temporary_directory();
     fs::write(root.path().join("marker"), "keep").expect("write marker");
-    let error = capture(&test_config("test"), root.path(), out.path(), &[])
-        .expect_err("existing capture root is refused");
+    let error = capture(
+        &test_config("test"),
+        root.path(),
+        out.path(),
+        &[],
+        &mut |_| {},
+    )
+    .expect_err("existing capture root is refused");
 
     assert!(
         error
@@ -108,13 +101,11 @@ fn capture_refuses_an_existing_root_before_starting() {
 
 #[test]
 fn cleanup_keeps_the_root_when_a_recorded_process_will_not_stop() {
-    crate::test_support::in_test_namespace!();
-
     for failing in 0..3 {
         let root = crate::test_support::temporary_sandbox_root("will-not-stop");
         let mut visited = Vec::new();
 
-        let error = cleanup(root.path(), |target| {
+        let error = cleanup(root.path(), |_, target| {
             visited.push(target);
 
             if visited.len() == failing + 1 {
@@ -131,7 +122,7 @@ fn cleanup_keeps_the_root_when_a_recorded_process_will_not_stop() {
         );
         assert_eq!(
             visited.as_slice(),
-            &cleanup_order(root.path())[..=failing],
+            &[StopTarget::Window, StopTarget::Xwayland, StopTarget::Weston][..=failing],
             "{failing}"
         );
         assert!(root.path().is_dir(), "{failing}: the root must stay");
@@ -140,18 +131,19 @@ fn cleanup_keeps_the_root_when_a_recorded_process_will_not_stop() {
 
 #[test]
 fn cleanup_stops_every_record_in_order_and_removes_the_root() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("all-stopped");
     let mut visited = Vec::new();
 
-    cleanup(root.path(), |target| {
+    cleanup(root.path(), |_, target| {
         visited.push(target);
         Ok(())
     })
     .expect("the cleanup succeeds");
 
-    assert_eq!(visited, cleanup_order(root.path()));
+    assert_eq!(
+        visited,
+        [StopTarget::Window, StopTarget::Xwayland, StopTarget::Weston]
+    );
     assert!(!root.path().exists(), "the root must be removed");
 }
 
@@ -219,8 +211,6 @@ fn cleanup_refuses_a_root_that_is_not_private() {
 
 #[test]
 fn require_up_refuses_a_symlinked_root() {
-    crate::test_support::in_test_namespace!();
-
     let folder = crate::test_support::temporary_directory();
     let target = crate::test_support::temporary_directory();
     let marker = target.path().join("marker");
@@ -260,8 +250,7 @@ fn a_failed_start_keeps_its_error_when_cleanup_fails() {
     let config = test_config("test");
     let (width, height) = display_size((config.app.width, config.app.height));
     // The live display matches the config, so the start reuses it and stops nothing.
-    fs::write(root.path().join("mode"), "headless\n").expect("write the mode");
-    fs::write(root.path().join("size"), format!("{width}x{height}\n")).expect("write the size");
+    record_display_settings(root.path(), "headless", (width, height));
     prepare_root(root.path()).expect("the root is prepared");
     let target = crate::test_support::temporary_directory();
     let marker = target.path().join("marker");
@@ -270,12 +259,12 @@ fn a_failed_start_keeps_its_error_when_cleanup_fails() {
     std::os::unix::fs::symlink(&marker, &link).expect("link the opener");
     let mut visited = Vec::new();
 
-    let started = start_window_inner(&config, root.path(), &[], &Session::Headless);
-    let error = clean_up_failed_start(root.path(), started, |target| {
+    let error =
+        start_sandbox(&config, root.path(), &[], &Session::Headless).expect_err("the start fails");
+    let error = failed_start(root.path(), error, |_, target| {
         visited.push(target);
         Err(WillNotStop.into())
-    })
-    .expect_err("the start fails");
+    });
 
     assert!(
         matches!(
@@ -284,7 +273,7 @@ fn a_failed_start_keeps_its_error_when_cleanup_fails() {
         ),
         "unexpected error: {error:#}"
     );
-    assert_eq!(visited, cleanup_order(root.path())[..1]);
+    assert_eq!(visited, [StopTarget::Window]);
     assert!(
         root.path().join("weston.pid").is_file(),
         "the root must stay"
@@ -298,14 +287,10 @@ fn stop_target_stops_a_recorded_child_and_removes_its_record() {
 
     let root = crate::test_support::temporary_sandbox_root("stop-target");
     let window_record = root.path().join("pid");
-    let recorded = root.path().join("xwayland.pid");
 
     let mut window = spawn_with_marker(root.path());
     record_child(&window_record, &window);
-    stop_target(StopTarget::Window {
-        root: root.path().to_path_buf(),
-    })
-    .expect("the window stops");
+    stop_target(root.path(), StopTarget::Window).expect("the window stops");
 
     assert!(
         window.wait_for_exit(Duration::from_secs(2)),
@@ -313,18 +298,28 @@ fn stop_target_stops_a_recorded_child_and_removes_its_record() {
     );
     assert!(!window_record.exists(), "window: the record is removed");
 
-    let mut child = spawn_ready_sleep();
-    record_child(&recorded, &child);
-    stop_target(StopTarget::Recorded {
-        path: recorded.clone(),
-    })
-    .expect("the recorded child stops");
+    for (target, name) in [
+        (StopTarget::Xwayland, "xwayland.pid"),
+        (StopTarget::Weston, "weston.pid"),
+    ] {
+        let recorded = root.path().join(name);
+        let other = root.path().join("unrelated.pid");
+        fs::write(&other, "keep").expect("write unrelated record");
+        let mut child = spawn_ready_sleep();
+        record_child(&recorded, &child);
 
-    assert!(
-        child.wait_for_exit(Duration::from_secs(2)),
-        "recorded: stopped"
-    );
-    assert!(!recorded.exists(), "recorded: the record is removed");
+        stop_target(root.path(), target).expect("the recorded child stops");
+
+        assert!(
+            child.wait_for_exit(Duration::from_secs(2)),
+            "{target:?}: stopped"
+        );
+        assert!(!recorded.exists(), "{target:?}: the record is removed");
+        assert_eq!(
+            fs::read_to_string(&other).expect("unrelated record remains"),
+            "keep"
+        );
+    }
 }
 
 #[test]
@@ -336,10 +331,7 @@ fn stop_target_leaves_a_window_without_the_sandbox_marker_running() {
     let mut window = spawn_without_marker();
     record_child(&window_record, &window);
 
-    stop_target(StopTarget::Window {
-        root: root.path().to_path_buf(),
-    })
-    .expect("the stale record is dropped");
+    stop_target(root.path(), StopTarget::Window).expect("the stale record is dropped");
 
     assert!(window.is_running(), "an unmarked child must keep running");
 }
@@ -364,8 +356,6 @@ fn assert_not_up(error: &anyhow::Error, case: &str) {
 
 #[test]
 fn require_up_returns_the_display_of_a_live_sandbox() {
-    crate::test_support::in_test_namespace!();
-
     let root = live_sandbox("require-up");
 
     assert_eq!(
@@ -376,8 +366,6 @@ fn require_up_returns_the_display_of_a_live_sandbox() {
 
 #[test]
 fn require_up_refuses_a_stale_display() {
-    crate::test_support::in_test_namespace!();
-
     for (case, make_stale) in stale_display_cases() {
         let root = live_sandbox("require-stale");
         make_stale(root.path());
@@ -390,8 +378,6 @@ fn require_up_refuses_a_stale_display() {
 
 #[test]
 fn require_up_refuses_a_missing_window() {
-    crate::test_support::in_test_namespace!();
-
     let root = live_sandbox("require-window");
     fs::remove_file(root.path().join("window")).expect("remove the window");
 
@@ -409,14 +395,18 @@ fn io_kind(error: &anyhow::Error) -> Option<std::io::ErrorKind> {
 
 #[test]
 fn opened_accepts_a_missing_or_normal_file_and_fails_on_a_folder() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("opened");
 
-    opened(root.path()).expect("a missing file means nothing opened");
+    assert_eq!(
+        opened(root.path()).expect("a missing file means nothing opened"),
+        ""
+    );
 
     fs::write(root.path().join("opened"), "https://example.com\n").expect("write opened");
-    opened(root.path()).expect("a normal file is printed");
+    assert_eq!(
+        opened(root.path()).expect("a normal file is returned"),
+        "https://example.com\n"
+    );
 
     fs::remove_file(root.path().join("opened")).expect("remove opened");
     fs::create_dir(root.path().join("opened")).expect("create the folder");
@@ -427,8 +417,6 @@ fn opened_accepts_a_missing_or_normal_file_and_fails_on_a_folder() {
 
 #[test]
 fn log_fails_on_a_missing_log_and_prints_a_normal_one() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("log");
 
     let error = log(root.path()).expect_err("a missing log fails");
@@ -436,11 +424,14 @@ fn log_fails_on_a_missing_log_and_prints_a_normal_one() {
     assert_eq!(io_kind(&error), Some(std::io::ErrorKind::NotFound));
 
     fs::write(root.path().join("app.log"), "ready\n").expect("write the log");
-    log(root.path()).expect("a normal log is printed");
+    assert_eq!(
+        log(root.path()).expect("a normal log is returned"),
+        "ready\n"
+    );
 }
 
 #[test]
-fn a_failed_command_exits_with_failure() {
+fn execute_returns_a_command_failure() {
     crate::test_support::in_test_namespace!();
 
     let root = crate::test_support::temporary_sandbox_root("dispatch");
@@ -452,15 +443,18 @@ fn a_failed_command_exits_with_failure() {
     let name = base.strip_prefix("ruta-").expect("a sandbox root name");
     assert_eq!(root_path(name), root.path());
 
-    let code = run(&test_config(name), Sandbox::Log);
+    let mut output = String::new();
+    let error = execute(&test_config(name), Sandbox::Log, &mut |text| {
+        output.push_str(text)
+    })
+    .expect_err("a missing app log fails");
 
-    assert_eq!(code, ExitCode::FAILURE, "a missing app log fails");
+    assert_eq!(io_kind(&error), Some(std::io::ErrorKind::NotFound));
+    assert_eq!(output, "");
 }
 
 #[test]
 fn display_size_leaves_room_around_the_window() {
-    crate::test_support::in_test_namespace!();
-
     assert_eq!(display_size((640, 480)), (840, 680));
     assert_eq!(display_size((u32::MAX, 1)), (u32::MAX, 201));
 }

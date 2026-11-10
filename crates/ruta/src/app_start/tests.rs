@@ -1,6 +1,7 @@
 use std::fs;
 
 use super::*;
+use crate::identity::process_is_zombie;
 use crate::test_support::ChildGuard;
 
 fn start_script(script: &str) -> (ChildGuard, ChildStdout) {
@@ -395,8 +396,6 @@ fn wait_for_ready_command_reports_a_probe_that_cannot_start() {
 
 #[test]
 fn probe_command_runs_in_the_config_folder_with_the_given_environment() {
-    crate::test_support::in_test_namespace!();
-
     let folder = crate::test_support::temporary_directory();
     let probe = CommandLine {
         program: PathBuf::from("sh"),
@@ -425,8 +424,6 @@ fn probe_command_runs_in_the_config_folder_with_the_given_environment() {
 
 #[test]
 fn the_app_start_errors_render_their_messages() {
-    crate::test_support::in_test_namespace!();
-
     let cases = [
         (
             AppStartError::AppExited {

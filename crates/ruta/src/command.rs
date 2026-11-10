@@ -1,5 +1,4 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use thiserror::Error;
@@ -43,7 +42,7 @@ pub(crate) enum Sandbox {
     },
     Restart {
         arguments: Option<Vec<String>>,
-        headed: Option<bool>,
+        force_headed: bool,
     },
     Capture {
         out: PathBuf,
@@ -102,25 +101,26 @@ pub(crate) enum ParseError {
 }
 
 pub(crate) fn parse(arguments: &[String]) -> Result<Sandbox, ParseError> {
-    match arguments {
-        [command, rest @ ..] if command == "up" => {
+    let (command, rest) = arguments.split_first().ok_or(ParseError::Usage)?;
+
+    match (command.as_str(), rest) {
+        ("up", rest) => {
             let options = split_options(rest);
 
             Ok(Sandbox::Up {
-                arguments: options.arguments,
+                arguments: options.arguments.unwrap_or_default(),
                 headed: options.headed,
             })
         }
-        [command, rest @ ..] if command == "restart" => {
+        ("restart", rest) => {
             let options = split_options(rest);
-            let given = options.ended || !options.arguments.is_empty();
 
             Ok(Sandbox::Restart {
-                arguments: given.then_some(options.arguments),
-                headed: options.headed.then_some(true),
+                arguments: options.arguments,
+                force_headed: options.headed,
             })
         }
-        [command, option, folder, rest @ ..] if command == "capture" && option == "--out" => {
+        ("capture", [option, folder, rest @ ..]) if option == "--out" => {
             if folder.is_empty() || folder.starts_with('-') {
                 return Err(ParseError::Usage);
             }
@@ -134,50 +134,50 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Sandbox, ParseError> {
                 arguments: arguments.to_vec(),
             })
         }
-        [command] if command == "shot" => Ok(Sandbox::Shot { file: None }),
-        [command, file] if command == "shot" => Ok(Sandbox::Shot {
+        ("shot", []) => Ok(Sandbox::Shot { file: None }),
+        ("shot", [file]) => Ok(Sandbox::Shot {
             file: Some(PathBuf::from(file)),
         }),
-        [command, x0, y0, x1, y1] if command == "move" => Ok(Sandbox::Move {
+        ("move", [x0, y0, x1, y1]) => Ok(Sandbox::Move {
             from: (number(x0, "x0")?, number(y0, "y0")?),
             to: (number(x1, "x1")?, number(y1, "y1")?),
         }),
-        [command, x0, y0, x1, y1] if command == "drag" => Ok(Sandbox::Drag {
+        ("drag", [x0, y0, x1, y1]) => Ok(Sandbox::Drag {
             from: (number(x0, "x0")?, number(y0, "y0")?),
             to: (number(x1, "x1")?, number(y1, "y1")?),
         }),
-        [command, x, y] if command == "click" => Ok(Sandbox::Click {
+        ("click", [x, y]) => Ok(Sandbox::Click {
             x: number(x, "x")?,
             y: number(y, "y")?,
             button: 1,
         }),
-        [command, x, y, button] if command == "click" => Ok(Sandbox::Click {
+        ("click", [x, y, button]) => Ok(Sandbox::Click {
             x: number(x, "x")?,
             y: number(y, "y")?,
             button: number(button, "button")?,
         }),
-        [command, text @ ..] if command == "type" && !text.is_empty() => Ok(Sandbox::Type {
+        ("type", text) if !text.is_empty() => Ok(Sandbox::Type {
             text: text.join(" "),
         }),
-        [command, key, modifiers @ ..] if command == "key" => Ok(Sandbox::Key {
+        ("key", [key, modifiers @ ..]) => Ok(Sandbox::Key {
             key: key.clone(),
             modifiers: modifiers.to_vec(),
         }),
-        [command, x, y] if command == "scroll" => Ok(Sandbox::Scroll {
+        ("scroll", [x, y]) => Ok(Sandbox::Scroll {
             x: number(x, "x")?,
             y: number(y, "y")?,
             notches: 1,
         }),
-        [command, x, y, notches] if command == "scroll" => scroll(x, y, notches),
-        [command, keys @ ..] if command == "hold" && !keys.is_empty() => Ok(Sandbox::Hold {
+        ("scroll", [x, y, notches]) => scroll(x, y, notches),
+        ("hold", keys) if !keys.is_empty() => Ok(Sandbox::Hold {
             keys: keys.to_vec(),
         }),
-        [command, keys @ ..] if command == "release" && !keys.is_empty() => Ok(Sandbox::Release {
+        ("release", keys) if !keys.is_empty() => Ok(Sandbox::Release {
             keys: keys.to_vec(),
         }),
-        [command] if command == "log" => Ok(Sandbox::Log),
-        [command] if command == "opened" => Ok(Sandbox::Opened),
-        [command] if command == "down" => Ok(Sandbox::Down),
+        ("log", []) => Ok(Sandbox::Log),
+        ("opened", []) => Ok(Sandbox::Opened),
+        ("down", []) => Ok(Sandbox::Down),
         _ => Err(ParseError::Usage),
     }
 }
@@ -203,79 +203,30 @@ fn number<T: FromStr>(value: &str, argument: &'static str) -> Result<T, ParseErr
 
 struct Options {
     headed: bool,
-    ended: bool,
-    arguments: Vec<String>,
+    arguments: Option<Vec<String>>,
 }
 
 fn split_options(arguments: &[String]) -> Options {
     let mut options = Options {
         headed: false,
-        ended: false,
-        arguments: Vec::new(),
+        arguments: None,
     };
 
     for (index, argument) in arguments.iter().enumerate() {
         match argument.as_str() {
             HEADED => options.headed = true,
             END_OF_OPTIONS => {
-                options.ended = true;
-                options.arguments = arguments[index + 1..].to_vec();
+                options.arguments = Some(arguments[index + 1..].to_vec());
                 break;
             }
             _ => {
-                options.arguments = arguments[index..].to_vec();
+                options.arguments = Some(arguments[index..].to_vec());
                 break;
             }
         }
     }
 
     options
-}
-
-fn find_program(name: &str, path: &str) -> Option<PathBuf> {
-    path.split(':')
-        .filter(|directory| !directory.is_empty())
-        .map(|directory| Path::new(directory).join(name))
-        .find(|candidate| is_executable_file(candidate))
-}
-
-fn is_executable_file(path: &Path) -> bool {
-    let runnable = rustix::fs::access(path, rustix::fs::Access::EXEC_OK).is_ok();
-
-    runnable && fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
-}
-
-fn tool_error(name: &str) -> String {
-    let package = match name {
-        "xdotool" => "the xdotool package",
-        "weston" => "the weston package",
-        "Xwayland" => "the xorg-xwayland package",
-        "import" | "magick" => "the imagemagick package",
-        "cat" => "the coreutils package",
-        _ => name,
-    };
-
-    format!("The tool \"{name}\" is missing. Install {package} and try again.")
-}
-
-#[derive(Debug, Error)]
-#[error("{}", tool_error(name))]
-pub(crate) struct MissingTool {
-    pub(crate) name: String,
-}
-
-pub(crate) fn require_program(name: &str) -> Result<(), MissingTool> {
-    require_program_in(name, &std::env::var("PATH").unwrap_or_default())
-}
-
-pub(crate) fn require_program_in(name: &str, path: &str) -> Result<(), MissingTool> {
-    if find_program(name, path).is_some() {
-        return Ok(());
-    }
-
-    Err(MissingTool {
-        name: name.to_string(),
-    })
 }
 
 #[cfg(test)]

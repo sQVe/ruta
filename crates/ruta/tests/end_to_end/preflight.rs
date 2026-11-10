@@ -1,5 +1,6 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use tempfile::TempDir;
 
@@ -10,69 +11,53 @@ use crate::support::*;
 fn a_bad_config_or_bad_arguments_leave_a_running_sandbox_unchanged() {
     in_test_namespace!();
 
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let sandbox = project.sandbox("preflight");
     sandbox.succeed(&["up"]);
-    let before = records(&sandbox.root());
+    let before = sandbox.records();
 
-    project.write_config(&format!(
-        "colour = \"red\"\n{}",
-        config_text(TITLE, JSON_READY)
-    ));
+    project.write_config(&format!("colour = \"red\"\n{}", Config::default().text()));
     for arguments in [&["up"][..], &["restart"], &["down"]] {
-        let output = sandbox.run(arguments);
-
-        assert!(
-            !output.status.success(),
-            "{arguments:?} with a bad ruta.toml fails"
-        );
+        sandbox.fail(arguments);
     }
 
-    project.write_config(&config_text(TITLE, JSON_READY));
+    project.write_config(&Config::default().text());
     for arguments in [
         &["shot", "a.png", "b.png"][..],
         &["nonsense"],
         &["log", "x"],
     ] {
-        let output = sandbox.run(arguments);
-
-        assert!(!output.status.success(), "{arguments:?} fails");
+        sandbox.fail(arguments);
     }
 
     assert_eq!(
-        records(&sandbox.root()),
+        sandbox.records(),
         before,
         "the sandbox records are unchanged"
     );
     assert_eq!(sandbox.shot_size(), WINDOW_SIZE, "the sandbox is still up");
 }
 
-// A PATH folder with the real display tools and no `cat`. `xdotool` is the real one, or a file with
-// the given mode.
-fn path_with_tools(xdotool_mode: Option<u32>) -> TempDir {
+fn path_with(linked: &[&str]) -> TempDir {
     let folder = tempfile::Builder::new()
         .prefix("ruta-end-to-end-path-")
         .tempdir()
         .expect("create the PATH folder");
-    let mut linked = vec!["weston", "Xwayland", "import"];
-
-    if xdotool_mode.is_none() {
-        linked.push("xdotool");
-    }
 
     for tool in linked {
         let real = find_on_path(tool).unwrap_or_else(|| panic!("{tool} is installed"));
         std::os::unix::fs::symlink(real, folder.path().join(tool)).expect("link the tool");
     }
 
-    if let Some(mode) = xdotool_mode {
-        let plain = folder.path().join("xdotool");
-        fs::write(&plain, "#!/bin/sh\nexit 0\n").expect("write the plain xdotool");
-        fs::set_permissions(&plain, std::os::unix::fs::PermissionsExt::from_mode(mode))
-            .expect("set the xdotool mode");
-    }
-
     folder
+}
+
+fn write_plain_file(folder: &Path, name: &str, mode: u32) {
+    let plain = folder.join(name);
+    fs::write(&plain, "#!/bin/sh\nexit 0\n").expect("write the plain tool");
+
+    fs::set_permissions(&plain, std::os::unix::fs::PermissionsExt::from_mode(mode))
+        .expect("set the tool mode");
 }
 
 fn find_on_path(tool: &str) -> Option<PathBuf> {
@@ -88,32 +73,38 @@ fn find_on_path(tool: &str) -> Option<PathBuf> {
 fn a_missing_or_unrunnable_tool_is_refused_and_leaves_a_running_sandbox_up() {
     in_test_namespace!();
 
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let sandbox = project.sandbox("plain-tool");
     sandbox.succeed(&["up"]);
-    let before = records(&sandbox.root());
+    let before = sandbox.records();
 
     // 0o641 lets only others run a file that the current user owns. Root may run any file with an
     // execute bit, so that case applies only to other users.
-    let mut cases = vec![(Some(0o644), "xdotool"), (None, "cat")];
+    let cases = [
+        ("non-executable tool", "xdotool", Some(0o644)),
+        ("missing cat", "cat", None),
+        ("only others can execute", "xdotool", Some(0o641)),
+    ];
 
-    if !rustix::process::geteuid().is_root() {
-        cases.push((Some(0o641), "xdotool"));
-    }
+    for (name, refused, mode) in cases {
+        if mode == Some(0o641) && rustix::process::geteuid().is_root() {
+            continue;
+        }
 
-    for (xdotool_mode, refused) in cases {
-        let path = path_with_tools(xdotool_mode);
+        let mut linked = vec!["weston", "Xwayland", "import"];
+        if mode.is_none() {
+            linked.push("xdotool");
+        }
+
+        let path = path_with(&linked);
+        if let Some(mode) = mode {
+            write_plain_file(path.path(), "xdotool", mode);
+        }
 
         for arguments in [&["up"][..], &["restart"]] {
-            let output = sandbox
-                .command(arguments)
-                .env("PATH", path.path())
-                .output()
-                .expect("run the ruta binary");
+            let output = Sandbox::fail_command(sandbox.command(arguments).env("PATH", path.path()));
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let case = format!("{xdotool_mode:?} {arguments:?}");
-
-            assert!(!output.status.success(), "{case} fails");
+            let case = format!("{name} {arguments:?}");
             assert!(
                 stderr.contains(&format!("The tool \"{refused}\" is missing.")),
                 "{case}: {stderr}"
@@ -122,7 +113,7 @@ fn a_missing_or_unrunnable_tool_is_refused_and_leaves_a_running_sandbox_up() {
     }
 
     assert_eq!(
-        records(&sandbox.root()),
+        sandbox.records(),
         before,
         "the sandbox records are unchanged"
     );
@@ -134,7 +125,7 @@ fn a_missing_or_unrunnable_tool_is_refused_and_leaves_a_running_sandbox_up() {
 fn up_on_a_refused_root_with_a_fifo_log_fails_at_once() {
     in_test_namespace!();
 
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let sandbox = project.sandbox("fifo-log");
     let root = sandbox.root();
     fs::create_dir(&root).expect("create the root");
@@ -147,32 +138,13 @@ fn up_on_a_refused_root_with_a_fifo_log_fails_at_once() {
         .expect("run mkfifo");
     assert!(made.success(), "mkfifo app.log");
 
-    let mut child = sandbox
-        .command(&["up"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("start ruta up");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let exited = loop {
-        if child.try_wait().expect("check ruta up").is_some() {
-            break true;
-        }
-
-        if std::time::Instant::now() >= deadline {
-            child.kill().expect("stop ruta up");
-            break false;
-        }
-
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    };
-    let output = child.wait_with_output().expect("collect ruta up");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let output = sandbox.run_within(&["up"], Duration::from_secs(10));
 
     fs::remove_file(&fifo).expect("remove the fifo");
     fs::remove_dir(&root).expect("remove the root");
 
-    assert!(exited, "up must not hang on the fifo");
+    let output = output.expect("up must not hang on the fifo");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "up on a refused root fails");
     assert!(
         stderr.contains("its mode is 755, not 700"),

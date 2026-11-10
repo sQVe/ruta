@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::io::Read;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Output, Stdio};
@@ -39,6 +40,29 @@ pub(crate) enum ProcessError {
     Stopped { program: String },
 }
 
+pub(crate) fn sandboxed_command(
+    program: impl AsRef<OsStr>,
+    environment: &[(String, String)],
+) -> Command {
+    let mut command = Command::new(program);
+    command.env_clear().envs(environment.iter().cloned());
+
+    command
+}
+
+pub(crate) fn run_tool(command: Command, label: &str, timeout: Duration) -> anyhow::Result<()> {
+    let output = run_with_timeout(command, timeout)?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "{label} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    Ok(())
+}
+
 pub(crate) fn run_with_timeout(command: Command, timeout: Duration) -> anyhow::Result<Output> {
     run_until(command, timeout, || false)
 }
@@ -65,27 +89,18 @@ pub(crate) fn run_until(
     let stderr_reader = std::thread::spawn(move || read_all(stderr));
     let deadline = Instant::now() + timeout;
 
-    loop {
-        match has_exited(&child) {
-            Ok(true) => break,
-            Ok(false) if stop_early() => {
-                cleanup::stop_child_group(&mut child);
-                return Err(ProcessError::Stopped { program }.into());
-            }
-            Ok(false) if Instant::now() >= deadline => {
-                cleanup::stop_child_group(&mut child);
-                return Err(ProcessError::Timeout {
-                    program,
-                    duration: timeout,
-                }
-                .into());
-            }
-            Ok(false) => std::thread::sleep(POLL),
-            Err(error) => {
-                cleanup::stop_child_group(&mut child);
-                return Err(error).with_context(|| format!("Could not wait for {program}"));
-            }
+    let exited = wait_for(&program, timeout, deadline, || {
+        if has_exited(&child).with_context(|| format!("Could not wait for {program}"))? {
+            return Ok(Some(()));
         }
+
+        check_stopped(&program, &mut stop_early)?;
+        Ok(None)
+    });
+
+    if let Err(error) = exited {
+        cleanup::stop_child_group(&mut child);
+        return Err(error);
     }
 
     // The leader is a zombie until it is reaped, so its group ID still names this group.
@@ -94,24 +109,11 @@ pub(crate) fn run_until(
         .wait()
         .with_context(|| format!("Could not wait for {program}"))?;
 
-    let readers_done = poll_until(deadline.saturating_duration_since(Instant::now()), || {
-        if stop_early() {
-            return Err(ProcessError::Stopped {
-                program: program.clone(),
-            }
-            .into());
-        }
+    wait_for(&program, timeout, deadline, || {
+        check_stopped(&program, &mut stop_early)?;
 
         Ok((stdout_reader.is_finished() && stderr_reader.is_finished()).then_some(()))
     })?;
-
-    if readers_done.is_none() {
-        return Err(ProcessError::Timeout {
-            program,
-            duration: timeout,
-        }
-        .into());
-    }
 
     let stdout = collect(stdout_reader, &program)?;
     let stderr = collect(stderr_reader, &program)?;
@@ -121,6 +123,32 @@ pub(crate) fn run_until(
         stdout,
         stderr,
     })
+}
+
+fn wait_for(
+    program: &str,
+    timeout: Duration,
+    deadline: Instant,
+    attempt: impl FnMut() -> anyhow::Result<Option<()>>,
+) -> anyhow::Result<()> {
+    poll_until(deadline.saturating_duration_since(Instant::now()), attempt)?.ok_or_else(|| {
+        ProcessError::Timeout {
+            program: program.to_string(),
+            duration: timeout,
+        }
+        .into()
+    })
+}
+
+fn check_stopped(program: &str, stop_early: &mut impl FnMut() -> bool) -> anyhow::Result<()> {
+    if stop_early() {
+        return Err(ProcessError::Stopped {
+            program: program.to_string(),
+        }
+        .into());
+    }
+
+    Ok(())
 }
 
 fn has_exited(child: &Child) -> std::io::Result<bool> {
@@ -155,6 +183,60 @@ fn read_all(reader: Option<impl Read>) -> std::io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandboxed_command_keeps_only_the_supplied_environment() {
+        crate::test_support::in_test_namespace!();
+
+        let environment = vec![("KEPT".to_string(), "value with spaces".to_string())];
+        let command = sandboxed_command("env", &environment);
+
+        let output = run_with_timeout(command, Duration::from_secs(2)).expect("env finishes");
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"KEPT=value with spaces\n");
+    }
+
+    #[test]
+    fn run_tool_keeps_the_failure_label_and_trims_stderr() {
+        crate::test_support::in_test_namespace!();
+
+        for label in ["import", "xdotool click 1"] {
+            let mut command = sandboxed_command("sh", &[]);
+            command.args(["-c", "printf '  refused \\n' >&2; exit 7"]);
+
+            let error = run_tool(command, label, Duration::from_secs(2))
+                .expect_err("the tool exits unsuccessfully");
+
+            assert_eq!(error.to_string(), format!("{label} failed: refused"));
+        }
+    }
+
+    #[test]
+    fn run_tool_accepts_a_successful_exit() {
+        crate::test_support::in_test_namespace!();
+
+        let mut command = sandboxed_command("sh", &[]);
+        command.args(["-c", "printf warning >&2; exit 0"]);
+
+        run_tool(command, "import", Duration::from_secs(2))
+            .expect("stderr does not turn success into failure");
+    }
+
+    #[test]
+    fn run_tool_keeps_the_timeout_error() {
+        crate::test_support::in_test_namespace!();
+
+        let mut command = sandboxed_command("sleep", &[]);
+        command.arg("30");
+
+        let error =
+            run_tool(command, "xdotool click 1", Duration::ZERO).expect_err("the tool times out");
+
+        assert!(
+            matches!(error.downcast_ref::<ProcessError>(), Some(ProcessError::Timeout { program, duration }) if program == "sleep" && *duration == Duration::ZERO)
+        );
+    }
 
     #[test]
     fn run_with_timeout_collects_output_larger_than_a_pipe() {
@@ -253,8 +335,6 @@ mod tests {
 
     #[test]
     fn a_timeout_names_the_program_and_seconds() {
-        crate::test_support::in_test_namespace!();
-
         let timeout = ProcessError::Timeout {
             program: "weston".to_string(),
             duration: Duration::from_secs(30),
@@ -286,8 +366,6 @@ mod tests {
 
     #[test]
     fn poll_until_returns_the_value_of_a_later_attempt() {
-        crate::test_support::in_test_namespace!();
-
         let mut attempts = 0;
         let value = poll_until(Duration::from_secs(1), || {
             attempts += 1;
@@ -301,8 +379,6 @@ mod tests {
 
     #[test]
     fn poll_until_passes_an_attempt_error_through_at_once() {
-        crate::test_support::in_test_namespace!();
-
         let mut attempts = 0;
         let error = poll_until::<()>(Duration::from_secs(1), || {
             attempts += 1;
@@ -317,8 +393,6 @@ mod tests {
 
     #[test]
     fn poll_until_returns_none_after_a_short_timeout() {
-        crate::test_support::in_test_namespace!();
-
         let mut attempts = 0;
         let value = poll_until(Duration::from_millis(250), || {
             attempts += 1;

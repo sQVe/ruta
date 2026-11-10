@@ -10,16 +10,14 @@ const ESCAPE: &str = "setsid sleep 300 >/dev/null 2>&1 < /dev/null &";
 fn a_failed_up_stops_a_ready_check_child_that_left_its_group() {
     in_test_namespace!();
 
-    let project = Project::with_config(&config_for_app(
-        r#"["sleep", "2"]"#,
-        TITLE,
-        &format!(r#"command = ["sh", "-c", "{ESCAPE} exit 1"]"#),
-    ));
+    let project = Project::new(&Config {
+        command: Some(r#"["sleep", "2"]"#),
+        ready: &format!(r#"command = ["sh", "-c", "{ESCAPE} exit 1"]"#),
+        ..Config::default()
+    });
     let sandbox = project.sandbox("escaped-probe");
 
-    let output = sandbox.run(&["up"]);
-
-    assert!(!output.status.success(), "up fails when the app exits");
+    sandbox.fail(&["up"]);
     sandbox.assert_gone();
 }
 
@@ -31,11 +29,10 @@ fn down_stops_an_app_child_that_left_its_group_and_spares_other_sandboxes() {
     let app = test_app().to_str().expect("the test app path is UTF-8");
     let (width, height) = WINDOW_SIZE;
     let launch = format!(r#"{ESCAPE} exec '{app}' '{TITLE}' {width} {height}"#);
-    let project = Project::with_config(&config_for_app(
-        &format!(r#"["sh", "-c", "{launch}"]"#),
-        TITLE,
-        r#"line = "json""#,
-    ));
+    let project = Project::new(&Config {
+        command: Some(&format!(r#"["sh", "-c", "{launch}"]"#)),
+        ..Config::default()
+    });
     let sandbox = project.sandbox("escaped-app");
     let other = project.sandbox("escaped-other");
     let mut bystander = Command::new("setsid")

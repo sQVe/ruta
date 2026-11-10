@@ -30,7 +30,25 @@ const ALLOWED_PREFIXES: &[&str] = &[
     "__",
 ];
 
+const RESERVED_KEYS: &[&str] = &[
+    "DISPLAY",
+    "HOME",
+    "PATH",
+    "XAUTHORITY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "LIBEI_SOCKET",
+    "SWAYSOCK",
+];
+const RESERVED_PREFIXES: &[&str] = &["WAYLAND_", "XDG_", "RUTA_"];
+
 pub(crate) const ROOT_MARKER: &str = "RUTA_ROOT";
+
+pub(crate) fn is_reserved(key: &str) -> bool {
+    RESERVED_KEYS.contains(&key)
+        || RESERVED_PREFIXES
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+}
 
 pub(crate) fn caller_environment() -> Vec<(String, String)> {
     utf8_entries(std::env::vars_os())
@@ -118,39 +136,24 @@ fn child_environment(
         .map(|(_, value)| value.clone())
         .unwrap_or_default();
 
-    let mut environment = Vec::new();
-
-    set(&mut environment, "HOME", &dirs.home.to_string_lossy());
-    set(
-        &mut environment,
-        "XDG_CONFIG_HOME",
-        &dirs.config.to_string_lossy(),
-    );
-    set(
-        &mut environment,
-        "XDG_STATE_HOME",
-        &dirs.state.to_string_lossy(),
-    );
-    set(
-        &mut environment,
-        "XDG_DATA_HOME",
-        &dirs.data.to_string_lossy(),
-    );
-    set(
-        &mut environment,
-        "XDG_CACHE_HOME",
-        &dirs.cache.to_string_lossy(),
-    );
-    set(
-        &mut environment,
-        "XDG_RUNTIME_DIR",
-        &dirs.runtime.to_string_lossy(),
-    );
-    set(
-        &mut environment,
-        "PATH",
-        &format!("{}:{host_path}", dirs.bin.display()),
-    );
+    let mut environment: Vec<_> = [
+        ("HOME", dirs.home.to_string_lossy().into_owned()),
+        (
+            "XDG_CONFIG_HOME",
+            dirs.config.to_string_lossy().into_owned(),
+        ),
+        ("XDG_STATE_HOME", dirs.state.to_string_lossy().into_owned()),
+        ("XDG_DATA_HOME", dirs.data.to_string_lossy().into_owned()),
+        ("XDG_CACHE_HOME", dirs.cache.to_string_lossy().into_owned()),
+        (
+            "XDG_RUNTIME_DIR",
+            dirs.runtime.to_string_lossy().into_owned(),
+        ),
+        ("PATH", format!("{}:{host_path}", dirs.bin.display())),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value))
+    .collect();
 
     for (key, value) in extras {
         set(&mut environment, key, value);

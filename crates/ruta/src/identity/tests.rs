@@ -3,35 +3,36 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use super::*;
-use crate::test_support::{ChildGuard, stop_process_group};
+use crate::test_support::ChildGuard;
 
 fn spawn_sleep() -> ChildGuard {
-    let mut command = Command::new("sleep");
-    command.arg("30");
-
-    ChildGuard::spawn(&mut command)
+    ChildGuard::spawn(&mut sleep_command())
 }
 
 pub(crate) fn spawn_ready_sleep() -> ChildGuard {
-    let child = spawn_sleep();
-    child.wait_until_ready("sleep", Duration::from_secs(2));
-
-    child
+    ready_sleep(spawn_sleep())
 }
 
 pub(crate) fn spawn_without_marker() -> ChildGuard {
-    let mut command = Command::new("sleep");
-    command.arg("30").env_remove("RUTA_ROOT");
-    let child = ChildGuard::spawn(&mut command);
-    child.wait_until_ready("sleep", Duration::from_secs(2));
+    let child = ChildGuard::spawn(sleep_command().env_remove("RUTA_ROOT"));
 
-    child
+    ready_sleep(child)
 }
 
 pub(crate) fn spawn_with_marker(root: &Path) -> ChildGuard {
+    let child = ChildGuard::spawn_group(sleep_command().env("RUTA_ROOT", root.as_os_str()));
+
+    ready_sleep(child)
+}
+
+fn sleep_command() -> Command {
     let mut command = Command::new("sleep");
-    command.arg("30").env("RUTA_ROOT", root.as_os_str());
-    let child = ChildGuard::spawn_group(&mut command);
+    command.arg("30");
+
+    command
+}
+
+fn ready_sleep(child: ChildGuard) -> ChildGuard {
     child.wait_until_ready("sleep", Duration::from_secs(2));
 
     child
@@ -46,13 +47,12 @@ fn spawn_fake_weston(child_name: &str) -> (ChildGuard, u32) {
     (parent, child)
 }
 
-fn wait_for_child_named(parent: u32, name: &str, timeout: Duration) -> u32 {
+pub(super) fn wait_for_child_named(parent: u32, name: &str, timeout: Duration) -> u32 {
     let found = poll_until(timeout, || {
         for pid in child_pids(parent) {
-            let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) else {
+            let Ok(cmdline) = command_line(pid) else {
                 continue;
             };
-            let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
 
             if cmdline.contains(name) {
                 return Ok(Some(pid));
@@ -66,13 +66,7 @@ fn wait_for_child_named(parent: u32, name: &str, timeout: Duration) -> u32 {
     found.expect("the named child appeared in time")
 }
 
-fn write_weston_record(root: &Path, pid: u32) {
-    let started = process_start(pid).expect("the fake weston has a start time");
-
-    fs::write(root.join("weston.pid"), format!("{pid} {started}\n")).expect("write weston.pid");
-}
-
-fn spawn_term_ignorer() -> ChildGuard {
+pub(super) fn spawn_term_ignorer() -> ChildGuard {
     let mut command = Command::new("sh");
     command.args(["-c", "trap \"\" TERM; echo ready; exec sleep 30"]);
     command.stdout(Stdio::piped());
@@ -90,45 +84,28 @@ fn spawn_term_ignorer() -> ChildGuard {
     child
 }
 
-fn spawn_exiting() -> ChildGuard {
+pub(super) fn spawn_exiting() -> ChildGuard {
     ChildGuard::spawn(&mut Command::new("true"))
 }
 
-pub(crate) fn record_child(path: &Path, child: &ChildGuard) -> u64 {
-    let started = process_start(child.id()).expect("the child has a start time");
+pub(crate) fn record_child(path: &Path, child: &ChildGuard) -> ProcessIdentity {
+    let identity = ProcessIdentity::current(child.id()).expect("the child has a start time");
+    identity.write(path).expect("write the record");
 
-    fs::write(path, format!("{} {started}\n", child.id())).expect("write the record");
-
-    started
+    identity
 }
 
-fn wait_for_zombie(pid: u32, timeout: Duration) {
+pub(crate) fn record_changed_start(path: &Path, pid: u32) {
+    let mut identity = ProcessIdentity::current(pid).expect("the process has a start time");
+    identity.started += 1;
+    identity.write(path).expect("write the changed record");
+}
+
+pub(super) fn wait_for_zombie(pid: u32, timeout: Duration) {
     let ready = poll_until(timeout, || Ok(process_is_zombie(pid).then_some(())))
         .expect("the zombie check cannot fail");
 
     assert!(ready.is_some(), "the child did not become a zombie in time");
-}
-
-pub(crate) mod stop;
-mod sweep;
-
-#[test]
-fn process_start_is_none_for_a_missing_pid() {
-    crate::test_support::in_test_namespace!();
-
-    assert_eq!(process_start(u32::MAX), None);
-}
-
-#[test]
-fn the_stat_parent_names_the_test_process() {
-    crate::test_support::in_test_namespace!();
-
-    let child = spawn_sleep();
-
-    assert_eq!(
-        ProcessStat::read(child.id()).map(|stat| stat.parent),
-        Some(std::process::id())
-    );
 }
 
 #[test]
@@ -151,12 +128,9 @@ fn record_process_writes_the_pid_and_start_time() {
 
     record_process(&path, child.id(), "sleep", Duration::from_secs(1)).expect("record_process");
 
-    let (pid, started) = read_record(&path).expect("the record exists");
-    assert_eq!(pid, child.id());
-    assert_eq!(
-        started,
-        process_start(child.id()).expect("the child has a start time")
-    );
+    let identity = ProcessIdentity::read(&path).expect("the record exists");
+    assert_eq!(identity.pid, child.id());
+    assert_eq!(Some(identity), ProcessIdentity::current(child.id()));
 }
 
 #[test]
@@ -190,8 +164,6 @@ fn record_process_rejects_a_wrong_name_and_writes_no_file() {
 
 #[test]
 fn record_process_rejects_a_missing_pid_and_writes_no_file() {
-    crate::test_support::in_test_namespace!();
-
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
 
@@ -241,12 +213,12 @@ fn record_xwayland_records_a_matching_child() {
     let root = crate::test_support::temporary_sandbox_root("xwayland-match");
     let path = root.path().join("xwayland.pid");
     let (weston, child) = spawn_fake_weston("Xwayland :97");
-    write_weston_record(root.path(), weston.id());
+    record_child(&root.path().join("weston.pid"), &weston);
 
     record_xwayland(root.path(), ":97", Duration::from_secs(1)).expect("record_xwayland");
 
-    let (pid, _) = read_record(&path).expect("the xwayland record");
-    assert_eq!(pid, child);
+    let identity = ProcessIdentity::read(&path).expect("the xwayland record");
+    assert_eq!(identity.pid, child);
 }
 
 fn assert_xwayland_not_recorded(error: &anyhow::Error, display: &str) {
@@ -267,7 +239,7 @@ fn record_xwayland_ignores_a_different_display() {
     let root = crate::test_support::temporary_sandbox_root("xwayland-display");
     let path = root.path().join("xwayland.pid");
     let (weston, _child) = spawn_fake_weston("Xwayland :97");
-    write_weston_record(root.path(), weston.id());
+    record_child(&root.path().join("weston.pid"), &weston);
 
     let error = record_xwayland(root.path(), ":98", Duration::from_millis(200))
         .expect_err("a different display is not Xwayland for :98");
@@ -283,7 +255,7 @@ fn record_xwayland_ignores_a_child_with_another_name() {
     let root = crate::test_support::temporary_sandbox_root("xwayland-name");
     let path = root.path().join("xwayland.pid");
     let (weston, _child) = spawn_fake_weston("OtherProcess");
-    write_weston_record(root.path(), weston.id());
+    record_child(&root.path().join("weston.pid"), &weston);
 
     let error = record_xwayland(root.path(), ":97", Duration::from_millis(200))
         .expect_err("a child with another name is not Xwayland");
@@ -306,14 +278,12 @@ fn record_process_waits_for_the_command_line_to_change() {
     record_process(&path, child.id(), "expected-name", Duration::from_secs(2))
         .expect("record_process waits for the exec");
 
-    let (pid, _) = read_record(&path).expect("the record exists");
-    assert_eq!(pid, child.id());
+    let identity = ProcessIdentity::read(&path).expect("the record exists");
+    assert_eq!(identity.pid, child.id());
 }
 
 #[test]
 fn the_identity_errors_render_their_messages() {
-    crate::test_support::in_test_namespace!();
-
     let cases = [
         (
             IdentityError::DidNotStop {
@@ -356,18 +326,55 @@ fn the_identity_errors_render_their_messages() {
 }
 
 #[test]
-fn record_matches_rejects_a_changed_start_time() {
-    crate::test_support::in_test_namespace!();
+fn process_identity_writes_the_existing_record_format() {
+    let directory = crate::test_support::temporary_directory();
+    let path = directory.path().join("record");
+    let identity = ProcessIdentity {
+        pid: 42,
+        started: 1234,
+    };
 
+    identity.write(&path).expect("write the identity");
+
+    assert_eq!(
+        fs::read_to_string(&path).expect("read the text"),
+        "42 1234\n"
+    );
+    assert_eq!(ProcessIdentity::read(&path), Some(identity));
+}
+
+#[test]
+fn process_identity_reader_preserves_missing_and_extra_field_rules() {
+    let directory = crate::test_support::temporary_directory();
+    let path = directory.path().join("record");
+    assert_eq!(ProcessIdentity::read(&path), None);
+
+    for text in ["", "42", "bad 1234", "42 bad"] {
+        fs::write(&path, text).expect("write the invalid record");
+        assert_eq!(ProcessIdentity::read(&path), None, "{text}");
+    }
+
+    fs::write(&path, " 42\t1234\nextra").expect("write the extended record");
+    assert_eq!(
+        ProcessIdentity::read(&path),
+        Some(ProcessIdentity {
+            pid: 42,
+            started: 1234
+        })
+    );
+}
+
+#[test]
+fn record_matches_rejects_a_changed_start_time() {
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let pid = std::process::id();
-    let started = process_start(pid).expect("the test process has a start time");
+    let identity = ProcessIdentity::current(pid).expect("the test process has a start time");
 
-    fs::write(&path, format!("{pid} {started}\n")).expect("write the matching record");
+    identity.write(&path).expect("write the matching record");
     assert!(record_matches(&path));
 
-    fs::write(&path, format!("{pid} {}\n", started + 1)).expect("write the changed record");
+    record_changed_start(&path, pid);
     assert!(!record_matches(&path));
 }
 
@@ -383,11 +390,8 @@ fn record_marked_process_records_a_marked_child_whatever_its_name() {
         .expect("the marked child is recorded");
 
     assert_eq!(
-        read_record(&path),
-        Some((
-            child.id(),
-            process_start(child.id()).expect("the child has a start time")
-        ))
+        ProcessIdentity::read(&path),
+        ProcessIdentity::current(child.id())
     );
 }
 

@@ -20,30 +20,25 @@ fn cleanup_failure_is_expected(error: &std::io::Error) -> bool {
     clippy::print_stderr,
     reason = "a cleanup failure must not hide the caller's result"
 )]
-pub(crate) fn remove_file(path: &Path) {
-    if let Err(error) = fs::remove_file(path)
-        && let Some(warning) = cleanup_warning(&format!("remove {}", path.display()), &error)
+pub(crate) fn warn(context: &str, result: std::io::Result<()>) {
+    if let Err(error) = result
+        && let Some(warning) = cleanup_warning(context, &error)
     {
         eprintln!("{warning}");
     }
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "a cleanup failure must not hide the original error"
-)]
-pub(crate) fn stop_child(child: &mut Child) {
-    if let Err(error) = child.kill()
-        && let Some(warning) = cleanup_warning("stop the process", &error)
-    {
-        eprintln!("{warning}");
-    }
+pub(crate) fn remove_file(path: &Path) {
+    warn(&format!("remove {}", path.display()), fs::remove_file(path));
+}
 
-    if let Err(error) = child.wait()
-        && let Some(warning) = cleanup_warning("reap the process", &error)
-    {
-        eprintln!("{warning}");
-    }
+pub(crate) fn stop_child(child: &mut Child) {
+    stop_child_with(child, warn);
+}
+
+pub(crate) fn stop_child_with(child: &mut Child, report: impl Fn(&str, std::io::Result<()>)) {
+    report("stop the process", child.kill());
+    report("reap the process", child.wait().map(|_| ()));
 }
 
 // Kills the process group that `child` leads, then reaps `child`. Call it before `child` is
@@ -54,20 +49,17 @@ pub(crate) fn stop_child_group(child: &mut Child) {
 }
 
 // Kills the process group that `child` leads. `child` must not be reaped yet.
-#[expect(
-    clippy::print_stderr,
-    reason = "a cleanup failure must not hide the original error"
-)]
 pub(crate) fn stop_group(child: &Child) {
-    let leader = rustix::process::Pid::from_child(child);
+    warn("stop the process group", stop_process_group(child.id()));
+}
 
-    if let Err(error) = rustix::process::kill_process_group(leader, rustix::process::Signal::KILL) {
-        let error = std::io::Error::from(error);
+pub(crate) fn stop_process_group(child_id: u32) -> std::io::Result<()> {
+    let Some(leader) = rustix::process::Pid::from_raw(child_id as i32) else {
+        return Ok(());
+    };
 
-        if let Some(warning) = cleanup_warning("stop the process group", &error) {
-            eprintln!("{warning}");
-        }
-    }
+    rustix::process::kill_process_group(leader, rustix::process::Signal::KILL)
+        .map_err(std::io::Error::from)
 }
 
 #[cfg(test)]
@@ -76,8 +68,6 @@ mod tests {
 
     #[test]
     fn a_missing_target_is_ignored_and_other_failures_are_reported() {
-        crate::test_support::in_test_namespace!();
-
         let missing = std::io::Error::from(ErrorKind::NotFound);
         assert_eq!(cleanup_warning("remove /tmp/x", &missing), None);
 
@@ -92,8 +82,6 @@ mod tests {
 
     #[test]
     fn a_process_that_is_gone_is_an_expected_failure() {
-        crate::test_support::in_test_namespace!();
-
         let gone = std::io::Error::from(rustix::io::Errno::SRCH);
 
         assert_eq!(cleanup_warning("stop the process 1", &gone), None);

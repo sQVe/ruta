@@ -8,19 +8,14 @@ use crate::process::poll_until;
 
 use tempfile::{Builder, TempDir};
 
+pub(crate) mod display;
 pub(crate) mod namespace;
 
-// The first statement of every test that sends a signal, or calls code that does. On the host it
-// runs the test in a test namespace instead; see `namespace.rs`.
-macro_rules! in_test_namespace {
-    () => {
-        if crate::test_support::namespace::rerun_outside_test_namespace() {
-            return;
-        }
-    };
+pub(crate) fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| value.to_string()).collect()
 }
 
-pub(crate) use in_test_namespace;
+pub(crate) use namespace::in_test_namespace;
 
 // The prefix never matches a sandbox root, even when `TMPDIR` is `/var/tmp`.
 pub(crate) fn temporary_directory() -> TempDir {
@@ -44,11 +39,10 @@ pub(crate) fn temporary_sandbox_root(label: &str) -> TempDir {
 }
 
 pub(crate) fn live_processes_with(variable: &str) -> Vec<u32> {
-    let processes = fs::read_dir("/proc").expect("list /proc");
+    let processes = crate::process_stat::process_entries().expect("list /proc");
 
     processes
-        .flatten()
-        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .map(|(pid, _)| pid)
         .filter(|pid| {
             fs::read(format!("/proc/{pid}/environ")).is_ok_and(|bytes| {
                 bytes
@@ -71,14 +65,12 @@ pub(crate) fn wait_until_gone(variable: &str, timeout: Duration) -> Vec<u32> {
 }
 
 pub(crate) fn stop_child(child: &mut Child) {
-    if let Err(error) = child.kill()
-        && let Some(warning) = crate::cleanup::cleanup_warning("stop the process", &error)
-    {
-        panic!("{warning}");
-    }
+    crate::cleanup::stop_child_with(child, require_cleanup);
+}
 
-    if let Err(error) = child.wait()
-        && let Some(warning) = crate::cleanup::cleanup_warning("reap the process", &error)
+fn require_cleanup(context: &str, result: std::io::Result<()>) {
+    if let Err(error) = result
+        && let Some(warning) = crate::cleanup::cleanup_warning(context, &error)
     {
         panic!("{warning}");
     }
@@ -105,10 +97,11 @@ impl ChildGuard {
 
     pub(crate) fn spawn_group(command: &mut Command) -> Self {
         command.process_group(0);
-        let mut guard = Self::new(command.spawn().expect("spawn the child"));
-        guard.group = true;
-
-        guard
+        Self {
+            child: command.spawn().expect("spawn the child"),
+            reaped: false,
+            group: true,
+        }
     }
 
     pub(crate) fn take_stdout(&mut self) -> ChildStdout {
@@ -143,10 +136,9 @@ impl ChildGuard {
 
     pub(crate) fn wait_until_ready(&self, fragment: &str, timeout: Duration) {
         let ready = poll_until(timeout, || {
-            let Ok(cmdline) = fs::read(format!("/proc/{}/cmdline", self.id())) else {
+            let Ok(cmdline) = crate::process_stat::command_line(self.id()) else {
                 return Ok(None);
             };
-            let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
 
             Ok(cmdline.contains(fragment).then_some(()))
         })
@@ -170,17 +162,10 @@ impl ChildGuard {
 }
 
 pub(crate) fn stop_process_group(child_id: u32) {
-    let Some(pgid) = rustix::process::Pid::from_raw(child_id as i32) else {
-        return;
-    };
-
-    if let Err(error) = rustix::process::kill_process_group(pgid, rustix::process::Signal::KILL) {
-        let error = std::io::Error::from(error);
-
-        if let Some(warning) = crate::cleanup::cleanup_warning("stop the process group", &error) {
-            panic!("{warning}");
-        }
-    }
+    require_cleanup(
+        "stop the process group",
+        crate::cleanup::stop_process_group(child_id),
+    );
 }
 
 impl Drop for ChildGuard {
@@ -189,6 +174,8 @@ impl Drop for ChildGuard {
     }
 }
 
+// These tests use crate helpers unavailable to the end-to-end harness that also includes
+// namespace.rs.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,7 +184,9 @@ mod tests {
     // namespace that PID is 1, so any other value means the body ran on the host.
     #[test]
     fn a_guarded_test_runs_its_body_only_inside_the_namespace() {
-        in_test_namespace!();
+        if namespace::rerun_outside_test_namespace() {
+            return;
+        }
 
         assert!(namespace::inside_test_namespace());
 
@@ -220,9 +209,11 @@ mod tests {
     // starts from gaining every capability as user 0.
     #[test]
     fn a_program_the_body_starts_gets_no_capabilities() {
-        in_test_namespace!();
+        if namespace::rerun_outside_test_namespace() {
+            return;
+        }
 
-        let output = std::process::Command::new("cat")
+        let output = std::process::Command::new(crate::tool::Tool::Cat.name())
             .arg("/proc/self/status")
             .output()
             .expect("run cat");
@@ -277,16 +268,16 @@ mod tests {
     )]
     #[test]
     fn the_namespace_shows_no_process_of_the_host() {
-        in_test_namespace!();
+        if namespace::rerun_outside_test_namespace() {
+            return;
+        }
 
-        let processes: Vec<(u32, String)> = fs::read_dir("/proc")
+        let processes: Vec<(u32, String)> = crate::process_stat::process_entries()
             .expect("list /proc")
-            .flatten()
-            .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
-            .map(|pid| {
-                let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+            .map(|(pid, _)| {
+                let command = crate::process_stat::command_line(pid).unwrap_or_default();
 
-                (pid, String::from_utf8_lossy(&command).replace('\0', " "))
+                (pid, command)
             })
             .collect();
         let test_binary = std::env::current_exe().expect("the test binary has a path");

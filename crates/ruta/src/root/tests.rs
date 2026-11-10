@@ -351,13 +351,34 @@ fn root_errors_render_the_refusal_text() {
 
 #[test]
 fn linked_paths_lists_control_files() {
-    let paths = linked_paths(Path::new("/var/tmp/ruta-smoke"));
+    let root = Path::new("/var/tmp/ruta-smoke");
+    let paths = linked_paths(root);
+    let expected = [
+        "display",
+        "weston.pid",
+        "xwayland.pid",
+        "pid",
+        "window",
+        "arguments",
+        "mode",
+        "size",
+        "opened",
+        "app.log",
+        "weston.log",
+        "ready.json",
+        "shot.png",
+        "created",
+        "run",
+        "config",
+        "state",
+        "data",
+        "cache",
+        "home",
+        "bin",
+    ]
+    .map(|name| root.join(name));
 
-    assert!(paths.contains(&PathBuf::from("/var/tmp/ruta-smoke/display")));
-    assert!(paths.contains(&PathBuf::from("/var/tmp/ruta-smoke/run")));
-    assert!(paths.contains(&PathBuf::from("/var/tmp/ruta-smoke/bin")));
-    assert!(paths.contains(&PathBuf::from("/var/tmp/ruta-smoke/ready.json")));
-    assert!(paths.contains(&PathBuf::from("/var/tmp/ruta-smoke/arguments")));
+    assert_eq!(paths, expected);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use std::fs;
 
 use super::support::{
-    COMMAND_READY, Project, TITLE, WINDOW_SIZE, assert_gone, in_test_namespace, png_size, records,
+    COMMAND_READY, Config, Project, WINDOW_SIZE, assert_gone, in_test_namespace, png_size,
 };
 
 #[test]
@@ -9,13 +9,13 @@ use super::support::{
 fn capture_with_geometry_writes_crop_and_tears_down() {
     in_test_namespace!();
 
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let sandbox = project.sandbox("capture-crop");
     let output = tempfile::tempdir().expect("output folder");
     let folder = output.path().to_str().expect("UTF-8 path");
 
     sandbox.succeed(&["up"]);
-    let running_records = records(&sandbox.root());
+    let running_records = sandbox.records();
 
     sandbox.succeed(&[
         "capture",
@@ -30,7 +30,7 @@ fn capture_with_geometry_writes_crop_and_tears_down() {
     assert_eq!(png_size(&output.path().join("crop.png")), (240, 160));
     assert!(output.path().join("capture.json").is_file());
     assert_gone(&sandbox.capture_root());
-    assert_eq!(records(&sandbox.root()), running_records);
+    assert_eq!(sandbox.records(), running_records);
     assert_eq!(sandbox.shot_size(), WINDOW_SIZE);
 }
 
@@ -39,7 +39,10 @@ fn capture_with_geometry_writes_crop_and_tears_down() {
 fn capture_with_command_readiness_has_no_ready_record_or_crop() {
     in_test_namespace!();
 
-    let project = Project::with_ready(TITLE, COMMAND_READY);
+    let project = Project::new(&Config {
+        ready: COMMAND_READY,
+        ..Config::default()
+    });
     let sandbox = project.sandbox("capture-ready");
     let output = tempfile::tempdir().expect("output folder");
     let folder = output.path().join("nested");
@@ -67,7 +70,7 @@ fn capture_with_command_readiness_has_no_ready_record_or_crop() {
 fn capture_without_geometry_writes_no_crop_and_tears_down() {
     in_test_namespace!();
 
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let sandbox = project.sandbox("capture-plain");
     let output = tempfile::tempdir().expect("output folder");
     let folder = output.path().to_str().expect("UTF-8 path");

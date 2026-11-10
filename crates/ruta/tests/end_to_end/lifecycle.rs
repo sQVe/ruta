@@ -7,7 +7,7 @@ use crate::support::*;
 fn up_shoots_logs_and_goes_down() {
     in_test_namespace!();
 
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let sandbox = project.sandbox("up");
 
     sandbox.succeed(&["up", "--", "--headed", "extra"]);
@@ -31,7 +31,7 @@ fn up_shoots_logs_and_goes_down() {
         "the shot has the window size"
     );
 
-    let log = wait_for_log(&sandbox, "ruta-test-app: running");
+    let log = sandbox.wait_for_log("ruta-test-app: running");
     for expected in [
         "ruta-test-app: starting\n",
         "\"title\":\"ruta test app\"",
@@ -51,15 +51,13 @@ fn up_shoots_logs_and_goes_down() {
 fn failed_up_leaves_no_root_and_no_process() {
     in_test_namespace!();
 
-    let project = Project::new("no window has this title");
+    let project = Project::new(&Config {
+        title: "no window has this title",
+        ..Config::default()
+    });
     let sandbox = project.sandbox("bad");
 
-    let output = sandbox.run(&["up"]);
-
-    assert!(
-        !output.status.success(),
-        "up without a matching window fails"
-    );
+    sandbox.fail(&["up"]);
     sandbox.assert_gone();
 }
 
@@ -68,7 +66,7 @@ fn failed_up_leaves_no_root_and_no_process() {
 fn two_sandboxes_run_side_by_side() {
     in_test_namespace!();
 
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let first = project.sandbox("one");
     let second = project.sandbox("two");
 
@@ -92,7 +90,10 @@ fn two_sandboxes_run_side_by_side() {
 fn command_ready_up_writes_no_ready_json() {
     in_test_namespace!();
 
-    let project = Project::with_ready(TITLE, COMMAND_READY);
+    let project = Project::new(&Config {
+        ready: COMMAND_READY,
+        ..Config::default()
+    });
     let sandbox = project.sandbox("command");
 
     sandbox.succeed(&["up"]);
@@ -116,17 +117,15 @@ fn command_ready_up_writes_no_ready_json() {
 fn a_failed_up_reports_the_last_line_the_app_printed() {
     in_test_namespace!();
 
-    let project = Project::with_config(&config_for_app(
-        r#"["sh", "-c", "echo 'ruta-test: the setup is broken'; exit 3"]"#,
-        TITLE,
-        r#"line = "json""#,
-    ));
+    let project = Project::new(&Config {
+        command: Some(r#"["sh", "-c", "echo 'ruta-test: the setup is broken'; exit 3"]"#),
+        ..Config::default()
+    });
     let sandbox = project.sandbox("broken-app");
 
-    let output = sandbox.run(&["up"]);
+    let output = sandbox.fail(&["up"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert!(!output.status.success(), "up fails when the app exits");
     assert!(
         stderr.contains("ruta-test: the setup is broken"),
         "the error holds the app's last line: {stderr}"

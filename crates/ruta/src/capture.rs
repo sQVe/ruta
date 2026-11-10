@@ -1,13 +1,12 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::Context as _;
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::command::require_program_in;
-use crate::process::{TOOL_TIMEOUT, run_with_timeout};
+use crate::process::{TOOL_TIMEOUT, run_tool, run_with_timeout, sandboxed_command};
+use crate::tool::{Tool, require_program_in};
 
 const GEOMETRY_FIELDS: [&str; 3] = ["origin", "size", "scale"];
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
@@ -61,6 +60,21 @@ pub(crate) enum CaptureError {
     NotPng,
 }
 
+#[mutants::skip]
+pub(crate) fn import_window(
+    display: &str,
+    window: &str,
+    path: &Path,
+    environment: &[(String, String)],
+) -> anyhow::Result<()> {
+    let mut command = sandboxed_command(Tool::Import.name(), environment);
+    command
+        .args(["-display", display, "-window", window])
+        .arg(path);
+
+    run_tool(command, Tool::Import.name(), TOOL_TIMEOUT)
+}
+
 pub(crate) fn write_capture(
     folder: &Path,
     ready_line: Option<&str>,
@@ -73,7 +87,7 @@ pub(crate) fn write_capture(
         Some(ready) => parse_geometry(ready)?,
         None => None,
     };
-    let shot_path = folder.join("shot.png");
+    let shot_path = folder.join(crate::root::record::SHOT);
     let shot = read_shot_size(&shot_path)?;
 
     if let Some(geometry) = geometry {
@@ -196,17 +210,15 @@ fn crop_image(
         .iter()
         .find(|(name, _)| name == "PATH")
         .map_or("", |(_, value)| value.as_str());
-    require_program_in("magick", path)?;
+    require_program_in(Tool::Magick, path)?;
 
     let geometry = crop_geometry(crop);
-    let mut command = Command::new("magick");
+    let mut command = sandboxed_command(Tool::Magick.name(), environment);
 
     command
         .arg(shot)
         .args(["-crop", &geometry, "+repage"])
-        .arg(crop_path)
-        .env_clear()
-        .envs(environment.iter().cloned());
+        .arg(crop_path);
 
     let output = run_with_timeout(command, TOOL_TIMEOUT)?;
 

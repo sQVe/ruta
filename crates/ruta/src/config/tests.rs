@@ -25,10 +25,7 @@ fn parse_text(text: &str) -> Result<Config, ConfigError> {
 }
 
 fn refused(text: &str, case: &str) -> ConfigError {
-    match parse_text(text) {
-        Ok(config) => panic!("{case}: the config was accepted: {config:?}"),
-        Err(error) => error,
-    }
+    parse_text(text).expect_err(case)
 }
 
 #[test]
@@ -121,6 +118,34 @@ height = 1
 }
 
 #[test]
+fn non_table_sections_keep_their_error_paths() {
+    for key in ["app", "ready", "environment"] {
+        let mut table: Table = VALID.parse().expect("the fixture is valid TOML");
+        table.insert(key.to_string(), Value::Integer(1));
+        let text = toml::to_string(&table).expect("the table can be serialized");
+
+        assert_eq!(
+            parse_text(&text).expect_err("a section must be a table"),
+            ConfigError::WrongType {
+                key: key.to_string(),
+                expected: "a table"
+            },
+            "{key}",
+        );
+    }
+}
+
+#[test]
+fn unknown_keys_are_reported_before_missing_values() {
+    assert_eq!(
+        parse_text("unexpected = 1").expect_err("the key is unknown"),
+        ConfigError::UnknownKey {
+            key: "unexpected".to_string()
+        },
+    );
+}
+
+#[test]
 fn both_ready_forms_are_refused() {
     let text = VALID.replace("line = \"json\"", "line = \"json\"\ncommand = [\"probe\"]");
 
@@ -166,7 +191,7 @@ fn a_bad_name_is_named() {
 #[test]
 fn a_good_name_is_accepted() {
     for name in ["alpha-2", "2", &"a".repeat(32)] {
-        assert_eq!(valid_name("name", name), Ok(name.to_string()), "{name}");
+        assert_eq!(check_name("name", name), Ok(()), "{name}");
     }
 }
 
@@ -175,6 +200,21 @@ fn ruta_name_replaces_the_configured_name() {
     let config = parse(VALID, Path::new(FOLDER), Some("second")).expect("the config parses");
 
     assert_eq!(config.name, "second");
+}
+
+#[test]
+fn a_name_override_does_not_hide_an_invalid_configured_name() {
+    let text = VALID.replace("name = \"greppa\"", "name = \"Bad\"");
+    let error = parse(&text, Path::new(FOLDER), Some("valid"))
+        .expect_err("the configured name must still be valid");
+
+    assert_eq!(
+        error,
+        ConfigError::BadName {
+            key: "name".to_string(),
+            name: "Bad".to_string()
+        }
+    );
 }
 
 #[test]
@@ -295,6 +335,10 @@ fn an_environment_key_that_ruta_sets_is_refused() {
         "RUTA_ROOT",
         "XAUTHORITY",
         "DBUS_SESSION_BUS_ADDRESS",
+        "LIBEI_SOCKET",
+        "SWAYSOCK",
+        "XDG_DATA_DIRS",
+        "RUTA_CUSTOM",
     ] {
         let text = VALID.replace("RUST_LOG = \"info\"", &format!("{key} = \"x\""));
 

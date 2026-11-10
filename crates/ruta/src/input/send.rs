@@ -1,7 +1,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use super::{INPUT_SETTLE, move_pointer, xdotool, xdotool_within};
+use super::{INPUT_SETTLE, xdotool};
+use crate::environment::{caller_environment, sandbox_environment};
 use crate::process::TOOL_TIMEOUT;
 
 const CLICK_SETTLE: Duration = Duration::from_millis(200);
@@ -13,8 +14,8 @@ const WHEEL_UP: u8 = 4;
 const WHEEL_DOWN: u8 = 5;
 
 #[mutants::skip]
-fn warm_up(root: &Path, display: &str, window: &str) -> anyhow::Result<()> {
-    move_pointer(root, display, window, 0, 0)?;
+fn warm_up(environment: &[(String, String)], window: &str) -> anyhow::Result<()> {
+    move_pointer(environment, window, (0, 0))?;
     std::thread::sleep(INPUT_SETTLE);
 
     Ok(())
@@ -28,14 +29,14 @@ pub(crate) fn glide(
     from: (i32, i32),
     to: (i32, i32),
 ) -> anyhow::Result<()> {
-    warm_up(root, display, window)?;
-    glide_steps(root, display, window, from, to)
+    let environment = sandbox_environment(&caller_environment(), root, display);
+    warm_up(&environment, window)?;
+    glide_steps(&environment, window, from, to)
 }
 
 #[mutants::skip]
 fn glide_steps(
-    root: &Path,
-    display: &str,
+    environment: &[(String, String)],
     window: &str,
     from: (i32, i32),
     to: (i32, i32),
@@ -44,7 +45,7 @@ fn glide_steps(
         let x = interpolate(from.0, to.0, step);
         let y = interpolate(from.1, to.1, step);
 
-        move_pointer(root, display, window, x, y)?;
+        move_pointer(environment, window, (x, y))?;
         std::thread::sleep(STEP_DELAY);
     }
 
@@ -59,8 +60,9 @@ pub(crate) fn click(
     (x, y): (i32, i32),
     button: u8,
 ) -> anyhow::Result<()> {
-    point_at(root, display, window, (x, y))?;
-    xdotool(root, display, &["click".to_string(), button.to_string()])
+    let environment = sandbox_environment(&caller_environment(), root, display);
+    point_at(&environment, window, (x, y))?;
+    xdotool(&environment, &["click", &button.to_string()], TOOL_TIMEOUT)
 }
 
 // Presses button 1, glides, and always releases after a successful press. When both the motion and
@@ -73,17 +75,18 @@ pub(crate) fn drag(
     from: (i32, i32),
     to: (i32, i32),
 ) -> anyhow::Result<()> {
-    point_at(root, display, window, from)?;
-    xdotool(root, display, &["mousedown".to_string(), "1".to_string()])?;
+    let environment = sandbox_environment(&caller_environment(), root, display);
+    point_at(&environment, window, from)?;
+    xdotool(&environment, &["mousedown", "1"], TOOL_TIMEOUT)?;
 
     let motion = (|| {
         std::thread::sleep(CLICK_SETTLE);
-        glide_steps(root, display, window, from, to)?;
+        glide_steps(&environment, window, from, to)?;
         std::thread::sleep(INPUT_SETTLE);
 
         Ok(())
     })();
-    let released = xdotool(root, display, &["mouseup".to_string(), "1".to_string()]);
+    let released = xdotool(&environment, &["mouseup", "1"], TOOL_TIMEOUT);
 
     motion.and(released)
 }
@@ -97,11 +100,11 @@ pub(crate) fn scroll(
     notches: i32,
 ) -> anyhow::Result<()> {
     let steps = usize::try_from(notches.unsigned_abs()).unwrap_or(usize::MAX);
+    let environment = sandbox_environment(&caller_environment(), root, display);
 
-    point_at(root, display, window, (x, y))?;
-    xdotool_within(
-        root,
-        display,
+    point_at(&environment, window, (x, y))?;
+    xdotool(
+        &environment,
         &scroll_arguments(notches),
         paced_timeout(steps, NOTCH_DELAY),
     )
@@ -114,16 +117,16 @@ pub(crate) fn type_text(
     window: &str,
     text: &str,
 ) -> anyhow::Result<()> {
-    warm_up(root, display, window)?;
-    xdotool_within(
-        root,
-        display,
+    let environment = sandbox_environment(&caller_environment(), root, display);
+    warm_up(&environment, window)?;
+    xdotool(
+        &environment,
         &[
-            "type".to_string(),
-            "--delay".to_string(),
-            TYPE_DELAY.as_millis().to_string(),
-            "--".to_string(),
-            text.to_string(),
+            "type",
+            "--delay",
+            &TYPE_DELAY.as_millis().to_string(),
+            "--",
+            text,
         ],
         paced_timeout(text.chars().count(), TYPE_DELAY),
     )
@@ -138,31 +141,59 @@ pub(crate) fn key(
     key: &str,
     modifiers: &[String],
 ) -> anyhow::Result<()> {
-    warm_up(root, display, window)?;
+    let environment = sandbox_environment(&caller_environment(), root, display);
+    warm_up(&environment, window)?;
     xdotool(
-        root,
-        display,
-        &["key".to_string(), key_combo(key, modifiers)],
+        &environment,
+        &["key", &key_combo(key, modifiers)],
+        TOOL_TIMEOUT,
     )
 }
 
 #[mutants::skip]
 pub(crate) fn hold(root: &Path, display: &str, keys: &[String]) -> anyhow::Result<()> {
-    xdotool(root, display, &key_arguments("keydown", keys))
+    let environment = sandbox_environment(&caller_environment(), root, display);
+
+    xdotool(&environment, &key_arguments("keydown", keys), TOOL_TIMEOUT)
 }
 
 #[mutants::skip]
 pub(crate) fn release(root: &Path, display: &str, keys: &[String]) -> anyhow::Result<()> {
-    xdotool(root, display, &key_arguments("keyup", keys))
+    let environment = sandbox_environment(&caller_environment(), root, display);
+
+    xdotool(&environment, &key_arguments("keyup", keys), TOOL_TIMEOUT)
 }
 
 #[mutants::skip]
-fn point_at(root: &Path, display: &str, window: &str, (x, y): (i32, i32)) -> anyhow::Result<()> {
-    warm_up(root, display, window)?;
-    move_pointer(root, display, window, x, y)?;
+fn point_at(
+    environment: &[(String, String)],
+    window: &str,
+    point: (i32, i32),
+) -> anyhow::Result<()> {
+    warm_up(environment, window)?;
+    move_pointer(environment, window, point)?;
     std::thread::sleep(CLICK_SETTLE);
 
     Ok(())
+}
+
+#[mutants::skip]
+fn move_pointer(
+    environment: &[(String, String)],
+    window: &str,
+    (x, y): (i32, i32),
+) -> anyhow::Result<()> {
+    xdotool(
+        environment,
+        &[
+            "mousemove",
+            "--window",
+            window,
+            &x.to_string(),
+            &y.to_string(),
+        ],
+        TOOL_TIMEOUT,
+    )
 }
 
 fn interpolate(from: i32, to: i32, step: u32) -> i32 {
@@ -210,9 +241,7 @@ fn key_arguments(action: &str, keys: &[String]) -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn strings(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| value.to_string()).collect()
-    }
+    use crate::test_support::strings;
 
     #[test]
     fn interpolate_hits_both_ends_and_the_middle() {

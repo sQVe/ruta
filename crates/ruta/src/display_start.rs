@@ -1,65 +1,54 @@
 use std::fs;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::Path;
+use std::process::{Command, Stdio};
 
 use anyhow::Context as _;
-use thiserror::Error;
 
 use crate::cleanup;
-use crate::display;
+use crate::display::{self, Mode, Session};
+use crate::environment::caller_environment;
+use crate::identity::stop::stop_recorded;
+use crate::identity::{RECORD_TIMEOUT, record_matches, record_process};
+use crate::root::{prepare_root, record, socket_name};
 
-use crate::environment::{caller_environment, nested_weston_environment, weston_environment};
-use crate::identity::{STOP_TIMEOUT, record_matches, record_process, stop_recorded};
-use crate::root::{prepare_root, socket_name};
-
-#[mutants::skip]
 pub(crate) fn ensure_display(
     name: &str,
     root: &Path,
     session: &Session,
-    (width, height): (u32, u32),
+    size: (u32, u32),
 ) -> anyhow::Result<String> {
     let mode = session.mode();
 
-    if let Some(display) = reusable_display(root, mode, (width, height)) {
-        return Ok(display);
-    }
+    if let Some(display) = display_up(root) {
+        if records_match(root, mode, size) {
+            return Ok(display);
+        }
 
-    if display_up(root).is_some() {
-        stop_recorded(&root.join("weston.pid"))?;
-        clean_display_files(root);
+        stop_recorded(&root.join(record::WESTON_PID))?;
+        display::clean_display_files(&display);
     }
 
     prepare_root(root)?;
 
-    let log = root.join("weston.log");
+    let log = root.join(record::WESTON_LOG);
     cleanup::remove_file(&log);
-    cleanup::remove_file(&root.join("display"));
-    cleanup::remove_file(&root.join("size"));
-    cleanup::remove_file(&root.join("xwayland.pid"));
+    cleanup::remove_file(&root.join(record::DISPLAY));
+    cleanup::remove_file(&root.join(record::SIZE));
+    cleanup::remove_file(&root.join(record::XWAYLAND_PID));
 
-    let mut command = match session {
-        Session::Headed {
-            wayland_display,
-            runtime,
-        } => display::nested_weston_command(
-            &socket_name(name),
-            width,
-            height,
-            &log,
-            wayland_display,
-            &nested_weston_environment(&caller_environment(), root, runtime),
-        ),
-        Session::Headless => display::weston_command(
-            &socket_name(name),
-            width,
-            height,
-            &log,
-            &weston_environment(&caller_environment(), root),
-        ),
-    };
+    let environment = session.environment(&caller_environment(), root);
+    let command = display::weston_command(session, &socket_name(name), size, &log, &environment);
+    spawn_weston(command, root)?;
 
+    let display = display::wait_for_display(&log, display::WESTON_TIMEOUT)?;
+    write_display_records(root, &display, mode, size)?;
+
+    Ok(display)
+}
+
+#[mutants::skip]
+fn spawn_weston(mut command: Command, root: &Path) -> anyhow::Result<()> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -69,32 +58,45 @@ pub(crate) fn ensure_display(
     let mut child = command.spawn().with_context(|| "Could not start weston")?;
     let pid = child.id();
 
-    if let Err(error) = record_process(&root.join("weston.pid"), pid, "weston", STOP_TIMEOUT) {
+    if let Err(error) = record_process(
+        &root.join(record::WESTON_PID),
+        pid,
+        "weston",
+        RECORD_TIMEOUT,
+    ) {
         cleanup::stop_child_group(&mut child);
         return Err(error);
     }
 
     drop(child);
 
-    let display = display::wait_for_display(&log, display::WESTON_TIMEOUT)?;
-    fs::write(root.join("display"), format!("{display}\n"))
+    Ok(())
+}
+
+fn write_display_records(
+    root: &Path,
+    display: &str,
+    mode: Mode,
+    size: (u32, u32),
+) -> anyhow::Result<()> {
+    fs::write(root.join(record::DISPLAY), format!("{display}\n"))
         .with_context(|| "Could not write the display file")?;
-    fs::write(root.join("mode"), format!("{mode}\n"))
+    fs::write(root.join(record::MODE), format!("{}\n", mode.as_str()))
         .with_context(|| "Could not write the sandbox mode")?;
-    fs::write(root.join("size"), size_record((width, height)))
+    fs::write(root.join(record::SIZE), size_record(size))
         .with_context(|| "Could not write the display size")?;
 
-    Ok(display)
+    Ok(())
 }
 
 // A running display is reused only in the same mode and at the same output size, so a changed
 // `width` or `height` in `ruta.toml` gets a new display.
-fn reusable_display(root: &Path, mode: &str, size: (u32, u32)) -> Option<String> {
-    let display = display_up(root)?;
-    let same_mode = recorded_mode(root).as_deref() == Some(mode);
-    let same_size = fs::read_to_string(root.join("size")).ok()? == size_record(size);
+fn records_match(root: &Path, mode: Mode, size: (u32, u32)) -> bool {
+    let same_mode = recorded_mode(root) == Some(mode);
+    let same_size = fs::read_to_string(root.join(record::SIZE))
+        .is_ok_and(|recorded| recorded == size_record(size));
 
-    (same_mode && same_size).then_some(display)
+    same_mode && same_size
 }
 
 fn size_record((width, height): (u32, u32)) -> String {
@@ -102,97 +104,43 @@ fn size_record((width, height): (u32, u32)) -> String {
 }
 
 pub(crate) fn display_up(root: &Path) -> Option<String> {
-    if !record_matches(&root.join("weston.pid")) {
+    if !record_matches(&root.join(record::WESTON_PID)) {
         return None;
     }
 
-    let display = fs::read_to_string(root.join("display")).ok()?;
-    let display = display.trim().to_string();
+    let display = recorded_display(root)?;
 
     display.starts_with(':').then_some(display)
 }
 
-pub(crate) fn recorded_mode(root: &Path) -> Option<String> {
-    fs::read_to_string(root.join("mode"))
+pub(crate) fn recorded_headed(root: &Path) -> bool {
+    recorded_mode(root) == Some(Mode::Headed)
+}
+
+fn recorded_mode(root: &Path) -> Option<Mode> {
+    let recorded = fs::read_to_string(root.join(record::MODE)).ok()?;
+
+    [Mode::Headless, Mode::Headed]
+        .into_iter()
+        .find(|mode| mode.as_str() == recorded.trim())
+}
+
+fn recorded_display(root: &Path) -> Option<String> {
+    fs::read_to_string(root.join(record::DISPLAY))
         .ok()
-        .map(|mode| mode.trim().to_string())
+        .map(|display| display.trim().to_string())
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
-pub(crate) enum HeadedSessionError {
-    #[error(
-        "Headed mode needs WAYLAND_DISPLAY. Run it from the Wayland session, or leave out --headed."
-    )]
-    NoWaylandDisplay,
-    #[error("Headed mode needs an absolute XDG_RUNTIME_DIR to reach the Wayland socket.")]
-    NoAbsoluteRuntimeDir,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Session {
-    Headless,
-    Headed {
-        wayland_display: String,
-        runtime: PathBuf,
-    },
-}
-
-impl Session {
-    fn mode(&self) -> &'static str {
-        match self {
-            Session::Headless => "headless",
-            Session::Headed { .. } => "headed",
-        }
-    }
-}
-
-pub(crate) fn display_session(
-    headed: bool,
-    wayland: Option<&str>,
-    runtime: Option<&str>,
-) -> Result<Session, HeadedSessionError> {
-    if !headed {
-        return Ok(Session::Headless);
-    }
-
-    Ok(Session::Headed {
-        wayland_display: wayland_display(wayland)?,
-        runtime: caller_runtime_dir(runtime)?,
-    })
-}
-
-fn wayland_display(value: Option<&str>) -> Result<String, HeadedSessionError> {
-    match value {
-        Some(display) if !display.trim().is_empty() => Ok(display.to_string()),
-        _ => Err(HeadedSessionError::NoWaylandDisplay),
-    }
-}
-
-fn caller_runtime_dir(value: Option<&str>) -> Result<PathBuf, HeadedSessionError> {
-    match value {
-        Some(directory) if directory.starts_with('/') => Ok(PathBuf::from(directory)),
-        _ => Err(HeadedSessionError::NoAbsoluteRuntimeDir),
-    }
-}
-
-pub(crate) fn clean_display_files(root: &Path) {
-    if let Ok(display) = fs::read_to_string(root.join("display")) {
-        display::clean_display_files(display.trim());
+pub(crate) fn clean_recorded_display_files(root: &Path) {
+    if let Some(display) = recorded_display(root) {
+        display::clean_display_files(&display);
     }
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-    use crate::identity::process_start;
-
-    pub(crate) fn record_live_display(root: &Path, display: &str) {
-        let pid = std::process::id();
-        let started = process_start(pid).expect("the test process has a start time");
-
-        fs::write(root.join("weston.pid"), format!("{pid} {started}\n")).expect("write weston.pid");
-        fs::write(root.join("display"), display).expect("write the display");
-    }
+    use crate::test_support::display::{record_live_display, stale_display_cases};
 
     #[test]
     fn display_up_returns_the_display_of_a_live_record() {
@@ -203,18 +151,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn reusable_display_needs_the_same_mode_and_size() {
+    fn records_match_needs_the_same_mode_and_size() {
         let cases = [
             ("same mode and size", "headless", "840x680\n", true),
             ("another width", "headless", "640x680\n", false),
             ("another height", "headless", "840x600\n", false),
             ("another mode", "headed", "840x680\n", false),
+            ("unknown mode", "other", "840x680\n", false),
+            ("trimmed mode", " headless ", "840x680\n", true),
+            ("untrimmed size", "headless", "840x680", false),
             ("no size record", "headless", "", false),
         ];
 
         for (case, mode, size, reused) in cases {
             let root = crate::test_support::temporary_sandbox_root("display-reuse");
-            record_live_display(root.path(), ":7\n");
             fs::write(root.path().join("mode"), format!("{mode}\n")).expect("write the mode");
 
             if !size.is_empty() {
@@ -222,31 +172,11 @@ pub(crate) mod tests {
             }
 
             assert_eq!(
-                reusable_display(root.path(), "headless", (840, 680)),
-                reused.then(|| ":7".to_string()),
+                records_match(root.path(), Mode::Headless, (840, 680)),
+                reused,
                 "{case}"
             );
         }
-    }
-
-    pub(crate) type StaleDisplayCase = (&'static str, fn(&Path));
-
-    pub(crate) fn stale_display_cases() -> [StaleDisplayCase; 3] {
-        [
-            ("changed start", |root| {
-                let pid = std::process::id();
-                let started = process_start(pid).expect("the test process has a start time");
-
-                fs::write(root.join("weston.pid"), format!("{pid} {}\n", started + 1))
-                    .expect("rewrite weston.pid");
-            }),
-            ("missing pid file", |root| {
-                fs::remove_file(root.join("weston.pid")).expect("remove weston.pid");
-            }),
-            ("no colon", |root| {
-                fs::write(root.join("display"), "7\n").expect("rewrite the display");
-            }),
-        ]
     }
 
     #[test]
@@ -261,96 +191,99 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn recorded_mode_reads_the_trimmed_record() {
+    fn recorded_headed_accepts_only_the_trimmed_headed_record() {
         let root = crate::test_support::temporary_sandbox_root("mode");
-        fs::write(root.path().join("mode"), "headed\n").expect("write the mode");
 
-        assert_eq!(recorded_mode(root.path()), Some("headed".to_string()));
+        for (mode, headed) in [
+            ("headed\n", true),
+            (" headed \t", true),
+            ("headless\n", false),
+            ("other", false),
+            ("", false),
+        ] {
+            fs::write(root.path().join("mode"), mode).expect("write the mode");
+            assert_eq!(recorded_headed(root.path()), headed, "{mode}");
+        }
     }
 
     #[test]
-    fn recorded_mode_is_none_without_a_record() {
+    fn recorded_headed_is_false_without_a_record() {
         let root = crate::test_support::temporary_sandbox_root("no-mode");
 
-        assert_eq!(recorded_mode(root.path()), None);
+        assert!(!recorded_headed(root.path()));
     }
 
     #[test]
-    fn display_session_refuses_a_missing_or_blank_wayland_display() {
-        for (case, wayland) in [
-            ("missing", None),
-            ("empty", Some("")),
-            ("blank", Some(" \t")),
-        ] {
-            assert_eq!(
-                display_session(true, wayland, Some("/run/user/1000")),
-                Err(HeadedSessionError::NoWaylandDisplay),
-                "{case}"
-            );
-        }
-    }
+    fn write_display_records_keeps_the_record_text() {
+        let root = crate::test_support::temporary_directory();
 
-    #[test]
-    fn display_session_refuses_a_missing_or_relative_runtime_folder() {
-        for (case, runtime) in [("missing", None), ("relative", Some("run/user/1000"))] {
-            assert_eq!(
-                display_session(true, Some("wayland-1"), runtime),
-                Err(HeadedSessionError::NoAbsoluteRuntimeDir),
-                "{case}"
-            );
-        }
-    }
+        write_display_records(root.path(), ":7", Mode::Headed, (840, 680))
+            .expect("write the records");
 
-    #[test]
-    fn display_session_accepts_a_valid_session() {
         assert_eq!(
-            display_session(true, Some("wayland-1"), Some("/run/user/1000")),
-            Ok(Session::Headed {
-                wayland_display: "wayland-1".to_string(),
-                runtime: PathBuf::from("/run/user/1000"),
-            })
+            fs::read_to_string(root.path().join("display")).expect("display"),
+            ":7\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("mode")).expect("mode"),
+            "headed\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("size")).expect("size"),
+            "840x680\n"
         );
     }
 
     #[test]
-    fn display_session_needs_nothing_when_headless() {
-        assert_eq!(display_session(false, None, None), Ok(Session::Headless));
-    }
+    fn write_display_records_stops_at_each_failure_in_the_existing_order() {
+        let names = ["display", "mode", "size"];
+        let cases = [
+            (
+                "display",
+                "Could not write the display file",
+                [None, Some("old"), Some("old")],
+            ),
+            (
+                "mode",
+                "Could not write the sandbox mode",
+                [Some(":7\n"), None, Some("old")],
+            ),
+            (
+                "size",
+                "Could not write the display size",
+                [Some(":7\n"), Some("headed\n"), None],
+            ),
+        ];
 
-    #[test]
-    fn session_modes_name_the_mode_record() {
-        assert_eq!(Session::Headless.mode(), "headless");
-        assert_eq!(
-            Session::Headed {
-                wayland_display: "wayland-1".to_string(),
-                runtime: PathBuf::from("/run/user/1000"),
+        for (blocked, message, expected) in cases {
+            let root = crate::test_support::temporary_directory();
+            for name in names {
+                let path = root.path().join(name);
+                if name == blocked {
+                    fs::create_dir(path).expect("block the write");
+                } else {
+                    fs::write(path, "old").expect("write the old record");
+                }
             }
-            .mode(),
-            "headed"
-        );
-    }
 
-    #[test]
-    fn headed_values_are_returned_unchanged() {
-        assert_eq!(
-            wayland_display(Some(" wayland-1 ")),
-            Ok(" wayland-1 ".to_string())
-        );
-        assert_eq!(
-            caller_runtime_dir(Some("/run/user/1000")),
-            Ok(PathBuf::from("/run/user/1000"))
-        );
-    }
+            let error = write_display_records(root.path(), ":7", Mode::Headed, (840, 680))
+                .expect_err("the record path is a directory");
 
-    #[test]
-    fn headed_session_errors_render_the_refusal_text() {
-        assert_eq!(
-            HeadedSessionError::NoWaylandDisplay.to_string(),
-            "Headed mode needs WAYLAND_DISPLAY. Run it from the Wayland session, or leave out --headed."
-        );
-        assert_eq!(
-            HeadedSessionError::NoAbsoluteRuntimeDir.to_string(),
-            "Headed mode needs an absolute XDG_RUNTIME_DIR to reach the Wayland socket."
-        );
+            assert_eq!(error.to_string(), message, "{blocked}");
+            for (name, text) in names.into_iter().zip(expected) {
+                let path = root.path().join(name);
+                match text {
+                    Some(text) => assert_eq!(
+                        fs::read_to_string(path).expect("the record remains"),
+                        text,
+                        "{blocked}: {name}"
+                    ),
+                    None => assert!(
+                        path.is_dir(),
+                        "{blocked}: the blocked record stays a directory"
+                    ),
+                }
+            }
+        }
     }
 }

@@ -19,76 +19,64 @@ struct Step {
 
 const DENY_WARNINGS: (&str, &str) = ("CARGO_BUILD_WARNINGS", "deny");
 
-fn command(
-    name: &'static str,
-    group: Group,
-    program: &'static str,
-    arguments: &'static [&'static str],
-    environment: &'static [(&'static str, &'static str)],
-) -> Step {
+const STEPS: &[Step] = &[
     Step {
-        name,
-        group,
-        program,
-        arguments,
-        environment,
-    }
-}
-
-fn steps() -> Vec<Step> {
-    vec![
-        command(
-            "rustfmt",
-            Group::Tidy,
-            "cargo",
-            &["fmt", "--all", "--check"],
-            &[],
-        ),
-        command("typos", Group::Tidy, "typos", &[], &[]),
-        command(
-            "taplo",
-            Group::Tidy,
-            "taplo",
-            &["fmt", "--check"],
-            &[("RUST_LOG", "warn")],
-        ),
-        command(
-            "cargo-deny",
-            Group::Tidy,
-            "cargo",
-            &["deny", "--locked", "check"],
-            &[],
-        ),
-        command(
-            "cargo-shear",
-            Group::Tidy,
-            "cargo",
-            &["shear", "--locked", "--deny-warnings"],
-            &[],
-        ),
-        command(
-            "clippy",
-            Group::Build,
-            "cargo",
-            &["clippy", "--workspace", "--all-targets", "--locked"],
-            &[DENY_WARNINGS],
-        ),
-        command(
-            "nextest",
-            Group::Build,
-            "cargo",
-            &["nextest", "run", "--workspace", "--locked"],
-            &[DENY_WARNINGS],
-        ),
-        command(
-            "rustdoc",
-            Group::Build,
-            "cargo",
-            &["doc", "--workspace", "--no-deps", "--locked"],
-            &[DENY_WARNINGS, ("RUSTDOCFLAGS", "-D warnings")],
-        ),
-    ]
-}
+        name: "rustfmt",
+        group: Group::Tidy,
+        program: "cargo",
+        arguments: &["fmt", "--all", "--check"],
+        environment: &[],
+    },
+    Step {
+        name: "typos",
+        group: Group::Tidy,
+        program: "typos",
+        arguments: &[],
+        environment: &[],
+    },
+    Step {
+        name: "taplo",
+        group: Group::Tidy,
+        program: "taplo",
+        arguments: &["fmt", "--check"],
+        environment: &[("RUST_LOG", "warn")],
+    },
+    Step {
+        name: "cargo-deny",
+        group: Group::Tidy,
+        program: "cargo",
+        arguments: &["deny", "--locked", "check"],
+        environment: &[],
+    },
+    Step {
+        name: "cargo-shear",
+        group: Group::Tidy,
+        program: "cargo",
+        arguments: &["shear", "--locked", "--deny-warnings"],
+        environment: &[],
+    },
+    Step {
+        name: "clippy",
+        group: Group::Build,
+        program: "cargo",
+        arguments: &["clippy", "--workspace", "--all-targets", "--locked"],
+        environment: &[DENY_WARNINGS],
+    },
+    Step {
+        name: "nextest",
+        group: Group::Build,
+        program: "cargo",
+        arguments: &["nextest", "run", "--workspace", "--locked"],
+        environment: &[DENY_WARNINGS],
+    },
+    Step {
+        name: "rustdoc",
+        group: Group::Build,
+        program: "cargo",
+        arguments: &["doc", "--workspace", "--no-deps", "--locked"],
+        environment: &[DENY_WARNINGS, ("RUSTDOCFLAGS", "-D warnings")],
+    },
+];
 
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("Unknown check arguments: {}. Use tidy, build, or none.", arguments.join(" "))]
@@ -130,12 +118,19 @@ fn run_step(root: &Path, step: &Step) -> bool {
 }
 
 fn failed_steps<'a>(root: &Path, steps: &'a [Step], groups: &[Group]) -> Vec<&'a str> {
-    steps
-        .iter()
-        .filter(|step| groups.contains(&step.group))
-        .filter(|step| !run_step(root, step))
-        .map(|step| step.name)
-        .collect()
+    let mut failed = Vec::new();
+
+    for step in steps {
+        if !groups.contains(&step.group) {
+            continue;
+        }
+
+        if !run_step(root, step) {
+            failed.push(step.name);
+        }
+    }
+
+    failed
 }
 
 #[expect(
@@ -167,7 +162,7 @@ pub(crate) fn run(root: &Path, arguments: &[String]) -> ExitCode {
         }
     };
 
-    check_steps(root, &steps(), &groups)
+    check_steps(root, STEPS, &groups)
 }
 
 #[cfg(test)]
@@ -175,21 +170,24 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::test_support::strings;
 
     fn shell_step(name: &'static str, arguments: &'static [&'static str]) -> Step {
-        command(name, Group::Tidy, "/bin/sh", arguments, &[])
+        Step {
+            name,
+            group: Group::Tidy,
+            program: "/bin/sh",
+            arguments,
+            environment: &[],
+        }
     }
 
     fn names(group: Group) -> Vec<&'static str> {
-        steps()
-            .into_iter()
+        STEPS
+            .iter()
             .filter(|step| step.group == group)
             .map(|step| step.name)
             .collect()
-    }
-
-    fn strings(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| value.to_string()).collect()
     }
 
     #[test]
@@ -203,7 +201,7 @@ mod tests {
 
     #[test]
     fn steps_lock_cargo_and_deny_build_warnings() {
-        for step in steps() {
+        for step in STEPS {
             if step.program == "cargo" && step.name != "rustfmt" {
                 assert!(
                     step.arguments.contains(&"--locked"),
@@ -291,13 +289,10 @@ mod tests {
     #[test]
     fn run_step_fails_when_its_program_does_not_exist() {
         let root = crate::test_support::temporary_directory();
-        let step = command(
-            "missing",
-            Group::Tidy,
-            "/nonexistent/ruta-missing-program",
-            &[],
-            &[],
-        );
+        let step = Step {
+            program: "/nonexistent/ruta-missing-program",
+            ..shell_step("missing", &[])
+        };
 
         assert!(!run_step(root.path(), &step));
     }
@@ -305,16 +300,16 @@ mod tests {
     #[test]
     fn run_step_runs_in_the_root_with_its_environment() {
         let root = crate::test_support::temporary_directory();
-        let step = command(
-            "environment",
-            Group::Tidy,
-            "/bin/sh",
-            &[
-                "-c",
-                r#"test -f marker && test "$RUTA_CHECK_VALUE" = expected"#,
-            ],
-            &[("RUTA_CHECK_VALUE", "expected")],
-        );
+        let step = Step {
+            environment: &[("RUTA_CHECK_VALUE", "expected")],
+            ..shell_step(
+                "environment",
+                &[
+                    "-c",
+                    r#"test -f marker && test "$RUTA_CHECK_VALUE" = expected"#,
+                ],
+            )
+        };
 
         fs::write(root.path().join("marker"), "").expect("write the marker");
 
@@ -327,13 +322,10 @@ mod tests {
         let steps = [
             shell_step("fails", &["-c", "exit 1"]),
             shell_step("later", &["-c", "touch later"]),
-            command(
-                "build",
-                Group::Build,
-                "/bin/sh",
-                &["-c", "touch build"],
-                &[],
-            ),
+            Step {
+                group: Group::Build,
+                ..shell_step("build", &["-c", "touch build"])
+            },
         ];
 
         let failed = failed_steps(root.path(), &steps, &[Group::Tidy]);

@@ -30,9 +30,9 @@ fn spawn_session_leader(marker: Option<&Path>) -> ChildGuard {
 // `setsid sleep 30` holds "sleep" in its command line before it execs, so wait for `sleep` itself.
 fn wait_until_exec_of_sleep(child: &ChildGuard) {
     let named = poll_until(Duration::from_secs(2), || {
-        let cmdline = fs::read(format!("/proc/{}/cmdline", child.id())).unwrap_or_default();
+        let cmdline = command_line(child.id()).unwrap_or_default();
 
-        Ok(cmdline.starts_with(b"sleep\0").then_some(()))
+        Ok(cmdline.starts_with("sleep ").then_some(()))
     })
     .expect("the name check cannot fail");
 
@@ -121,11 +121,11 @@ fn the_sweep_spares_ruta_and_its_ancestors() {
 
     assert_keeps_running(&mut parent, "an ancestor of ruta keeps running");
     assert!(
-        process_start(ruta).is_some() && !process_is_zombie(ruta),
+        ProcessStat::read_live(ruta).is_some(),
         "ruta itself keeps running"
     );
     let sibling_gone = poll_until(Duration::from_secs(2), || {
-        Ok((process_start(sibling).is_none() || process_is_zombie(sibling)).then_some(()))
+        Ok(ProcessStat::read_live(sibling).is_none().then_some(()))
     })
     .expect("the exit check cannot fail");
     assert!(
@@ -142,7 +142,9 @@ fn stop_window_leaves_a_marked_process_that_started_in_the_boundary_tick() {
 
     let root = crate::test_support::temporary_sandbox_root("stop-window-same-tick");
     let mut older = spawn_session_leader(Some(root.path()));
-    let boundary = process_start(older.id()).expect("the older process has a start time");
+    let boundary = ProcessIdentity::current(older.id())
+        .expect("the older process has a start time")
+        .started;
     fs::write(root.path().join("created"), format!("{boundary}\n")).expect("write the boundary");
     let moved = poll_until(Duration::from_secs(2), || {
         Ok((crate::process_stat::boot_ticks_now() > boundary).then_some(()))
@@ -186,12 +188,12 @@ fn stop_window_leaves_a_process_whose_marker_hides_in_another_value() {
     );
 }
 
-fn candidate(pid: u32, owner: u32, start: u64, state: &str) -> SweepCandidate {
+fn candidate(pid: u32, owner: u32, start: u64) -> SweepCandidate {
     SweepCandidate {
         pid,
         owner,
         stat: crate::process_stat::ProcessStat {
-            state: state.to_string(),
+            state: "S".to_string(),
             parent: 1,
             group: pid,
             start,
@@ -200,34 +202,23 @@ fn candidate(pid: u32, owner: u32, start: u64, state: &str) -> SweepCandidate {
 }
 
 #[test]
-fn may_sweep_takes_only_new_live_processes_of_this_user() {
-    crate::test_support::in_test_namespace!();
-
+fn may_sweep_takes_only_new_processes_of_this_user() {
     let (user, created, spared) = (1000, 500, [7, 8]);
     let cases = [
-        (
-            "a new process of this user",
-            candidate(20, 1000, 501, "S"),
-            true,
-        ),
-        (
-            "another user's process",
-            candidate(21, 1001, 501, "S"),
-            false,
-        ),
-        ("root's process", candidate(22, 0, 501, "S"), false),
+        ("a new process of this user", candidate(20, 1000, 501), true),
+        ("another user's process", candidate(21, 1001, 501), false),
+        ("root's process", candidate(22, 0, 501), false),
         (
             "a process from the creation tick",
-            candidate(23, 1000, 500, "S"),
+            candidate(23, 1000, 500),
             false,
         ),
         (
             "a process from before the root",
-            candidate(24, 1000, 499, "S"),
+            candidate(24, 1000, 499),
             false,
         ),
-        ("ruta or an ancestor", candidate(7, 1000, 501, "S"), false),
-        ("a zombie", candidate(25, 1000, 501, "Z"), false),
+        ("ruta or an ancestor", candidate(7, 1000, 501), false),
     ];
 
     for (case, candidate, expected) in cases {
@@ -241,8 +232,6 @@ fn may_sweep_takes_only_new_live_processes_of_this_user() {
 
 #[test]
 fn environment_holds_marker_matches_only_a_whole_entry() {
-    crate::test_support::in_test_namespace!();
-
     let root = Path::new("/var/tmp/ruta-x");
     let cases: [(&str, &[u8], bool); 5] = [
         ("the entry", b"A=1\0RUTA_ROOT=/var/tmp/ruta-x\0B=2\0", true),
