@@ -58,8 +58,6 @@ fn cleanup_order(root: &Path) -> [StopTarget; 3] {
 
 #[test]
 fn failed_capture_stops_every_target_and_returns_capture_error() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("capture-failed");
     let mut visited = Vec::new();
     let error = finish_capture(
@@ -108,8 +106,6 @@ fn capture_refuses_an_existing_root_before_starting() {
 
 #[test]
 fn cleanup_keeps_the_root_when_a_recorded_process_will_not_stop() {
-    crate::test_support::in_test_namespace!();
-
     for failing in 0..3 {
         let root = crate::test_support::temporary_sandbox_root("will-not-stop");
         let mut visited = Vec::new();
@@ -140,8 +136,6 @@ fn cleanup_keeps_the_root_when_a_recorded_process_will_not_stop() {
 
 #[test]
 fn cleanup_stops_every_record_in_order_and_removes_the_root() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("all-stopped");
     let mut visited = Vec::new();
 
@@ -219,8 +213,6 @@ fn cleanup_refuses_a_root_that_is_not_private() {
 
 #[test]
 fn require_up_refuses_a_symlinked_root() {
-    crate::test_support::in_test_namespace!();
-
     let folder = crate::test_support::temporary_directory();
     let target = crate::test_support::temporary_directory();
     let marker = target.path().join("marker");
@@ -364,8 +356,6 @@ fn assert_not_up(error: &anyhow::Error, case: &str) {
 
 #[test]
 fn require_up_returns_the_display_of_a_live_sandbox() {
-    crate::test_support::in_test_namespace!();
-
     let root = live_sandbox("require-up");
 
     assert_eq!(
@@ -376,8 +366,6 @@ fn require_up_returns_the_display_of_a_live_sandbox() {
 
 #[test]
 fn require_up_refuses_a_stale_display() {
-    crate::test_support::in_test_namespace!();
-
     for (case, make_stale) in stale_display_cases() {
         let root = live_sandbox("require-stale");
         make_stale(root.path());
@@ -390,8 +378,6 @@ fn require_up_refuses_a_stale_display() {
 
 #[test]
 fn require_up_refuses_a_missing_window() {
-    crate::test_support::in_test_namespace!();
-
     let root = live_sandbox("require-window");
     fs::remove_file(root.path().join("window")).expect("remove the window");
 
@@ -409,8 +395,6 @@ fn io_kind(error: &anyhow::Error) -> Option<std::io::ErrorKind> {
 
 #[test]
 fn opened_accepts_a_missing_or_normal_file_and_fails_on_a_folder() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("opened");
 
     opened(root.path()).expect("a missing file means nothing opened");
@@ -427,8 +411,6 @@ fn opened_accepts_a_missing_or_normal_file_and_fails_on_a_folder() {
 
 #[test]
 fn log_fails_on_a_missing_log_and_prints_a_normal_one() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("log");
 
     let error = log(root.path()).expect_err("a missing log fails");
@@ -459,8 +441,6 @@ fn a_failed_command_exits_with_failure() {
 
 #[test]
 fn display_size_leaves_room_around_the_window() {
-    crate::test_support::in_test_namespace!();
-
     assert_eq!(display_size((640, 480)), (840, 680));
     assert_eq!(display_size((u32::MAX, 1)), (u32::MAX, 201));
 }

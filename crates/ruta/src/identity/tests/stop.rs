@@ -251,8 +251,6 @@ fn stop_process_reports_a_failed_open_with_an_unchanged_identity() {
 
 #[test]
 fn identity_still_matches_rejects_a_changed_start_time() {
-    crate::test_support::in_test_namespace!();
-
     let pid = std::process::id();
     let started = process_start(pid).expect("the test process has a start time");
 
@@ -283,8 +281,6 @@ fn stop_process_skips_a_mismatched_start_time() {
 
 #[test]
 fn stop_after_open_refuses_a_changed_identity_without_signaling() {
-    crate::test_support::in_test_namespace!();
-
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let pid = std::process::id();

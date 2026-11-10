@@ -217,8 +217,6 @@ fn capture_accepts_a_24_byte_name_before_checking_its_root() {
 
 #[test]
 fn capture_error_wins_over_cleanup_error() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("capture-errors");
     let mut visited = Vec::new();
     let error = finish_capture(
@@ -241,8 +239,6 @@ fn capture_error_wins_over_cleanup_error() {
 
 #[test]
 fn successful_capture_returns_cleanup_error() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("capture-stop");
     let error = finish_capture(root.path(), Ok(()), |_| Err(WillNotStop.into()))
         .expect_err("cleanup failed");

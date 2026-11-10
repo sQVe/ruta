@@ -201,8 +201,6 @@ fn candidate(pid: u32, owner: u32, start: u64, state: &str) -> SweepCandidate {
 
 #[test]
 fn may_sweep_takes_only_new_live_processes_of_this_user() {
-    crate::test_support::in_test_namespace!();
-
     let (user, created, spared) = (1000, 500, [7, 8]);
     let cases = [
         (
@@ -241,8 +239,6 @@ fn may_sweep_takes_only_new_live_processes_of_this_user() {
 
 #[test]
 fn environment_holds_marker_matches_only_a_whole_entry() {
-    crate::test_support::in_test_namespace!();
-
     let root = Path::new("/var/tmp/ruta-x");
     let cases: [(&str, &[u8], bool); 5] = [
         ("the entry", b"A=1\0RUTA_ROOT=/var/tmp/ruta-x\0B=2\0", true),

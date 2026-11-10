@@ -2,8 +2,6 @@ use super::*;
 
 #[test]
 fn a_failed_start_keeps_the_end_of_the_app_log_after_the_root_is_removed() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("failed-start-log");
     let lines: String = (1..=40)
         .map(|number| format!("app line {number}\n"))
@@ -29,8 +27,6 @@ fn a_failed_start_keeps_the_end_of_the_app_log_after_the_root_is_removed() {
 
 #[test]
 fn a_failed_start_without_an_app_log_keeps_its_error_unchanged() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("failed-start-no-log");
 
     let error = clean_up_failed_start(

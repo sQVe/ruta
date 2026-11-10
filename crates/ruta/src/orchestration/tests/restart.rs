@@ -4,8 +4,6 @@ use super::*;
 
 #[test]
 fn restart_plan_reports_a_missing_record() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("recorded-arguments");
 
     let error = restart_plan(root.path(), None, None).expect_err("a missing record fails");
@@ -18,8 +16,6 @@ fn restart_plan_reports_a_missing_record() {
 
 #[test]
 fn restart_plan_reuses_the_recorded_arguments_and_headed_mode() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("restart-recorded");
     fs::write(
         root.path().join("arguments"),
@@ -42,8 +38,6 @@ fn restart_plan_reuses_the_recorded_arguments_and_headed_mode() {
 
 #[test]
 fn restart_plan_reuses_a_recorded_headless_mode() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("restart-headless");
     fs::write(
         root.path().join("arguments"),
@@ -66,8 +60,6 @@ fn restart_plan_reuses_a_recorded_headless_mode() {
 
 #[test]
 fn restart_plan_prefers_the_given_arguments_and_mode() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("restart-explicit");
     fs::write(
         root.path().join("arguments"),
@@ -91,8 +83,6 @@ fn restart_plan_prefers_the_given_arguments_and_mode() {
 
 #[test]
 fn restart_plan_refuses_an_unsafe_root_even_with_given_arguments() {
-    crate::test_support::in_test_namespace!();
-
     let root = crate::test_support::temporary_sandbox_root("restart-unsafe");
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).expect("set the mode");
 

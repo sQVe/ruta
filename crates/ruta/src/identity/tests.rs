@@ -114,8 +114,6 @@ mod sweep;
 
 #[test]
 fn process_start_is_none_for_a_missing_pid() {
-    crate::test_support::in_test_namespace!();
-
     assert_eq!(process_start(u32::MAX), None);
 }
 
@@ -190,8 +188,6 @@ fn record_process_rejects_a_wrong_name_and_writes_no_file() {
 
 #[test]
 fn record_process_rejects_a_missing_pid_and_writes_no_file() {
-    crate::test_support::in_test_namespace!();
-
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
 
@@ -312,8 +308,6 @@ fn record_process_waits_for_the_command_line_to_change() {
 
 #[test]
 fn the_identity_errors_render_their_messages() {
-    crate::test_support::in_test_namespace!();
-
     let cases = [
         (
             IdentityError::DidNotStop {
@@ -357,8 +351,6 @@ fn the_identity_errors_render_their_messages() {
 
 #[test]
 fn record_matches_rejects_a_changed_start_time() {
-    crate::test_support::in_test_namespace!();
-
     let directory = crate::test_support::temporary_directory();
     let path = directory.path().join("record");
     let pid = std::process::id();
