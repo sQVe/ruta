@@ -13,7 +13,8 @@ use crate::display_start::{
     Session, clean_display_files, display_session, display_up, ensure_display, recorded_mode,
 };
 use crate::environment::{caller_environment, sandbox_environment};
-use crate::identity::{STOP_TIMEOUT, record_xwayland, stop_recorded, stop_window};
+use crate::identity::stop::{stop_recorded, stop_window};
+use crate::identity::{RECORD_TIMEOUT, record_xwayland};
 use crate::input::{focus_window, send, window_id};
 use crate::log_tail::last_lines;
 use crate::root::{
@@ -342,7 +343,7 @@ fn start_window_inner(
     install_openers(root)?;
     start_app(root, config, arguments, &display)?;
     focus_window(root, &display, &config.app.title, size)?;
-    record_xwayland(root, &display, STOP_TIMEOUT)?;
+    record_xwayland(root, &display, RECORD_TIMEOUT)?;
 
     println!(
         "ruta {name} is up on {display} (log: {})",

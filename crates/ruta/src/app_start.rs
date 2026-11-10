@@ -11,10 +11,10 @@ use thiserror::Error;
 use crate::cleanup;
 use crate::config::{CommandLine, Config, Ready};
 use crate::environment::{app_environment, caller_environment};
-use crate::identity::{
-    STOP_TIMEOUT, process_is_zombie, process_start, record_marked_process, stop_window,
-};
+use crate::identity::stop::stop_window;
+use crate::identity::{RECORD_TIMEOUT, record_marked_process};
 use crate::process::{POLL, ProcessError, TOOL_TIMEOUT, poll_until, run_until};
+use crate::process_stat::ProcessStat;
 use crate::root::write_unlinked;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -74,7 +74,7 @@ pub(crate) fn start_app(
         &root.join(crate::root::record::PID),
         pid,
         root,
-        STOP_TIMEOUT,
+        RECORD_TIMEOUT,
     ) {
         cleanup::stop_child_group(&mut child);
         return Err(error);
@@ -257,7 +257,7 @@ fn wait_for_ready_command(
 }
 
 fn app_exited(pid: u32) -> bool {
-    process_start(pid).is_none() || process_is_zombie(pid)
+    ProcessStat::read_live(pid).is_none()
 }
 
 fn app_exited_error(log_path: &Path) -> anyhow::Error {

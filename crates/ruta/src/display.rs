@@ -65,7 +65,7 @@ fn lock_owner(lock: &Path) -> Option<u32> {
 }
 
 fn lock_owner_is_alive(pid: u32) -> bool {
-    ProcessStat::read(pid).is_some_and(|stat| !stat.is_zombie())
+    ProcessStat::read_live(pid).is_some()
 }
 
 fn base_weston_command(

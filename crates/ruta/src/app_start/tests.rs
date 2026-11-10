@@ -1,6 +1,7 @@
 use std::fs;
 
 use super::*;
+use crate::identity::process_is_zombie;
 use crate::test_support::ChildGuard;
 
 fn start_script(script: &str) -> (ChildGuard, ChildStdout) {

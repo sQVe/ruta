@@ -8,6 +8,12 @@ pub(crate) fn process_entries() -> std::io::Result<impl Iterator<Item = (u32, fs
     }))
 }
 
+pub(crate) fn command_line(pid: u32) -> std::io::Result<String> {
+    let bytes = fs::read(format!("/proc/{pid}/cmdline"))?;
+
+    Ok(String::from_utf8_lossy(&bytes).replace('\0', " "))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ProcessStat {
     pub(crate) state: String,
@@ -17,6 +23,10 @@ pub(crate) struct ProcessStat {
 }
 
 impl ProcessStat {
+    pub(crate) fn read_live(pid: u32) -> Option<Self> {
+        Self::read(pid).filter(|stat| !stat.is_zombie())
+    }
+
     // `None` when the process is gone or its stat file cannot be read.
     pub(crate) fn read(pid: u32) -> Option<Self> {
         let text = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -108,6 +118,62 @@ mod tests {
         assert!(
             before <= started && started <= after,
             "{before} <= {started} <= {after}"
+        );
+    }
+
+    #[test]
+    fn read_live_keeps_a_running_process_and_excludes_a_zombie() {
+        crate::test_support::in_test_namespace!();
+
+        let mut command = std::process::Command::new("true");
+        let child = crate::test_support::ChildGuard::spawn(&mut command);
+        let zombie = crate::process::poll_until(std::time::Duration::from_secs(3), || {
+            Ok(ProcessStat::read(child.id()).filter(ProcessStat::is_zombie))
+        })
+        .expect("reading process state cannot fail");
+
+        assert!(zombie.is_some(), "the child became a zombie");
+        assert_eq!(ProcessStat::read_live(child.id()), None);
+        assert_eq!(ProcessStat::read_live(u32::MAX), None);
+        assert_eq!(
+            ProcessStat::read_live(std::process::id()),
+            ProcessStat::read(std::process::id())
+        );
+    }
+
+    #[test]
+    fn the_stat_parent_names_the_test_process() {
+        crate::test_support::in_test_namespace!();
+
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        let child = crate::test_support::ChildGuard::spawn(&mut command);
+
+        assert_eq!(
+            ProcessStat::read(child.id()).map(|stat| stat.parent),
+            Some(std::process::id())
+        );
+    }
+
+    #[test]
+    fn command_line_reports_a_missing_process_as_an_io_error() {
+        let error = command_line(u32::MAX).expect_err("the process does not exist");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn command_line_replaces_argument_separators_with_spaces() {
+        crate::test_support::in_test_namespace!();
+
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        let child = crate::test_support::ChildGuard::spawn(&mut command);
+        child.wait_until_ready("sleep 30 ", std::time::Duration::from_secs(2));
+
+        assert_eq!(
+            command_line(child.id()).expect("read the command line"),
+            "sleep 30 "
         );
     }
 

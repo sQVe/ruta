@@ -1,7 +1,7 @@
 use super::*;
 use crate::app_start::start_app;
-use crate::identity::process_start;
-use crate::identity::tests::stop::spawn_stubborn_group;
+use crate::identity::stop::tests::spawn_stubborn_group;
+use crate::process_stat::ProcessStat;
 use crate::test_support::live_processes_with;
 
 #[test]
@@ -85,7 +85,7 @@ fn down_stops_a_recorded_app_that_dropped_the_marker() {
 
     down("test", root.path()).expect("the sandbox goes down");
 
-    let alive = process_start(pid).is_some() && !crate::identity::process_is_zombie(pid);
+    let alive = ProcessStat::read_live(pid).is_some();
     assert!(!alive, "the recorded app {pid} is stopped");
     assert!(!root.path().exists(), "the root is removed");
 }

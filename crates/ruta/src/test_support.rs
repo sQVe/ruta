@@ -141,10 +141,9 @@ impl ChildGuard {
 
     pub(crate) fn wait_until_ready(&self, fragment: &str, timeout: Duration) {
         let ready = poll_until(timeout, || {
-            let Ok(cmdline) = fs::read(format!("/proc/{}/cmdline", self.id())) else {
+            let Ok(cmdline) = crate::process_stat::command_line(self.id()) else {
                 return Ok(None);
             };
-            let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
 
             Ok(cmdline.contains(fragment).then_some(()))
         })
@@ -281,9 +280,9 @@ mod tests {
         let processes: Vec<(u32, String)> = crate::process_stat::process_entries()
             .expect("list /proc")
             .map(|(pid, _)| {
-                let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+                let command = crate::process_stat::command_line(pid).unwrap_or_default();
 
-                (pid, String::from_utf8_lossy(&command).replace('\0', " "))
+                (pid, command)
             })
             .collect();
         let test_binary = std::env::current_exe().expect("the test binary has a path");

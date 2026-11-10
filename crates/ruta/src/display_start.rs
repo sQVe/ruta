@@ -10,7 +10,8 @@ use crate::cleanup;
 use crate::display;
 
 use crate::environment::{caller_environment, nested_weston_environment, weston_environment};
-use crate::identity::{STOP_TIMEOUT, record_matches, record_process, stop_recorded};
+use crate::identity::stop::stop_recorded;
+use crate::identity::{RECORD_TIMEOUT, record_matches, record_process};
 use crate::root::{prepare_root, record, socket_name};
 
 #[mutants::skip]
@@ -69,8 +70,12 @@ pub(crate) fn ensure_display(
     let mut child = command.spawn().with_context(|| "Could not start weston")?;
     let pid = child.id();
 
-    if let Err(error) = record_process(&root.join(record::WESTON_PID), pid, "weston", STOP_TIMEOUT)
-    {
+    if let Err(error) = record_process(
+        &root.join(record::WESTON_PID),
+        pid,
+        "weston",
+        RECORD_TIMEOUT,
+    ) {
         cleanup::stop_child_group(&mut child);
         return Err(error);
     }
@@ -185,13 +190,16 @@ pub(crate) fn clean_display_files(root: &Path) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::identity::process_start;
+    use crate::identity::ProcessIdentity;
+    use crate::identity::tests::record_changed_start;
 
     pub(crate) fn record_live_display(root: &Path, display: &str) {
-        let pid = std::process::id();
-        let started = process_start(pid).expect("the test process has a start time");
+        let identity = ProcessIdentity::current(std::process::id())
+            .expect("the test process has a start time");
 
-        fs::write(root.join("weston.pid"), format!("{pid} {started}\n")).expect("write weston.pid");
+        identity
+            .write(&root.join("weston.pid"))
+            .expect("write weston.pid");
         fs::write(root.join("display"), display).expect("write the display");
     }
 
@@ -235,11 +243,7 @@ pub(crate) mod tests {
     pub(crate) fn stale_display_cases() -> [StaleDisplayCase; 3] {
         [
             ("changed start", |root| {
-                let pid = std::process::id();
-                let started = process_start(pid).expect("the test process has a start time");
-
-                fs::write(root.join("weston.pid"), format!("{pid} {}\n", started + 1))
-                    .expect("rewrite weston.pid");
+                record_changed_start(&root.join("weston.pid"), std::process::id());
             }),
             ("missing pid file", |root| {
                 fs::remove_file(root.join("weston.pid")).expect("remove weston.pid");
