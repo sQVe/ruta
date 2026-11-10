@@ -196,7 +196,7 @@ fn copy_rest(
     let errors = log.try_clone().context("Could not open the app log")?;
     let group = i32::try_from(group).context("The app's process group is out of range")?;
 
-    Command::new("cat")
+    Command::new(crate::tool::Tool::Cat.name())
         .env_clear()
         .envs(environment.iter().cloned())
         .stdin(Stdio::from(reader.into_inner()))

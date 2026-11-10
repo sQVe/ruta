@@ -166,7 +166,7 @@ fn xdotool_output_within(
     arguments: &[&str],
     timeout: Duration,
 ) -> anyhow::Result<std::process::Output> {
-    let mut command = Command::new("xdotool");
+    let mut command = Command::new(crate::tool::Tool::Xdotool.name());
     command
         .args(arguments)
         .env_clear()

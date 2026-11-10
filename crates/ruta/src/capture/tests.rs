@@ -492,8 +492,8 @@ fn write_capture_looks_for_magick_on_the_given_path() {
         .expect_err("no magick");
 
     assert!(matches!(
-        error.downcast_ref::<crate::command::MissingTool>(),
-        Some(crate::command::MissingTool { name }) if name == "magick"
+        error.downcast_ref::<crate::tool::MissingTool>(),
+        Some(crate::tool::MissingTool { tool: Tool::Magick })
     ));
     assert!(!folder.path().join("capture.json").exists());
 }

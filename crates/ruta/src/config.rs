@@ -5,24 +5,10 @@ use anyhow::Context as _;
 use thiserror::Error;
 use toml::{Table, Value};
 
-pub(crate) const FILE_NAME: &str = "ruta.toml";
+const FILE_NAME: &str = "ruta.toml";
 
 const NAME_LIMIT: usize = 32;
-const TOP_KEYS: &[&str] = &["name", "app", "ready", "environment"];
-const APP_KEYS: &[&str] = &["command", "title", "width", "height"];
-const READY_KEYS: &[&str] = &["line", "command"];
 const READY_LINE: &str = "json";
-
-const RESERVED_KEYS: &[&str] = &[
-    "DISPLAY",
-    "HOME",
-    "PATH",
-    "XAUTHORITY",
-    "DBUS_SESSION_BUS_ADDRESS",
-    "LIBEI_SOCKET",
-    "SWAYSOCK",
-];
-const RESERVED_PREFIXES: &[&str] = &["WAYLAND_", "XDG_", "RUTA_"];
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Config {
@@ -97,35 +83,44 @@ pub(crate) fn load(start: &Path, name_override: Option<&str>) -> anyhow::Result<
     parse(&text, folder, name_override).with_context(|| format!("Invalid {}", path.display()))
 }
 
-pub(crate) fn find(start: &Path) -> Option<PathBuf> {
+fn find(start: &Path) -> Option<PathBuf> {
     start
         .ancestors()
         .map(|folder| folder.join(FILE_NAME))
         .find(|path| path.is_file())
 }
 
-pub(crate) fn parse(
-    text: &str,
-    folder: &Path,
-    name_override: Option<&str>,
-) -> Result<Config, ConfigError> {
+fn parse(text: &str, folder: &Path, name_override: Option<&str>) -> Result<Config, ConfigError> {
     let table: Table = text
         .parse()
         .map_err(|error: toml::de::Error| ConfigError::Syntax {
             message: error.message().to_string(),
         })?;
 
-    refuse_unknown_keys(&table, "", TOP_KEYS)?;
-
-    let name = valid_name("name", string(required(&table, "", "name")?, "name")?)?;
-    let name = match name_override {
-        Some(name) => valid_name("RUTA_NAME", name)?,
-        None => name,
+    let section = Section {
+        table: &table,
+        path: String::new(),
     };
-    let app = parse_app(table_at(&table, "app")?, folder)?;
-    let ready = parse_ready(table_at(&table, "ready")?, folder)?;
-    let environment = match table.get("environment") {
-        Some(value) => parse_environment(table_value(value, "environment")?)?,
+    section.refuse_unknown_keys(&["name", "app", "ready", "environment"])?;
+
+    let name = section.read("name", |value, key| {
+        let name = string(value, key)?;
+        check_name(key, name)?;
+
+        Ok(name)
+    })?;
+    let name = match name_override {
+        Some(name) => {
+            check_name("RUTA_NAME", name)?;
+            name
+        }
+        None => name,
+    }
+    .to_string();
+    let app = parse_app(section.section("app")?, folder)?;
+    let ready = parse_ready(section.section("ready")?, folder)?;
+    let environment = match section.optional_section("environment")? {
+        Some(section) => parse_environment(section)?,
         None => Vec::new(),
     };
 
@@ -138,7 +133,7 @@ pub(crate) fn parse(
     })
 }
 
-pub(crate) fn valid_name(key: &str, name: &str) -> Result<String, ConfigError> {
+pub(crate) fn check_name(key: &str, name: &str) -> Result<(), ConfigError> {
     let mut characters = name.chars();
     let valid_first = characters
         .next()
@@ -154,92 +149,121 @@ pub(crate) fn valid_name(key: &str, name: &str) -> Result<String, ConfigError> {
         });
     }
 
-    Ok(name.to_string())
+    Ok(())
 }
 
-fn parse_app(table: &Table, folder: &Path) -> Result<App, ConfigError> {
-    refuse_unknown_keys(table, "app", APP_KEYS)?;
+fn parse_app(section: Section<'_>, folder: &Path) -> Result<App, ConfigError> {
+    section.refuse_unknown_keys(&["command", "title", "width", "height"])?;
 
     Ok(App {
-        command: command_line(required(table, "app", "command")?, "app.command", folder)?,
-        title: string(required(table, "app", "title")?, "app.title")?.to_string(),
-        width: size(required(table, "app", "width")?, "app.width")?,
-        height: size(required(table, "app", "height")?, "app.height")?,
+        command: section.read("command", |value, key| command_line(value, key, folder))?,
+        title: section.read("title", string)?.to_string(),
+        width: section.read("width", size)?,
+        height: section.read("height", size)?,
     })
 }
 
-fn parse_ready(table: &Table, folder: &Path) -> Result<Ready, ConfigError> {
-    refuse_unknown_keys(table, "ready", READY_KEYS)?;
+fn parse_ready(section: Section<'_>, folder: &Path) -> Result<Ready, ConfigError> {
+    section.refuse_unknown_keys(&["line", "command"])?;
 
-    match (table.get("line"), table.get("command")) {
+    match (section.table.get("line"), section.table.get("command")) {
         (Some(_), Some(_)) => Err(ConfigError::BothReadyForms),
         (None, None) => Err(ConfigError::NoReadyForm),
-        (Some(line), None) => match string(line, "ready.line")? {
-            READY_LINE => Ok(Ready::Line),
-            _ => Err(ConfigError::WrongType {
-                key: "ready.line".to_string(),
-                expected: "\"json\"",
-            }),
-        },
+        (Some(line), None) => {
+            let key = section.key("line");
+
+            match string(line, &key)? {
+                READY_LINE => Ok(Ready::Line),
+                _ => Err(ConfigError::WrongType {
+                    key,
+                    expected: "\"json\"",
+                }),
+            }
+        }
         (None, Some(command)) => Ok(Ready::Command(command_line(
             command,
-            "ready.command",
+            &section.key("command"),
             folder,
         )?)),
     }
 }
 
-fn parse_environment(table: &Table) -> Result<Vec<(String, String)>, ConfigError> {
+fn parse_environment(section: Section<'_>) -> Result<Vec<(String, String)>, ConfigError> {
     let mut environment = Vec::new();
 
-    for (key, value) in table {
+    for (key, value) in section.table {
         if key.is_empty() || key.contains(['=', '\0']) {
             return Err(ConfigError::BadEnvironmentKey { key: key.clone() });
         }
 
-        if is_reserved(key) {
+        if crate::environment::is_reserved(key) {
             return Err(ConfigError::ReservedEnvironment { key: key.clone() });
         }
 
-        let value = string(value, &format!("environment.{key}"))?;
+        let value = string(value, &section.key(key))?;
         environment.push((key.clone(), value.to_string()));
     }
 
     Ok(environment)
 }
 
-fn is_reserved(key: &str) -> bool {
-    RESERVED_KEYS.contains(&key)
-        || RESERVED_PREFIXES
-            .iter()
-            .any(|prefix| key.starts_with(prefix))
+struct Section<'a> {
+    table: &'a Table,
+    path: String,
 }
 
-fn refuse_unknown_keys(table: &Table, prefix: &str, allowed: &[&str]) -> Result<(), ConfigError> {
-    match table.keys().find(|key| !allowed.contains(&key.as_str())) {
-        Some(key) => Err(ConfigError::UnknownKey {
-            key: qualified(prefix, key),
-        }),
-        None => Ok(()),
-    }
-}
+impl<'a> Section<'a> {
+    fn key(&self, key: &str) -> String {
+        if self.path.is_empty() {
+            return key.to_string();
+        }
 
-fn qualified(prefix: &str, key: &str) -> String {
-    if prefix.is_empty() {
-        return key.to_string();
+        format!("{}.{key}", self.path)
     }
 
-    format!("{prefix}.{key}")
-}
+    fn refuse_unknown_keys(&self, allowed: &[&str]) -> Result<(), ConfigError> {
+        match self
+            .table
+            .keys()
+            .find(|key| !allowed.contains(&key.as_str()))
+        {
+            Some(key) => Err(ConfigError::UnknownKey { key: self.key(key) }),
+            None => Ok(()),
+        }
+    }
 
-fn required<'a>(table: &'a Table, prefix: &str, key: &str) -> Result<&'a Value, ConfigError> {
-    table.get(key).ok_or_else(|| ConfigError::MissingKey {
-        key: qualified(prefix, key),
-    })
-}
+    fn read<T>(
+        &self,
+        key: &str,
+        reader: impl FnOnce(&'a Value, &str) -> Result<T, ConfigError>,
+    ) -> Result<T, ConfigError> {
+        let path = self.key(key);
+        let value = self
+            .table
+            .get(key)
+            .ok_or_else(|| ConfigError::MissingKey { key: path.clone() })?;
 
-fn table_at<'a>(table: &'a Table, key: &str) -> Result<&'a Table, ConfigError> {
-    table_value(required(table, "", key)?, key)
+        reader(value, &path)
+    }
+
+    fn section(&self, key: &str) -> Result<Section<'a>, ConfigError> {
+        Ok(Section {
+            table: self.read(key, table_value)?,
+            path: self.key(key),
+        })
+    }
+
+    fn optional_section(&self, key: &str) -> Result<Option<Section<'a>>, ConfigError> {
+        self.table
+            .get(key)
+            .map(|value| {
+                let path = self.key(key);
+                let table = table_value(value, &path)?;
+
+                Ok(Section { table, path })
+            })
+            .transpose()
+    }
 }
 
 fn table_value<'a>(value: &'a Value, key: &str) -> Result<&'a Table, ConfigError> {
@@ -281,25 +305,18 @@ fn command_line(value: &Value, key: &str, folder: &Path) -> Result<CommandLine, 
     let items = value.as_array().ok_or_else(wrong_type)?;
     let words = items
         .iter()
-        .map(|item| item.as_str().map(str::to_string).ok_or_else(wrong_type))
+        .map(|item| item.as_str().ok_or_else(wrong_type))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let Some((program, arguments)) = words.split_first() else {
-        return Err(ConfigError::EmptyCommand {
+    match words.split_first() {
+        Some((program, arguments)) if !program.is_empty() => Ok(CommandLine {
+            program: resolve_program(program, folder),
+            arguments: arguments.iter().map(|word| (*word).to_string()).collect(),
+        }),
+        _ => Err(ConfigError::EmptyCommand {
             key: key.to_string(),
-        });
-    };
-
-    if program.is_empty() {
-        return Err(ConfigError::EmptyCommand {
-            key: key.to_string(),
-        });
+        }),
     }
-
-    Ok(CommandLine {
-        program: resolve_program(program, folder),
-        arguments: arguments.to_vec(),
-    })
 }
 
 fn resolve_program(program: &str, folder: &Path) -> PathBuf {

@@ -219,7 +219,7 @@ mod tests {
             return;
         }
 
-        let output = std::process::Command::new("cat")
+        let output = std::process::Command::new(crate::tool::Tool::Cat.name())
             .arg("/proc/self/status")
             .output()
             .expect("run cat");

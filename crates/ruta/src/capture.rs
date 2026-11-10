@@ -6,8 +6,8 @@ use anyhow::Context as _;
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::command::require_program_in;
 use crate::process::{TOOL_TIMEOUT, run_with_timeout};
+use crate::tool::{Tool, require_program_in};
 
 const GEOMETRY_FIELDS: [&str; 3] = ["origin", "size", "scale"];
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
@@ -196,10 +196,10 @@ fn crop_image(
         .iter()
         .find(|(name, _)| name == "PATH")
         .map_or("", |(_, value)| value.as_str());
-    require_program_in("magick", path)?;
+    require_program_in(Tool::Magick, path)?;
 
     let geometry = crop_geometry(crop);
-    let mut command = Command::new("magick");
+    let mut command = Command::new(Tool::Magick.name());
 
     command
         .arg(shot)

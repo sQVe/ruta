@@ -6,7 +6,7 @@ use anyhow::Context as _;
 use thiserror::Error;
 
 use crate::app_start::start_app;
-use crate::command::{Sandbox, require_program};
+use crate::command::Sandbox;
 use crate::config::Config;
 use crate::display;
 use crate::display_start::{
@@ -20,6 +20,7 @@ use crate::root::{
     create_root, install_openers, prepare_root, record_root_creation, refuse_linked_paths,
     refuse_unsafe_root, remove_root, require_trusted_root, root_path,
 };
+use crate::tool::{Tool, require_program};
 
 const DISPLAY_MARGIN: u32 = 200;
 
@@ -43,7 +44,10 @@ fn execute(config: &Config, command: Sandbox) -> anyhow::Result<()> {
 
     match command {
         Sandbox::Up { arguments, headed } => up(config, &root, &arguments, headed),
-        Sandbox::Restart { arguments, headed } => restart(config, &root, arguments, headed),
+        Sandbox::Restart {
+            arguments,
+            force_headed,
+        } => restart(config, &root, arguments, force_headed),
         Sandbox::Capture { out, arguments } => capture(
             config,
             &root_path(&format!("{name}-capture")),
@@ -82,7 +86,8 @@ fn execute(config: &Config, command: Sandbox) -> anyhow::Result<()> {
 }
 
 fn capture(config: &Config, root: &Path, out: &Path, arguments: &[String]) -> anyhow::Result<()> {
-    let name = crate::config::valid_name("RUTA_NAME", &format!("{}-capture", config.name))?;
+    let name = format!("{}-capture", config.name);
+    crate::config::check_name("RUTA_NAME", &name)?;
     refuse_capture_output_in_root(root, out)?;
 
     match create_root(root) {
@@ -147,7 +152,7 @@ fn capture_inner(
         fs::canonicalize(out).context("Could not resolve the capture output folder")?;
     refuse_capture_output_in_root(&resolved_root, &resolved_out)?;
     require_display_tools()?;
-    require_program("import")?;
+    require_program(Tool::Import)?;
 
     start_window(config, root, arguments, &Session::Headless)?;
 
@@ -224,11 +229,11 @@ fn restart(
     config: &Config,
     root: &Path,
     arguments: Option<Vec<String>>,
-    headed: Option<bool>,
+    force_headed: bool,
 ) -> anyhow::Result<()> {
     require_display_tools()?;
 
-    let (arguments, headed) = restart_plan(root, arguments, headed)?;
+    let (arguments, headed) = restart_plan(root, arguments, force_headed)?;
     let session = caller_session(headed)?;
 
     start_window(config, root, &arguments, &session)
@@ -245,10 +250,10 @@ fn caller_session(headed: bool) -> anyhow::Result<Session> {
 }
 
 fn require_display_tools() -> anyhow::Result<()> {
-    require_program("weston")?;
-    require_program("Xwayland")?;
-    require_program("xdotool")?;
-    require_program("cat")?;
+    require_program(Tool::Weston)?;
+    require_program(Tool::Xwayland)?;
+    require_program(Tool::Xdotool)?;
+    require_program(Tool::Cat)?;
 
     Ok(())
 }
@@ -256,11 +261,11 @@ fn require_display_tools() -> anyhow::Result<()> {
 fn restart_plan(
     root: &Path,
     arguments: Option<Vec<String>>,
-    headed: Option<bool>,
+    force_headed: bool,
 ) -> anyhow::Result<(Vec<String>, bool)> {
     require_trusted_root(root)?;
 
-    let headed = headed.unwrap_or_else(|| recorded_mode(root).as_deref() == Some("headed"));
+    let headed = force_headed || recorded_mode(root).as_deref() == Some("headed");
     let arguments = match arguments {
         Some(arguments) => arguments,
         None => recorded_arguments(root)?,
@@ -367,7 +372,7 @@ fn with_window<F>(name: &str, root: &Path, action: F) -> anyhow::Result<()>
 where
     F: FnOnce(&str, &str) -> anyhow::Result<()>,
 {
-    require_program("xdotool")?;
+    require_program(Tool::Xdotool)?;
 
     let display = require_up(name, root)?;
     let window = window_id(root)?;
@@ -399,7 +404,7 @@ fn require_up(name: &str, root: &Path) -> anyhow::Result<String> {
 #[mutants::skip]
 #[expect(clippy::print_stdout, reason = "the shot path is the command's output")]
 fn shot(name: &str, root: &Path, file: Option<PathBuf>) -> anyhow::Result<()> {
-    require_program("import")?;
+    require_program(Tool::Import)?;
 
     let display = require_up(name, root)?;
     let window = window_id(root)?;

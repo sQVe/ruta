@@ -30,7 +30,25 @@ const ALLOWED_PREFIXES: &[&str] = &[
     "__",
 ];
 
+const RESERVED_KEYS: &[&str] = &[
+    "DISPLAY",
+    "HOME",
+    "PATH",
+    "XAUTHORITY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "LIBEI_SOCKET",
+    "SWAYSOCK",
+];
+const RESERVED_PREFIXES: &[&str] = &["WAYLAND_", "XDG_", "RUTA_"];
+
 pub(crate) const ROOT_MARKER: &str = "RUTA_ROOT";
+
+pub(crate) fn is_reserved(key: &str) -> bool {
+    RESERVED_KEYS.contains(&key)
+        || RESERVED_PREFIXES
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+}
 
 pub(crate) fn caller_environment() -> Vec<(String, String)> {
     utf8_entries(std::env::vars_os())

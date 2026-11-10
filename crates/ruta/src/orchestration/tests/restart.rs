@@ -6,7 +6,7 @@ use super::*;
 fn restart_plan_reports_a_missing_record() {
     let root = crate::test_support::temporary_sandbox_root("recorded-arguments");
 
-    let error = restart_plan(root.path(), None, None).expect_err("a missing record fails");
+    let error = restart_plan(root.path(), None, false).expect_err("a missing record fails");
 
     assert_eq!(
         error.to_string(),
@@ -31,7 +31,7 @@ fn restart_plan_reuses_the_recorded_arguments_and_headed_mode() {
     .expect("write the mode");
 
     assert_eq!(
-        restart_plan(root.path(), None, None).expect("the records are read"),
+        restart_plan(root.path(), None, false).expect("the records are read"),
         (strings(&["--fast", "a b"]), true)
     );
 }
@@ -53,7 +53,7 @@ fn restart_plan_reuses_a_recorded_headless_mode() {
     .expect("write the mode");
 
     assert_eq!(
-        restart_plan(root.path(), None, None).expect("the records are read"),
+        restart_plan(root.path(), None, false).expect("the records are read"),
         (Vec::new(), false)
     );
 }
@@ -75,8 +75,7 @@ fn restart_plan_prefers_the_given_arguments_and_mode() {
     .expect("write the mode");
 
     assert_eq!(
-        restart_plan(root.path(), Some(strings(&["--slow"])), Some(true))
-            .expect("the given values win"),
+        restart_plan(root.path(), Some(strings(&["--slow"])), true).expect("the given values win"),
         (strings(&["--slow"]), true)
     );
 }
@@ -86,7 +85,7 @@ fn restart_plan_refuses_an_unsafe_root_even_with_given_arguments() {
     let root = crate::test_support::temporary_sandbox_root("restart-unsafe");
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).expect("set the mode");
 
-    let error = restart_plan(root.path(), Some(strings(&["--slow"])), Some(false))
+    let error = restart_plan(root.path(), Some(strings(&["--slow"])), false)
         .expect_err("the root is refused");
 
     assert!(

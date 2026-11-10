@@ -75,7 +75,7 @@ fn base_weston_command(
     log: &Path,
     environment: &[(String, String)],
 ) -> Command {
-    let mut command = Command::new("weston");
+    let mut command = Command::new(crate::tool::Tool::Weston.name());
 
     command
         .arg("--xwayland")
@@ -161,7 +161,7 @@ pub(crate) fn import_window(
     path: &Path,
     environment: &[(String, String)],
 ) -> anyhow::Result<()> {
-    let mut command = Command::new("import");
+    let mut command = Command::new(crate::tool::Tool::Import.name());
 
     command
         .args(["-display", display, "-window", window])

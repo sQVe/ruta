@@ -65,14 +65,14 @@ fn parse_reads_every_command() {
             strings(&["restart"]),
             Sandbox::Restart {
                 arguments: None,
-                headed: None,
+                force_headed: false,
             },
         ),
         (
             strings(&["restart", "--headed", "smoke-3"]),
             Sandbox::Restart {
                 arguments: Some(strings(&["smoke-3"])),
-                headed: Some(true),
+                force_headed: true,
             },
         ),
         (strings(&["shot"]), Sandbox::Shot { file: None }),
@@ -213,7 +213,7 @@ fn headed_after_the_first_app_argument_goes_to_the_app() {
         parse(&strings(&["restart", "smoke-2", "--headed"])),
         Ok(Sandbox::Restart {
             arguments: Some(strings(&["smoke-2", "--headed"])),
-            headed: None,
+            force_headed: false,
         })
     );
 }
@@ -235,14 +235,14 @@ fn restart_with_only_end_of_options_clears_the_arguments() {
         parse(&strings(&["restart", "--"])),
         Ok(Sandbox::Restart {
             arguments: Some(Vec::new()),
-            headed: None,
+            force_headed: false,
         })
     );
     assert_eq!(
         parse(&strings(&["restart", "--headed"])),
         Ok(Sandbox::Restart {
             arguments: None,
-            headed: Some(true),
+            force_headed: true,
         })
     );
 }
@@ -302,78 +302,4 @@ fn a_bad_number_error_names_the_argument_and_value() {
     let error = parse(&strings(&["click", "x", "2"])).expect_err("x is not a number");
 
     assert_eq!(error.to_string(), "x must be a whole number, not \"x\"");
-}
-
-#[test]
-fn find_program_uses_the_given_path() {
-    let directory = crate::test_support::temporary_directory();
-    let program = directory.path().join("fake-tool");
-    std::fs::write(&program, "#!/bin/sh\n").expect("write the fake tool");
-    std::fs::set_permissions(
-        &program,
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    )
-    .expect("make the tool runnable");
-
-    let found = find_program("fake-tool", &directory.path().to_string_lossy());
-    assert_eq!(found, Some(program));
-    assert_eq!(find_program("fake-tool", "/nonexistent"), None);
-}
-
-#[test]
-fn find_program_skips_a_file_that_is_not_executable() {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let plain = crate::test_support::temporary_directory();
-    let runnable = crate::test_support::temporary_directory();
-    let skipped = plain.path().join("fake-tool");
-    let program = runnable.path().join("fake-tool");
-    for path in [&skipped, &program] {
-        std::fs::write(path, "#!/bin/sh\n").expect("write the fake tool");
-    }
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
-        .expect("make the tool runnable");
-    let plain_path = plain.path().to_string_lossy().into_owned();
-    let both = format!("{plain_path}:{}", runnable.path().display());
-
-    // 0o641 lets only others run a file that the current user owns. Root may run any file with
-    // an execute bit, so that case applies only to other users.
-    let modes: &[u32] = if rustix::process::geteuid().is_root() {
-        &[0o644]
-    } else {
-        &[0o644, 0o641]
-    };
-
-    for &mode in modes {
-        std::fs::set_permissions(&skipped, std::fs::Permissions::from_mode(mode))
-            .expect("set the tool mode");
-
-        assert_eq!(find_program("fake-tool", &plain_path), None, "{mode:o}");
-        assert_eq!(
-            find_program("fake-tool", &both),
-            Some(program.clone()),
-            "{mode:o}"
-        );
-    }
-}
-
-#[test]
-fn require_program_reports_a_missing_tool() {
-    let error = require_program_in("no-such-tool", "/nonexistent").expect_err("missing tool");
-
-    assert!(matches!(error, MissingTool { ref name } if name == "no-such-tool"));
-    assert_eq!(
-        error.to_string(),
-        "The tool \"no-such-tool\" is missing. Install no-such-tool and try again."
-    );
-}
-
-#[test]
-fn tool_error_names_the_tool_and_package() {
-    assert!(tool_error("xdotool").contains("xdotool"));
-    assert!(tool_error("Xwayland").contains("xorg-xwayland"));
-    assert!(tool_error("import").contains("imagemagick"));
-    assert!(tool_error("magick").contains("the imagemagick package"));
-    assert!(tool_error("cat").contains("coreutils"));
-    assert!(tool_error("weston").contains("the weston package"));
 }

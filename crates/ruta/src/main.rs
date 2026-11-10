@@ -15,6 +15,7 @@ mod process_stat;
 mod root;
 #[cfg(test)]
 mod test_support;
+mod tool;
 
 use std::process::ExitCode;
 
