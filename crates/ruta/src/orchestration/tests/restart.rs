@@ -9,8 +9,23 @@ fn restart_plan_reports_a_missing_record() {
     let error = restart_plan(root.path(), None, false).expect_err("a missing record fails");
 
     assert_eq!(
-        error.to_string(),
+        error.downcast_ref::<SandboxError>(),
+        Some(&SandboxError::RestartNotUp)
+    );
+}
+
+#[test]
+fn both_not_up_errors_keep_their_text() {
+    assert_eq!(
+        SandboxError::RestartNotUp.to_string(),
         "The sandbox is not up; run 'ruta up' first."
+    );
+    assert_eq!(
+        SandboxError::NotUp {
+            name: "test".to_string()
+        }
+        .to_string(),
+        "ruta test is not up; run 'ruta up' first"
     );
 }
 

@@ -241,9 +241,7 @@ fn key_arguments(action: &str, keys: &[String]) -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn strings(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| value.to_string()).collect()
-    }
+    use crate::test_support::strings;
 
     #[test]
     fn interpolate_hits_both_ends_and_the_middle() {

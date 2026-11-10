@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
 use anyhow::Context as _;
 use thiserror::Error;
@@ -18,43 +17,36 @@ use crate::identity::{RECORD_TIMEOUT, record_xwayland};
 use crate::input::{focus_window, send, window_id};
 use crate::log_tail::last_lines;
 use crate::root::{
-    create_root, install_openers, prepare_root, record_root_creation, refuse_linked_paths,
-    refuse_unsafe_root, remove_root, require_trusted_root, root_path,
+    create_root, install_openers, prepare_root, record_root_creation, remove_root,
+    require_trusted_root, root_path,
 };
 use crate::tool::{Tool, require_program};
 
 const DISPLAY_MARGIN: u32 = 200;
 
-#[expect(
-    clippy::print_stderr,
-    reason = "failure messages are the command's output"
-)]
-pub(crate) fn run(config: &Config, command: Sandbox) -> ExitCode {
-    match execute(config, command) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("{error:#}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn execute(config: &Config, command: Sandbox) -> anyhow::Result<()> {
+pub(crate) fn execute(
+    config: &Config,
+    command: Sandbox,
+    emit: &mut impl FnMut(&str),
+) -> anyhow::Result<()> {
     let name = &config.name;
     let root = root_path(name);
 
-    match command {
+    let output = match command {
         Sandbox::Up { arguments, headed } => up(config, &root, &arguments, headed),
         Sandbox::Restart {
             arguments,
             force_headed,
         } => restart(config, &root, arguments, force_headed),
-        Sandbox::Capture { out, arguments } => capture(
-            config,
-            &root_path(&format!("{name}-capture")),
-            &out,
-            &arguments,
-        ),
+        Sandbox::Capture { out, arguments } => {
+            return capture(
+                config,
+                &root_path(&format!("{name}-capture")),
+                &out,
+                &arguments,
+                emit,
+            );
+        }
         Sandbox::Shot { file } => shot(name, &root, file),
         Sandbox::Move { from, to } => with_window(name, &root, |display, window| {
             send::glide(&root, display, window, from, to)
@@ -83,10 +75,22 @@ fn execute(config: &Config, command: Sandbox) -> anyhow::Result<()> {
         Sandbox::Log => log(&root),
         Sandbox::Opened => opened(&root),
         Sandbox::Down => down(name, &root),
+    }?;
+
+    if !output.is_empty() {
+        emit(&output);
     }
+
+    Ok(())
 }
 
-fn capture(config: &Config, root: &Path, out: &Path, arguments: &[String]) -> anyhow::Result<()> {
+fn capture(
+    config: &Config,
+    root: &Path,
+    out: &Path,
+    arguments: &[String],
+    emit: &mut impl FnMut(&str),
+) -> anyhow::Result<()> {
     let name = format!("{}-capture", config.name);
     crate::config::check_name("RUTA_NAME", &name)?;
     refuse_capture_output_in_root(root, out)?;
@@ -99,7 +103,7 @@ fn capture(config: &Config, root: &Path, out: &Path, arguments: &[String]) -> an
         Err(error) => return Err(error).context("Could not create the capture root"),
     }
 
-    let captured = capture_inner(config, root, out, arguments);
+    let captured = capture_inner(config, root, out, arguments, emit);
 
     finish_capture(root, captured, stop_target)
 }
@@ -144,6 +148,7 @@ fn capture_inner(
     root: &Path,
     out: &Path,
     arguments: &[String],
+    emit: &mut impl FnMut(&str),
 ) -> anyhow::Result<()> {
     record_root_creation(root)?;
     prepare_capture_folder(out)?;
@@ -155,7 +160,9 @@ fn capture_inner(
     require_display_tools()?;
     require_program(Tool::Import)?;
 
-    start_window(config, root, arguments, &Session::Headless)?;
+    let output = start_window(config, root, arguments, &Session::Headless)?;
+
+    emit(&output);
 
     capture_window(&config.name, root, out)
 }
@@ -202,7 +209,7 @@ fn capture_window(name: &str, root: &Path, out: &Path) -> anyhow::Result<()> {
 )]
 fn finish_capture<F>(root: &Path, captured: anyhow::Result<()>, stop: F) -> anyhow::Result<()>
 where
-    F: FnMut(StopTarget) -> anyhow::Result<()>,
+    F: FnMut(&Path, StopTarget) -> anyhow::Result<()>,
 {
     let cleaned = cleanup(root, stop);
 
@@ -218,7 +225,7 @@ where
 }
 
 #[mutants::skip]
-fn up(config: &Config, root: &Path, arguments: &[String], headed: bool) -> anyhow::Result<()> {
+fn up(config: &Config, root: &Path, arguments: &[String], headed: bool) -> anyhow::Result<String> {
     require_display_tools()?;
     let session = caller_session(headed)?;
 
@@ -231,7 +238,7 @@ fn restart(
     root: &Path,
     arguments: Option<Vec<String>>,
     force_headed: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     require_display_tools()?;
 
     let (arguments, headed) = restart_plan(root, arguments, force_headed)?;
@@ -277,7 +284,7 @@ fn restart_plan(
 
 fn recorded_arguments(root: &Path) -> anyhow::Result<Vec<String>> {
     let recorded = fs::read_to_string(root.join(crate::root::record::ARGUMENTS))
-        .map_err(|_| anyhow::anyhow!("The sandbox is not up; run 'ruta up' first."))?;
+        .map_err(|_| SandboxError::RestartNotUp)?;
 
     serde_json::from_str(&recorded).with_context(|| "Could not read the recorded arguments")
 }
@@ -287,24 +294,19 @@ fn start_window(
     root: &Path,
     arguments: &[String],
     session: &Session,
-) -> anyhow::Result<()> {
-    let started = start_window_inner(config, root, arguments, session);
-
-    clean_up_failed_start(root, started, stop_target)
+) -> anyhow::Result<String> {
+    start_sandbox(config, root, arguments, session)
+        .map_err(|error| failed_start(root, error, stop_target))
 }
 
 #[expect(
     clippy::print_stderr,
     reason = "a cleanup failure after a failed start must not hide the start error"
 )]
-fn clean_up_failed_start<F>(root: &Path, started: anyhow::Result<()>, stop: F) -> anyhow::Result<()>
+fn failed_start<F>(root: &Path, error: anyhow::Error, stop: F) -> anyhow::Error
 where
-    F: FnMut(StopTarget) -> anyhow::Result<()>,
+    F: FnMut(&Path, StopTarget) -> anyhow::Result<()>,
 {
-    let Err(error) = started else {
-        return Ok(());
-    };
-
     // The cleanup removes the app log, so its end goes into the error first. A refused root is not
     // read, since its log may be anything, such as a FIFO.
     let log_tail = match require_trusted_root(root) {
@@ -317,22 +319,18 @@ where
     }
 
     if log_tail.is_empty() {
-        return Err(error);
+        return error;
     }
 
-    Err(FailedStart { error, log_tail }.into())
+    FailedStart { error, log_tail }.into()
 }
 
-#[expect(
-    clippy::print_stdout,
-    reason = "the display and log path are the command's output"
-)]
-fn start_window_inner(
+fn start_sandbox(
     config: &Config,
     root: &Path,
     arguments: &[String],
     session: &Session,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     let name = &config.name;
     let size = (config.app.width, config.app.height);
 
@@ -345,12 +343,10 @@ fn start_window_inner(
     focus_window(root, &display, &config.app.title, size)?;
     record_xwayland(root, &display, RECORD_TIMEOUT)?;
 
-    println!(
-        "ruta {name} is up on {display} (log: {})",
+    Ok(format!(
+        "ruta {name} is up on {display} (log: {})\n",
         root.join(crate::root::record::APP_LOG).display()
-    );
-
-    Ok(())
+    ))
 }
 
 fn display_size((width, height): (u32, u32)) -> (u32, u32) {
@@ -369,7 +365,7 @@ struct FailedStart {
     log_tail: Vec<String>,
 }
 
-fn with_window<F>(name: &str, root: &Path, action: F) -> anyhow::Result<()>
+fn with_window<F>(name: &str, root: &Path, action: F) -> anyhow::Result<String>
 where
     F: FnOnce(&str, &str) -> anyhow::Result<()>,
 {
@@ -378,13 +374,17 @@ where
     let display = require_up(name, root)?;
     let window = window_id(root)?;
 
-    action(&display, &window)
+    action(&display, &window)?;
+
+    Ok(String::new())
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
 enum SandboxError {
     #[error("ruta {name} is not up; run 'ruta up' first")]
     NotUp { name: String },
+    #[error("The sandbox is not up; run 'ruta up' first.")]
+    RestartNotUp,
 }
 
 fn require_up(name: &str, root: &Path) -> anyhow::Result<String> {
@@ -403,8 +403,7 @@ fn require_up(name: &str, root: &Path) -> anyhow::Result<String> {
 }
 
 #[mutants::skip]
-#[expect(clippy::print_stdout, reason = "the shot path is the command's output")]
-fn shot(name: &str, root: &Path, file: Option<PathBuf>) -> anyhow::Result<()> {
+fn shot(name: &str, root: &Path, file: Option<PathBuf>) -> anyhow::Result<String> {
     require_program(Tool::Import)?;
 
     let display = require_up(name, root)?;
@@ -413,87 +412,60 @@ fn shot(name: &str, root: &Path, file: Option<PathBuf>) -> anyhow::Result<()> {
     let environment = sandbox_environment(&caller_environment(), root, &display);
 
     crate::capture::import_window(&display, &window, &path, &environment)?;
-    println!("{}", path.display());
-
-    Ok(())
+    Ok(format!("{}\n", path.display()))
 }
 
-#[expect(clippy::print_stdout, reason = "the app log is the command's output")]
-fn log(root: &Path) -> anyhow::Result<()> {
+fn log(root: &Path) -> anyhow::Result<String> {
     require_trusted_root(root)?;
 
-    let log = fs::read_to_string(root.join(crate::root::record::APP_LOG))
-        .with_context(|| "Could not read the app log")?;
-
-    print!("{log}");
-
-    Ok(())
+    fs::read_to_string(root.join(crate::root::record::APP_LOG))
+        .with_context(|| "Could not read the app log")
 }
 
-#[expect(
-    clippy::print_stdout,
-    reason = "the opened links are the command's output"
-)]
-fn opened(root: &Path) -> anyhow::Result<()> {
+fn opened(root: &Path) -> anyhow::Result<String> {
     require_trusted_root(root)?;
 
     match fs::read_to_string(root.join(crate::root::record::OPENED)) {
-        Ok(opened) => print!("{opened}"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(error).with_context(|| "Could not read the opened links");
-        }
+        Ok(opened) => Ok(opened),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error).with_context(|| "Could not read the opened links"),
     }
-
-    Ok(())
 }
 
-#[expect(
-    clippy::print_stdout,
-    reason = "the sandbox state is the command's output"
-)]
-fn down(name: &str, root: &Path) -> anyhow::Result<()> {
+fn down(name: &str, root: &Path) -> anyhow::Result<String> {
     if !root.exists() {
-        println!("ruta {name} is not up");
-        return Ok(());
+        return Ok(format!("ruta {name} is not up\n"));
     }
 
-    refuse_unsafe_root(root)?;
-    refuse_linked_paths(root)?;
     cleanup(root, stop_target)?;
-    println!("ruta {name} is gone");
 
-    Ok(())
+    Ok(format!("ruta {name} is gone\n"))
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StopTarget {
-    Window { root: PathBuf },
-    Recorded { path: PathBuf },
+    Window,
+    Xwayland,
+    Weston,
 }
 
-fn stop_target(target: StopTarget) -> anyhow::Result<()> {
+fn stop_target(root: &Path, target: StopTarget) -> anyhow::Result<()> {
     match target {
-        StopTarget::Window { root } => stop_window(&root),
-        StopTarget::Recorded { path } => stop_recorded(&path),
+        StopTarget::Window => stop_window(root),
+        StopTarget::Xwayland => stop_recorded(&root.join(crate::root::record::XWAYLAND_PID)),
+        StopTarget::Weston => stop_recorded(&root.join(crate::root::record::WESTON_PID)),
     }
 }
 
 fn cleanup<F>(root: &Path, mut stop: F) -> anyhow::Result<()>
 where
-    F: FnMut(StopTarget) -> anyhow::Result<()>,
+    F: FnMut(&Path, StopTarget) -> anyhow::Result<()>,
 {
     require_trusted_root(root)?;
 
-    stop(StopTarget::Window {
-        root: root.to_path_buf(),
-    })?;
-    stop(StopTarget::Recorded {
-        path: root.join(crate::root::record::XWAYLAND_PID),
-    })?;
-    stop(StopTarget::Recorded {
-        path: root.join(crate::root::record::WESTON_PID),
-    })?;
+    for target in [StopTarget::Window, StopTarget::Xwayland, StopTarget::Weston] {
+        stop(root, target)?;
+    }
     clean_recorded_display_files(root);
 
     if root.exists() {

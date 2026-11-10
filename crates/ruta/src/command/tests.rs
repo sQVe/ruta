@@ -1,8 +1,6 @@
 use super::*;
 
-fn strings(values: &[&str]) -> Vec<String> {
-    values.iter().map(|value| value.to_string()).collect()
-}
+use crate::test_support::strings;
 
 #[test]
 fn capture_requires_out_and_passes_app_arguments() {

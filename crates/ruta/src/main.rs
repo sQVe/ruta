@@ -26,18 +26,8 @@ use anyhow::Context as _;
     reason = "usage and failure messages are the command's output"
 )]
 fn main() -> ExitCode {
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
-
-    let command = match command::parse(&arguments) {
-        Ok(command) => command,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    match load_config() {
-        Ok(config) => orchestration::run(&config, command),
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error:#}");
             ExitCode::FAILURE
@@ -45,9 +35,44 @@ fn main() -> ExitCode {
     }
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "main owns command output, including capture startup progress"
+)]
+fn run() -> anyhow::Result<()> {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let command = command::parse(&arguments)?;
+    let config = load_config()?;
+
+    // Capture's startup line needs its newline so stdout flushes before capture continues.
+    orchestration::execute(&config, command, &mut |text| print!("{text}"))
+}
+
 fn load_config() -> anyhow::Result<config::Config> {
     let folder = std::env::current_dir().context("Could not read the current folder")?;
     let name = std::env::var("RUTA_NAME").ok();
 
     config::load(&folder, name.as_deref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alternate_error_format_keeps_every_parse_error_text() {
+        for error in [
+            command::ParseError::Usage,
+            command::ParseError::NoNotches,
+            command::ParseError::NotANumber {
+                argument: "x",
+                value: "word".to_string(),
+            },
+        ] {
+            let expected = error.to_string();
+            let error = anyhow::Error::from(error);
+
+            assert_eq!(format!("{error:#}"), expected);
+        }
+    }
 }

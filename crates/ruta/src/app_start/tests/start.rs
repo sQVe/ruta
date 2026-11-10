@@ -1,16 +1,13 @@
 use super::*;
 use crate::config::App;
-use crate::test_support::{temporary_sandbox_root, wait_until_gone};
+use crate::test_support::{strings, temporary_sandbox_root, wait_until_gone};
 
 const DISPLAY: &str = ":999";
 
 fn command_line(program: &str, arguments: &[&str]) -> CommandLine {
     CommandLine {
         program: PathBuf::from(program),
-        arguments: arguments
-            .iter()
-            .map(|argument| argument.to_string())
-            .collect(),
+        arguments: strings(arguments),
     }
 }
 
@@ -83,6 +80,49 @@ fn start_app_in_command_mode_writes_no_ready_json() {
         wait_until_gone("RUTA_TEST_APP=start-command", Duration::from_secs(2)),
         Vec::<u32>::new()
     );
+}
+
+#[test]
+fn start_app_in_line_mode_keeps_logs_ready_text_and_arguments() {
+    crate::test_support::in_test_namespace!();
+
+    let root = temporary_sandbox_root("start-line");
+    let mut config = command_config(
+        root.path(),
+        command_line(
+            "sh",
+            &[
+                "-c",
+                "printf 'before\\n{\"ready\":true}\\nafter\\n'; printf errors >&2; sleep 30",
+            ],
+        ),
+        command_line("true", &[]),
+        "start-line",
+    );
+    config.ready = Ready::Line;
+
+    start_app(root.path(), &config, &strings(&["x"]), DISPLAY)
+        .expect("the JSON line makes the app ready");
+
+    assert_eq!(
+        fs::read_to_string(root.path().join("ready.json")).expect("ready record"),
+        "{\"ready\":true}\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("arguments")).expect("arguments"),
+        "[\"x\"]\n"
+    );
+    let copied = poll_until(Duration::from_secs(2), || {
+        let log = fs::read_to_string(root.path().join("app.log")).expect("app log");
+        Ok((log.contains("after\n") && log.contains("errors")).then_some(log))
+    })
+    .expect("log reads succeed")
+    .expect("the rest of stdout and stderr reach the log");
+    assert!(copied.contains("before\n"), "{copied:?}");
+    assert!(copied.contains("{\"ready\":true}\n"), "{copied:?}");
+
+    stop_window(root.path()).expect("stop the app and output copier");
+    assert!(wait_until_gone("RUTA_TEST_APP=start-line", Duration::from_secs(2)).is_empty());
 }
 
 #[test]

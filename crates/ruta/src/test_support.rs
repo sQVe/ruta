@@ -11,6 +11,10 @@ use tempfile::{Builder, TempDir};
 pub(crate) mod display;
 pub(crate) mod namespace;
 
+pub(crate) fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| value.to_string()).collect()
+}
+
 // The first statement of every test that sends a signal, or calls code that does. On the host it
 // runs the test in a test namespace instead; see `namespace.rs`.
 macro_rules! in_test_namespace {

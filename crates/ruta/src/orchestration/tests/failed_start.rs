@@ -8,10 +8,11 @@ fn a_failed_start_keeps_the_end_of_the_app_log_after_the_root_is_removed() {
         .collect();
     fs::write(root.path().join("app.log"), lines).expect("write the app log");
 
-    let error = clean_up_failed_start(root.path(), Err(anyhow::anyhow!("the app exited")), |_| {
-        Ok(())
-    })
-    .expect_err("the start failed");
+    let error = failed_start(
+        root.path(),
+        anyhow::anyhow!("the app exited"),
+        |_, _| Ok(()),
+    );
 
     let failed = error
         .downcast_ref::<FailedStart>()
@@ -29,12 +30,11 @@ fn a_failed_start_keeps_the_end_of_the_app_log_after_the_root_is_removed() {
 fn a_failed_start_without_an_app_log_keeps_its_error_unchanged() {
     let root = crate::test_support::temporary_sandbox_root("failed-start-no-log");
 
-    let error = clean_up_failed_start(
+    let error = failed_start(
         root.path(),
-        Err(anyhow::anyhow!("the display did not start")),
-        |_| Ok(()),
-    )
-    .expect_err("the start failed");
+        anyhow::anyhow!("the display did not start"),
+        |_, _| Ok(()),
+    );
 
     assert!(error.downcast_ref::<FailedStart>().is_none());
     assert_eq!(error.to_string(), "the display did not start");
@@ -48,9 +48,9 @@ fn a_start_whose_xwayland_is_not_recorded_fails_and_leaves_no_root_or_process() 
     let mut weston = spawn_ready_sleep();
     record_child(&root.path().join("weston.pid"), &weston);
 
-    let started = record_xwayland(root.path(), ":97", Duration::from_millis(200));
-    let error =
-        clean_up_failed_start(root.path(), started, stop_target).expect_err("the start fails");
+    let error = record_xwayland(root.path(), ":97", Duration::from_millis(200))
+        .expect_err("the start fails");
+    let error = failed_start(root.path(), error, stop_target);
 
     assert!(
         matches!(

@@ -11,7 +11,10 @@ fn down_succeeds_for_an_absent_root() {
     let folder = crate::test_support::temporary_directory();
     let root = folder.path().join("ruta-absent");
 
-    down("test", &root).expect("an absent sandbox is already down");
+    assert_eq!(
+        down("test", &root).expect("an absent sandbox is already down"),
+        "ruta test is not up\n"
+    );
 
     assert!(!root.exists());
 }
@@ -23,9 +26,32 @@ fn down_removes_a_private_root_without_records() {
     let root = crate::test_support::temporary_sandbox_root("down");
     fs::write(root.path().join("arguments"), "[]\n").expect("write the arguments");
 
-    down("test", root.path()).expect("the sandbox goes down");
+    assert_eq!(
+        down("test", root.path()).expect("the sandbox goes down"),
+        "ruta test is gone\n"
+    );
 
     assert!(!root.path().exists());
+}
+
+#[test]
+fn down_refuses_an_unsafe_root_before_stopping_a_recorded_child() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("down-unsafe");
+    let mut child = spawn_ready_sleep();
+    let path = root.path().join("weston.pid");
+    record_child(&path, &child);
+    let before = fs::read(&path).expect("read the record");
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).expect("make root unsafe");
+
+    let error = down("test", root.path()).expect_err("the root is refused");
+
+    assert!(
+        matches!(error.downcast_ref::<RootError>(), Some(RootError::Unsafe { path, reason: RootReason::WrongMode { mode: 0o755 } }) if path.as_path() == root.path())
+    );
+    assert_eq!(fs::read(&path).expect("record remains"), before);
+    assert!(child.is_running(), "the recorded child was not signaled");
 }
 
 #[test]

@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
@@ -59,43 +59,20 @@ pub(crate) fn start_app(
         .process_group(0);
 
     match &config.ready {
-        Ready::Line => command.stdout(Stdio::piped()),
-        Ready::Command(_) => command.stdout(clone_log(&log, &log_path)?),
-    };
+        Ready::Line => start_with_ready_line(command, root, log, &environment)?,
+        Ready::Command(probe) => {
+            command.stdout(clone_log(&log, &log_path)?);
+            let child = spawn_recorded(command, root)?;
+            let pid = child.id();
+            drop(child);
 
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("Could not start {}", program.display()))?;
-    let pid = child.id();
-
-    if let Err(error) = record_marked_process(
-        &root.join(crate::root::record::PID),
-        pid,
-        root,
-        RECORD_TIMEOUT,
-    ) {
-        cleanup::stop_child_group(&mut child);
-        return Err(error);
-    }
-
-    let stdout = child.stdout.take();
-    drop(child);
-
-    match &config.ready {
-        Ready::Line => {
-            let stdout = stdout.expect("JSON ready mode pipes the app's stdout");
-            let reader_log = clone_log(&log, &log_path)?;
-            let (line, rest) = read_ready_line(stdout, reader_log, &log_path, pid, READY_TIMEOUT)?;
-
-            copy_rest(rest, log, &environment, pid)?;
-            write_unlinked(&ready_path, &format!("{line}\n"))?;
+            wait_for_ready_command(
+                || probe_command(probe, &environment, &config.folder),
+                pid,
+                &log_path,
+                READY_TIMEOUT,
+            )?;
         }
-        Ready::Command(probe) => wait_for_ready_command(
-            || probe_command(probe, &environment, &config.folder),
-            pid,
-            &log_path,
-            READY_TIMEOUT,
-        )?,
     }
 
     let recorded = serde_json::to_string(arguments).context("Could not encode the arguments")?;
@@ -104,6 +81,48 @@ pub(crate) fn start_app(
         &root.join(crate::root::record::ARGUMENTS),
         &format!("{recorded}\n"),
     )
+}
+
+fn start_with_ready_line(
+    mut command: Command,
+    root: &Path,
+    log: File,
+    environment: &[(String, String)],
+) -> anyhow::Result<()> {
+    command.stdout(Stdio::piped());
+    let mut child = spawn_recorded(command, root)?;
+    let stdout = child
+        .stdout
+        .take()
+        .expect("JSON ready mode pipes the app's stdout");
+    let pid = child.id();
+    drop(child);
+
+    let log_path = root.join(crate::root::record::APP_LOG);
+    let reader_log = clone_log(&log, &log_path)?;
+    let (line, rest) = read_ready_line(stdout, reader_log, &log_path, pid, READY_TIMEOUT)?;
+
+    copy_rest(rest, log, environment, pid)?;
+    write_unlinked(&root.join(crate::root::record::READY), &format!("{line}\n"))
+}
+
+fn spawn_recorded(mut command: Command, root: &Path) -> anyhow::Result<Child> {
+    let program = PathBuf::from(command.get_program());
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("Could not start {}", program.display()))?;
+
+    if let Err(error) = record_marked_process(
+        &root.join(crate::root::record::PID),
+        child.id(),
+        root,
+        RECORD_TIMEOUT,
+    ) {
+        cleanup::stop_child_group(&mut child);
+        return Err(error);
+    }
+
+    Ok(child)
 }
 
 fn clone_log(log: &File, path: &Path) -> anyhow::Result<File> {
@@ -139,11 +158,7 @@ fn read_ready_line(
     })?;
 
     if finished.is_none() {
-        return Err(AppStartError::ReadyTimeout {
-            timeout,
-            log: log_path.to_path_buf(),
-        }
-        .into());
+        return Err(ready_timeout_error(timeout, log_path));
     }
 
     let found = reader
@@ -239,17 +254,19 @@ fn wait_for_ready_command(
         Ok(None)
     })?;
 
-    ready.ok_or_else(|| {
-        AppStartError::ReadyTimeout {
-            timeout,
-            log: log_path.to_path_buf(),
-        }
-        .into()
-    })
+    ready.ok_or_else(|| ready_timeout_error(timeout, log_path))
 }
 
 fn app_exited(pid: u32) -> bool {
     ProcessStat::read_live(pid).is_none()
+}
+
+fn ready_timeout_error(timeout: Duration, log_path: &Path) -> anyhow::Error {
+    AppStartError::ReadyTimeout {
+        timeout,
+        log: log_path.to_path_buf(),
+    }
+    .into()
 }
 
 fn app_exited_error(log_path: &Path) -> anyhow::Error {

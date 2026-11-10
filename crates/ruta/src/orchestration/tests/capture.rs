@@ -20,7 +20,7 @@ fn capture_refuses_symlinked_output_in_its_root_without_starting_processes() {
         let last_pid =
             fs::read_to_string("/proc/sys/kernel/ns_last_pid").expect("last namespace PID");
 
-        let error = capture(&test_config("test"), root.path(), &out, &[])
+        let error = capture(&test_config("test"), root.path(), &out, &[], &mut |_| {})
             .expect_err("resolved output would be removed during teardown");
 
         assert_eq!(
@@ -66,7 +66,7 @@ fn capture_refuses_output_in_its_root_before_creating_it() {
     ];
 
     for (out, expected) in cases {
-        let error = capture(&test_config("test"), &root, &out, &[])
+        let error = capture(&test_config("test"), &root, &out, &[], &mut |_| {})
             .expect_err("output would be removed during teardown");
 
         assert_eq!(
@@ -108,7 +108,7 @@ fn capture_refuses_relative_output_in_its_root() {
     }
     relative.push(out.strip_prefix("/").expect("absolute output"));
 
-    let error = capture(&test_config("test"), &root, &relative, &[])
+    let error = capture(&test_config("test"), &root, &relative, &[], &mut |_| {})
         .expect_err("relative output would be removed during teardown");
 
     assert_eq!(
@@ -167,7 +167,7 @@ fn capture_rejects_a_26_byte_name_before_creating_its_root() {
     let root = folder.path().join(&derived_name);
     let out = folder.path().join("output");
 
-    let error = capture(&test_config(&name), &root, &out, &[])
+    let error = capture(&test_config(&name), &root, &out, &[], &mut |_| {})
         .expect_err("the derived capture name exceeds the limit");
 
     assert_eq!(
@@ -199,7 +199,7 @@ fn capture_accepts_a_24_byte_name_before_checking_its_root() {
     let name = "a".repeat(24);
     fs::write(root.path().join("marker"), "keep").expect("write marker");
 
-    let error = capture(&test_config(&name), root.path(), &out, &[])
+    let error = capture(&test_config(&name), root.path(), &out, &[], &mut |_| {})
         .expect_err("the valid name reaches the existing-root check");
 
     assert!(error.downcast_ref::<crate::config::ConfigError>().is_none());
@@ -222,7 +222,7 @@ fn capture_error_wins_over_cleanup_error() {
     let error = finish_capture(
         root.path(),
         Err(crate::capture::CaptureError::NotPng.into()),
-        |target| {
+        |_, target| {
             visited.push(target);
             Err(WillNotStop.into())
         },
@@ -233,17 +233,38 @@ fn capture_error_wins_over_cleanup_error() {
         error.downcast_ref::<crate::capture::CaptureError>(),
         Some(&crate::capture::CaptureError::NotPng)
     );
-    assert_eq!(visited, cleanup_order(root.path())[..1]);
+    assert_eq!(visited, [StopTarget::Window]);
     assert!(root.path().exists());
+}
+
+#[test]
+fn capture_keeps_the_error_chain_when_cleanup_also_fails() {
+    let root = crate::test_support::temporary_sandbox_root("capture-output-error");
+    let captured = Err(anyhow::anyhow!("inner").context("capture failed"));
+
+    let error = finish_capture(root.path(), captured, |_, _| Err(WillNotStop.into()))
+        .expect_err("capture fails");
+
+    assert_eq!(format!("{error:#}"), "capture failed: inner");
+    assert!(root.path().exists());
+}
+
+#[test]
+fn successful_capture_removes_its_root() {
+    let root = crate::test_support::temporary_sandbox_root("capture-output");
+
+    finish_capture(root.path(), Ok(()), |_, _| Ok(())).expect("capture and cleanup succeed");
+    assert!(!root.path().exists());
 }
 
 #[test]
 fn successful_capture_returns_cleanup_error() {
     let root = crate::test_support::temporary_sandbox_root("capture-stop");
-    let error = finish_capture(root.path(), Ok(()), |_| Err(WillNotStop.into()))
+    let error = finish_capture(root.path(), Ok(()), |_, _| Err(WillNotStop.into()))
         .expect_err("cleanup failed");
 
     assert!(error.downcast_ref::<WillNotStop>().is_some());
+    assert_eq!(format!("{error:#}"), "the process will not stop");
     assert!(root.path().exists());
 }
 
@@ -254,7 +275,7 @@ fn capture_reports_root_creation_errors_without_starting() {
     let folder = crate::test_support::temporary_directory();
     let root = folder.path().join("missing/root");
     let out = folder.path().join("output");
-    let error = capture(&test_config("test"), &root, &out, &[])
+    let error = capture(&test_config("test"), &root, &out, &[], &mut |_| {})
         .expect_err("missing parent prevents root creation");
 
     assert_eq!(
