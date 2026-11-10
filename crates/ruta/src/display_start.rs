@@ -11,7 +11,7 @@ use crate::display;
 
 use crate::environment::{caller_environment, nested_weston_environment, weston_environment};
 use crate::identity::{STOP_TIMEOUT, record_matches, record_process, stop_recorded};
-use crate::root::{prepare_root, socket_name};
+use crate::root::{prepare_root, record, socket_name};
 
 #[mutants::skip]
 pub(crate) fn ensure_display(
@@ -27,17 +27,17 @@ pub(crate) fn ensure_display(
     }
 
     if display_up(root).is_some() {
-        stop_recorded(&root.join("weston.pid"))?;
+        stop_recorded(&root.join(record::WESTON_PID))?;
         clean_display_files(root);
     }
 
     prepare_root(root)?;
 
-    let log = root.join("weston.log");
+    let log = root.join(record::WESTON_LOG);
     cleanup::remove_file(&log);
-    cleanup::remove_file(&root.join("display"));
-    cleanup::remove_file(&root.join("size"));
-    cleanup::remove_file(&root.join("xwayland.pid"));
+    cleanup::remove_file(&root.join(record::DISPLAY));
+    cleanup::remove_file(&root.join(record::SIZE));
+    cleanup::remove_file(&root.join(record::XWAYLAND_PID));
 
     let mut command = match session {
         Session::Headed {
@@ -69,7 +69,8 @@ pub(crate) fn ensure_display(
     let mut child = command.spawn().with_context(|| "Could not start weston")?;
     let pid = child.id();
 
-    if let Err(error) = record_process(&root.join("weston.pid"), pid, "weston", STOP_TIMEOUT) {
+    if let Err(error) = record_process(&root.join(record::WESTON_PID), pid, "weston", STOP_TIMEOUT)
+    {
         cleanup::stop_child_group(&mut child);
         return Err(error);
     }
@@ -77,11 +78,11 @@ pub(crate) fn ensure_display(
     drop(child);
 
     let display = display::wait_for_display(&log, display::WESTON_TIMEOUT)?;
-    fs::write(root.join("display"), format!("{display}\n"))
+    fs::write(root.join(record::DISPLAY), format!("{display}\n"))
         .with_context(|| "Could not write the display file")?;
-    fs::write(root.join("mode"), format!("{mode}\n"))
+    fs::write(root.join(record::MODE), format!("{mode}\n"))
         .with_context(|| "Could not write the sandbox mode")?;
-    fs::write(root.join("size"), size_record((width, height)))
+    fs::write(root.join(record::SIZE), size_record((width, height)))
         .with_context(|| "Could not write the display size")?;
 
     Ok(display)
@@ -92,7 +93,7 @@ pub(crate) fn ensure_display(
 fn reusable_display(root: &Path, mode: &str, size: (u32, u32)) -> Option<String> {
     let display = display_up(root)?;
     let same_mode = recorded_mode(root).as_deref() == Some(mode);
-    let same_size = fs::read_to_string(root.join("size")).ok()? == size_record(size);
+    let same_size = fs::read_to_string(root.join(record::SIZE)).ok()? == size_record(size);
 
     (same_mode && same_size).then_some(display)
 }
@@ -102,18 +103,18 @@ fn size_record((width, height): (u32, u32)) -> String {
 }
 
 pub(crate) fn display_up(root: &Path) -> Option<String> {
-    if !record_matches(&root.join("weston.pid")) {
+    if !record_matches(&root.join(record::WESTON_PID)) {
         return None;
     }
 
-    let display = fs::read_to_string(root.join("display")).ok()?;
+    let display = fs::read_to_string(root.join(record::DISPLAY)).ok()?;
     let display = display.trim().to_string();
 
     display.starts_with(':').then_some(display)
 }
 
 pub(crate) fn recorded_mode(root: &Path) -> Option<String> {
-    fs::read_to_string(root.join("mode"))
+    fs::read_to_string(root.join(record::MODE))
         .ok()
         .map(|mode| mode.trim().to_string())
 }
@@ -176,7 +177,7 @@ fn caller_runtime_dir(value: Option<&str>) -> Result<PathBuf, HeadedSessionError
 }
 
 pub(crate) fn clean_display_files(root: &Path) {
-    if let Ok(display) = fs::read_to_string(root.join("display")) {
+    if let Ok(display) = fs::read_to_string(root.join(record::DISPLAY)) {
         display::clean_display_files(display.trim());
     }
 }

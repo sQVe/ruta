@@ -38,7 +38,7 @@ pub(crate) enum IdentityError {
 }
 
 pub(crate) fn record_xwayland(root: &Path, display: &str, timeout: Duration) -> anyhow::Result<()> {
-    let Some((weston, _)) = read_record(&root.join("weston.pid")) else {
+    let Some((weston, _)) = read_record(&root.join(crate::root::record::WESTON_PID)) else {
         return Ok(());
     };
 
@@ -50,7 +50,12 @@ pub(crate) fn record_xwayland(root: &Path, display: &str, timeout: Duration) -> 
             let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
 
             if cmdline.contains("Xwayland") && cmdline.contains(display) {
-                record_process(&root.join("xwayland.pid"), pid, "Xwayland", timeout)?;
+                record_process(
+                    &root.join(crate::root::record::XWAYLAND_PID),
+                    pid,
+                    "Xwayland",
+                    timeout,
+                )?;
                 return Ok(Some(()));
             }
         }
@@ -68,18 +73,12 @@ pub(crate) fn record_xwayland(root: &Path, display: &str, timeout: Duration) -> 
 }
 
 fn child_pids(parent: u32) -> Vec<u32> {
-    let Ok(entries) = fs::read_dir("/proc") else {
+    let Ok(entries) = crate::process_stat::process_entries() else {
         return Vec::new();
     };
 
     entries
-        .flatten()
-        .filter_map(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .and_then(|name| name.parse::<u32>().ok())
-        })
+        .map(|(pid, _)| pid)
         .filter(|pid| ProcessStat::read(*pid).is_some_and(|stat| stat.parent == parent))
         .collect()
 }
@@ -216,7 +215,7 @@ pub(crate) fn stop_window(root: &Path) -> anyhow::Result<()> {
 }
 
 fn stop_group(root: &Path, timeout: Duration) -> anyhow::Result<()> {
-    let path = root.join("pid");
+    let path = root.join(crate::root::record::PID);
 
     let Some(leader) = read_record(&path) else {
         cleanup::remove_file(&path);
@@ -288,15 +287,12 @@ fn stop_all(
 // was made, with their start times.
 fn marked_processes(root: &Path, created: u64, spared: &[u32]) -> Vec<(u32, u64)> {
     let user = rustix::process::getuid().as_raw();
-    let Ok(entries) = fs::read_dir("/proc") else {
+    let Ok(entries) = crate::process_stat::process_entries() else {
         return Vec::new();
     };
 
     entries
-        .flatten()
-        .filter_map(|entry| {
-            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
-
+        .filter_map(|(pid, entry)| {
             Some(SweepCandidate {
                 pid,
                 owner: entry.metadata().ok()?.uid(),
@@ -339,14 +335,12 @@ fn self_and_ancestors(pid: u32) -> Vec<u32> {
 }
 
 fn group_members((leader, started): (u32, u64), root: &Path) -> Vec<(u32, u64)> {
-    let Ok(entries) = fs::read_dir("/proc") else {
+    let Ok(entries) = crate::process_stat::process_entries() else {
         return Vec::new();
     };
 
     entries
-        .flatten()
-        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
-        .filter_map(|pid| {
+        .filter_map(|(pid, _)| {
             let stat = ProcessStat::read(pid)?;
             let in_group = stat.group == leader && !stat.is_zombie();
             let is_leader = pid == leader;
@@ -358,10 +352,6 @@ fn group_members((leader, started): (u32, u64), root: &Path) -> Vec<(u32, u64)> 
         .collect()
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "a cleanup failure must not hide the original error"
-)]
 fn signal_members(members: &[(u32, u64)], signal: rustix::process::Signal) {
     for &(pid, started) in members {
         let Some(raw) = rustix::process::Pid::from_raw(pid as i32) else {
@@ -375,15 +365,10 @@ fn signal_members(members: &[(u32, u64)], signal: rustix::process::Signal) {
             continue;
         }
 
-        if let Err(error) = rustix::process::pidfd_send_signal(&pidfd, signal) {
-            let error = std::io::Error::from(error);
-
-            if let Some(warning) =
-                cleanup::cleanup_warning(&format!("stop the process {pid}"), &error)
-            {
-                eprintln!("{warning}");
-            }
-        }
+        cleanup::warn(
+            &format!("stop the process {pid}"),
+            rustix::process::pidfd_send_signal(&pidfd, signal).map_err(std::io::Error::from),
+        );
     }
 }
 
@@ -439,19 +424,12 @@ fn stop_process(
     })
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "a cleanup failure must not hide the original error"
-)]
 fn send_term(pid: u32, pidfd: &rustix::fd::OwnedFd) {
-    if let Err(error) = rustix::process::pidfd_send_signal(pidfd, rustix::process::Signal::TERM) {
-        let error = std::io::Error::from(error);
-
-        if let Some(warning) = cleanup::cleanup_warning(&format!("stop the process {pid}"), &error)
-        {
-            eprintln!("{warning}");
-        }
-    }
+    cleanup::warn(
+        &format!("stop the process {pid}"),
+        rustix::process::pidfd_send_signal(pidfd, rustix::process::Signal::TERM)
+            .map_err(std::io::Error::from),
+    );
 }
 
 fn stop_after_open(

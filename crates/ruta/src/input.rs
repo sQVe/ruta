@@ -40,8 +40,8 @@ enum WindowError {
 }
 
 pub(crate) fn window_id(root: &Path) -> anyhow::Result<String> {
-    let window =
-        fs::read_to_string(root.join("window")).with_context(|| "Could not read the window id")?;
+    let window = fs::read_to_string(root.join(crate::root::record::WINDOW))
+        .with_context(|| "Could not read the window id")?;
     let window = window.trim().to_string();
 
     if window.is_empty() || !window.chars().all(|character| character.is_ascii_digit()) {
@@ -60,8 +60,11 @@ pub(crate) fn focus_window(
 ) -> anyhow::Result<()> {
     let window = find_window(root, display, title, size)?;
 
-    fs::write(root.join("window"), format!("{window}\n"))
-        .with_context(|| "Could not write the window id")?;
+    fs::write(
+        root.join(crate::root::record::WINDOW),
+        format!("{window}\n"),
+    )
+    .with_context(|| "Could not write the window id")?;
 
     move_pointer(root, display, &window, FOCUS_X, FOCUS_Y)?;
     std::thread::sleep(INPUT_SETTLE);

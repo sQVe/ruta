@@ -157,7 +157,7 @@ fn capture_inner(
 fn prepare_capture_folder(folder: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(folder).with_context(|| format!("Could not create {}", folder.display()))?;
 
-    for name in ["shot.png", "crop.png", "capture.json"] {
+    for name in [crate::root::record::SHOT, "crop.png", "capture.json"] {
         let path = folder.join(name);
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -175,13 +175,18 @@ fn capture_window(name: &str, root: &Path, out: &Path) -> anyhow::Result<()> {
     let display = require_up(name, root)?;
     let window = window_id(root)?;
     let environment = sandbox_environment(&caller_environment(), root, &display);
-    let ready_line = match fs::read_to_string(root.join("ready.json")) {
+    let ready_line = match fs::read_to_string(root.join(crate::root::record::READY)) {
         Ok(line) => Some(line),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error).context("Could not read the saved ready line"),
     };
 
-    display::import_window(&display, &window, &out.join("shot.png"), &environment)?;
+    display::import_window(
+        &display,
+        &window,
+        &out.join(crate::root::record::SHOT),
+        &environment,
+    )?;
     crate::capture::write_capture(out, ready_line.as_deref(), &environment)
 }
 
@@ -265,7 +270,7 @@ fn restart_plan(
 }
 
 fn recorded_arguments(root: &Path) -> anyhow::Result<Vec<String>> {
-    let recorded = fs::read_to_string(root.join("arguments"))
+    let recorded = fs::read_to_string(root.join(crate::root::record::ARGUMENTS))
         .map_err(|_| anyhow::anyhow!("The sandbox is not up; run 'ruta up' first."))?;
 
     serde_json::from_str(&recorded).with_context(|| "Could not read the recorded arguments")
@@ -297,7 +302,7 @@ where
     // The cleanup removes the app log, so its end goes into the error first. A refused root is not
     // read, since its log may be anything, such as a FIFO.
     let log_tail = match require_trusted_root(root) {
-        Ok(()) => last_lines(&root.join("app.log"), LOG_TAIL_LINES),
+        Ok(()) => last_lines(&root.join(crate::root::record::APP_LOG), LOG_TAIL_LINES),
         Err(_) => Vec::new(),
     };
 
@@ -336,7 +341,7 @@ fn start_window_inner(
 
     println!(
         "ruta {name} is up on {display} (log: {})",
-        root.join("app.log").display()
+        root.join(crate::root::record::APP_LOG).display()
     );
 
     Ok(())
@@ -384,7 +389,7 @@ fn require_up(name: &str, root: &Path) -> anyhow::Result<String> {
     };
     let display = display_up(root).ok_or_else(not_up)?;
 
-    if !root.join("window").is_file() {
+    if !root.join(crate::root::record::WINDOW).is_file() {
         return Err(not_up().into());
     }
 
@@ -398,7 +403,7 @@ fn shot(name: &str, root: &Path, file: Option<PathBuf>) -> anyhow::Result<()> {
 
     let display = require_up(name, root)?;
     let window = window_id(root)?;
-    let path = file.unwrap_or_else(|| root.join("shot.png"));
+    let path = file.unwrap_or_else(|| root.join(crate::root::record::SHOT));
     let environment = sandbox_environment(&caller_environment(), root, &display);
 
     display::import_window(&display, &window, &path, &environment)?;
@@ -411,8 +416,8 @@ fn shot(name: &str, root: &Path, file: Option<PathBuf>) -> anyhow::Result<()> {
 fn log(root: &Path) -> anyhow::Result<()> {
     require_trusted_root(root)?;
 
-    let log =
-        fs::read_to_string(root.join("app.log")).with_context(|| "Could not read the app log")?;
+    let log = fs::read_to_string(root.join(crate::root::record::APP_LOG))
+        .with_context(|| "Could not read the app log")?;
 
     print!("{log}");
 
@@ -426,7 +431,7 @@ fn log(root: &Path) -> anyhow::Result<()> {
 fn opened(root: &Path) -> anyhow::Result<()> {
     require_trusted_root(root)?;
 
-    match fs::read_to_string(root.join("opened")) {
+    match fs::read_to_string(root.join(crate::root::record::OPENED)) {
         Ok(opened) => print!("{opened}"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
@@ -478,10 +483,10 @@ where
         root: root.to_path_buf(),
     })?;
     stop(StopTarget::Recorded {
-        path: root.join("xwayland.pid"),
+        path: root.join(crate::root::record::XWAYLAND_PID),
     })?;
     stop(StopTarget::Recorded {
-        path: root.join("weston.pid"),
+        path: root.join(crate::root::record::WESTON_PID),
     })?;
     clean_display_files(root);
 

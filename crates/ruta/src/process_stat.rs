@@ -1,5 +1,13 @@
 use std::fs;
 
+pub(crate) fn process_entries() -> std::io::Result<impl Iterator<Item = (u32, fs::DirEntry)>> {
+    Ok(fs::read_dir("/proc")?.flatten().filter_map(|entry| {
+        let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+
+        Some((pid, entry))
+    }))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ProcessStat {
     pub(crate) state: String,

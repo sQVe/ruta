@@ -40,8 +40,8 @@ pub(crate) fn start_app(
 ) -> anyhow::Result<()> {
     stop_window(root)?;
 
-    let log_path = root.join("app.log");
-    let ready_path = root.join("ready.json");
+    let log_path = root.join(crate::root::record::APP_LOG);
+    let ready_path = root.join(crate::root::record::READY);
     cleanup::remove_file(&log_path);
     cleanup::remove_file(&ready_path);
     let log = File::create(&log_path)
@@ -70,7 +70,12 @@ pub(crate) fn start_app(
         .with_context(|| format!("Could not start {}", program.display()))?;
     let pid = child.id();
 
-    if let Err(error) = record_marked_process(&root.join("pid"), pid, root, STOP_TIMEOUT) {
+    if let Err(error) = record_marked_process(
+        &root.join(crate::root::record::PID),
+        pid,
+        root,
+        STOP_TIMEOUT,
+    ) {
         cleanup::stop_child_group(&mut child);
         return Err(error);
     }
@@ -97,7 +102,10 @@ pub(crate) fn start_app(
 
     let recorded = serde_json::to_string(arguments).context("Could not encode the arguments")?;
 
-    write_unlinked(&root.join("arguments"), &format!("{recorded}\n"))
+    write_unlinked(
+        &root.join(crate::root::record::ARGUMENTS),
+        &format!("{recorded}\n"),
+    )
 }
 
 fn clone_log(log: &File, path: &Path) -> anyhow::Result<File> {

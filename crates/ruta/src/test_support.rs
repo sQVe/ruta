@@ -44,11 +44,10 @@ pub(crate) fn temporary_sandbox_root(label: &str) -> TempDir {
 }
 
 pub(crate) fn live_processes_with(variable: &str) -> Vec<u32> {
-    let processes = fs::read_dir("/proc").expect("list /proc");
+    let processes = crate::process_stat::process_entries().expect("list /proc");
 
     processes
-        .flatten()
-        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .map(|(pid, _)| pid)
         .filter(|pid| {
             fs::read(format!("/proc/{pid}/environ")).is_ok_and(|bytes| {
                 bytes
@@ -71,14 +70,12 @@ pub(crate) fn wait_until_gone(variable: &str, timeout: Duration) -> Vec<u32> {
 }
 
 pub(crate) fn stop_child(child: &mut Child) {
-    if let Err(error) = child.kill()
-        && let Some(warning) = crate::cleanup::cleanup_warning("stop the process", &error)
-    {
-        panic!("{warning}");
-    }
+    crate::cleanup::stop_child_with(child, require_cleanup);
+}
 
-    if let Err(error) = child.wait()
-        && let Some(warning) = crate::cleanup::cleanup_warning("reap the process", &error)
+fn require_cleanup(context: &str, result: std::io::Result<()>) {
+    if let Err(error) = result
+        && let Some(warning) = crate::cleanup::cleanup_warning(context, &error)
     {
         panic!("{warning}");
     }
@@ -105,10 +102,11 @@ impl ChildGuard {
 
     pub(crate) fn spawn_group(command: &mut Command) -> Self {
         command.process_group(0);
-        let mut guard = Self::new(command.spawn().expect("spawn the child"));
-        guard.group = true;
-
-        guard
+        Self {
+            child: command.spawn().expect("spawn the child"),
+            reaped: false,
+            group: true,
+        }
     }
 
     pub(crate) fn take_stdout(&mut self) -> ChildStdout {
@@ -170,17 +168,10 @@ impl ChildGuard {
 }
 
 pub(crate) fn stop_process_group(child_id: u32) {
-    let Some(pgid) = rustix::process::Pid::from_raw(child_id as i32) else {
-        return;
-    };
-
-    if let Err(error) = rustix::process::kill_process_group(pgid, rustix::process::Signal::KILL) {
-        let error = std::io::Error::from(error);
-
-        if let Some(warning) = crate::cleanup::cleanup_warning("stop the process group", &error) {
-            panic!("{warning}");
-        }
-    }
+    require_cleanup(
+        "stop the process group",
+        crate::cleanup::stop_process_group(child_id),
+    );
 }
 
 impl Drop for ChildGuard {
@@ -189,6 +180,8 @@ impl Drop for ChildGuard {
     }
 }
 
+// These tests use crate helpers unavailable to the end-to-end harness that also includes
+// namespace.rs.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,7 +190,9 @@ mod tests {
     // namespace that PID is 1, so any other value means the body ran on the host.
     #[test]
     fn a_guarded_test_runs_its_body_only_inside_the_namespace() {
-        in_test_namespace!();
+        if namespace::rerun_outside_test_namespace() {
+            return;
+        }
 
         assert!(namespace::inside_test_namespace());
 
@@ -220,7 +215,9 @@ mod tests {
     // starts from gaining every capability as user 0.
     #[test]
     fn a_program_the_body_starts_gets_no_capabilities() {
-        in_test_namespace!();
+        if namespace::rerun_outside_test_namespace() {
+            return;
+        }
 
         let output = std::process::Command::new("cat")
             .arg("/proc/self/status")
@@ -277,13 +274,13 @@ mod tests {
     )]
     #[test]
     fn the_namespace_shows_no_process_of_the_host() {
-        in_test_namespace!();
+        if namespace::rerun_outside_test_namespace() {
+            return;
+        }
 
-        let processes: Vec<(u32, String)> = fs::read_dir("/proc")
+        let processes: Vec<(u32, String)> = crate::process_stat::process_entries()
             .expect("list /proc")
-            .flatten()
-            .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
-            .map(|pid| {
+            .map(|(pid, _)| {
                 let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
 
                 (pid, String::from_utf8_lossy(&command).replace('\0', " "))

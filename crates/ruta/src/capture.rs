@@ -73,7 +73,7 @@ pub(crate) fn write_capture(
         Some(ready) => parse_geometry(ready)?,
         None => None,
     };
-    let shot_path = folder.join("shot.png");
+    let shot_path = folder.join(crate::root::record::SHOT);
     let shot = read_shot_size(&shot_path)?;
 
     if let Some(geometry) = geometry {
