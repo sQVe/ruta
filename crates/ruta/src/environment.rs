@@ -118,39 +118,24 @@ fn child_environment(
         .map(|(_, value)| value.clone())
         .unwrap_or_default();
 
-    let mut environment = Vec::new();
-
-    set(&mut environment, "HOME", &dirs.home.to_string_lossy());
-    set(
-        &mut environment,
-        "XDG_CONFIG_HOME",
-        &dirs.config.to_string_lossy(),
-    );
-    set(
-        &mut environment,
-        "XDG_STATE_HOME",
-        &dirs.state.to_string_lossy(),
-    );
-    set(
-        &mut environment,
-        "XDG_DATA_HOME",
-        &dirs.data.to_string_lossy(),
-    );
-    set(
-        &mut environment,
-        "XDG_CACHE_HOME",
-        &dirs.cache.to_string_lossy(),
-    );
-    set(
-        &mut environment,
-        "XDG_RUNTIME_DIR",
-        &dirs.runtime.to_string_lossy(),
-    );
-    set(
-        &mut environment,
-        "PATH",
-        &format!("{}:{host_path}", dirs.bin.display()),
-    );
+    let mut environment: Vec<_> = [
+        ("HOME", dirs.home.to_string_lossy().into_owned()),
+        (
+            "XDG_CONFIG_HOME",
+            dirs.config.to_string_lossy().into_owned(),
+        ),
+        ("XDG_STATE_HOME", dirs.state.to_string_lossy().into_owned()),
+        ("XDG_DATA_HOME", dirs.data.to_string_lossy().into_owned()),
+        ("XDG_CACHE_HOME", dirs.cache.to_string_lossy().into_owned()),
+        (
+            "XDG_RUNTIME_DIR",
+            dirs.runtime.to_string_lossy().into_owned(),
+        ),
+        ("PATH", format!("{}:{host_path}", dirs.bin.display())),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value))
+    .collect();
 
     for (key, value) in extras {
         set(&mut environment, key, value);
