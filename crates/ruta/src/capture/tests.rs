@@ -390,6 +390,8 @@ fn write_capture_refuses_a_shot_that_is_not_a_png() {
 
 #[test]
 fn write_capture_refuses_a_crop_that_rounds_to_zero_pixels() {
+    crate::test_support::in_test_namespace!();
+
     let tools = crate::test_support::temporary_directory();
     let environment = fake_magick(tools.path(), "printf '%s\\n' \"$@\" > \"$5\"");
     let cases = [
@@ -429,6 +431,8 @@ fn write_capture_refuses_a_crop_that_rounds_to_zero_pixels() {
 
 #[test]
 fn write_capture_crops_with_magick_and_records_the_crop() {
+    crate::test_support::in_test_namespace!();
+
     let tools = crate::test_support::temporary_directory();
     let environment = fake_magick(tools.path(), "printf '%s\\n' \"$@\" > \"$5\"");
     let folder = folder_with_shot(TINY_PNG);
@@ -455,6 +459,8 @@ fn write_capture_crops_with_magick_and_records_the_crop() {
 
 #[test]
 fn write_capture_reports_a_failed_magick_and_writes_no_record() {
+    crate::test_support::in_test_namespace!();
+
     let tools = crate::test_support::temporary_directory();
     let environment = fake_magick(tools.path(), "echo 'magick: no crop' >&2\nexit 3");
     let folder = folder_with_shot(TINY_PNG);
@@ -477,6 +483,8 @@ fn write_capture_reports_a_failed_magick_and_writes_no_record() {
 
 #[test]
 fn write_capture_looks_for_magick_on_the_given_path() {
+    crate::test_support::in_test_namespace!();
+
     let empty = crate::test_support::temporary_directory();
     let environment = vec![(
         "PATH".to_string(),
