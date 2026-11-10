@@ -12,13 +12,25 @@
 // network namespace is new too, because X clients connect first to an abstract socket, which
 // belongs to the network namespace and not to `/tmp`.
 //
-// This file is shared by the unit tests and the end-to-end harness, so it uses no crate paths.
+// Both test crates expose this module as `crate::namespace` for the shared guard macro.
 
 use std::path::Path;
 use std::process::Command;
 
 const INSIDE: &str = "RUTA_TEST_NAMESPACE";
 const PRIVATE_TMP: &str = "/tmp";
+
+// The first statement of every test that sends a signal, or calls code that does. On the host it
+// runs the test in a test namespace instead.
+macro_rules! in_test_namespace {
+    () => {
+        if crate::namespace::rerun_outside_test_namespace() {
+            return;
+        }
+    };
+}
+
+pub(crate) use in_test_namespace;
 
 pub(crate) fn inside_test_namespace() -> bool {
     let pid_is_init = std::process::id() == 1;

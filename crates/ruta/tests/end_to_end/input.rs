@@ -1,5 +1,5 @@
 use std::fs;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::support::*;
 
@@ -12,10 +12,10 @@ const SHIFT_L: &str = "0xffe1";
 fn input_commands_reach_the_window_at_window_coordinates() {
     in_test_namespace!();
 
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let sandbox = project.sandbox("input");
     sandbox.succeed(&["up"]);
-    wait_for_log(&sandbox, "ruta-test-app: running");
+    sandbox.wait_for_log("ruta-test-app: running");
 
     let click = events_after(&sandbox, &["click", "100", "120"], "button-release", 1);
     let press = only(&click, "button-press", &[("x", "100"), ("y", "120")]);
@@ -113,7 +113,10 @@ fn input_commands_reach_the_window_at_window_coordinates() {
 fn input_commands_without_a_sandbox_fail_before_any_input() {
     in_test_namespace!();
 
-    let project = Project::with_config(&config_for_app(r#"["true"]"#, TITLE, JSON_READY));
+    let project = Project::new(&Config {
+        command: Some(r#"["true"]"#),
+        ..Config::default()
+    });
     let sandbox = project.sandbox("input-not-up");
     let tools = tempfile::Builder::new()
         .prefix("ruta-end-to-end-path-")
@@ -142,14 +145,9 @@ fn input_commands_without_a_sandbox_fail_before_any_input() {
         &["hold", "Shift_L"],
         &["release", "Shift_L"],
     ] {
-        let output = sandbox
-            .command(arguments)
-            .env("PATH", tools.path())
-            .output()
-            .expect("run the ruta binary");
+        let output = Sandbox::fail_command(sandbox.command(arguments).env("PATH", tools.path()));
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        assert!(!output.status.success(), "{arguments:?} fails");
         assert!(
             stderr.contains(&format!("ruta {} is not up", sandbox.name())),
             "{arguments:?}: {stderr}"
@@ -209,19 +207,16 @@ fn events_after(sandbox: &Sandbox, arguments: &[&str], kind: &str, count: usize)
 
     sandbox.succeed(arguments);
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-
-    loop {
+    let mut events = Vec::new();
+    poll_until(Duration::from_secs(5), Duration::from_millis(100), || {
         let log = sandbox.succeed(&["log"]);
-        let events: Vec<Event> = log[before..].lines().filter_map(Event::parse).collect();
+        events = log[before..].lines().filter_map(Event::parse).collect();
         let seen = events.iter().filter(|event| event.kind == kind).count();
 
-        if seen >= count || Instant::now() >= deadline {
-            return events;
-        }
+        seen >= count
+    });
 
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    events
 }
 
 fn matching<'a>(events: &'a [Event], kind: &str, fields: &[(&str, &str)]) -> Vec<&'a Event> {

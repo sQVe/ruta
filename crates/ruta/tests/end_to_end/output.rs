@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::support::*;
 
@@ -47,11 +47,11 @@ fn startup_text(name: &str, root: &Path) -> String {
 fn command_output_keeps_exact_text_and_silent_input() {
     in_test_namespace!();
 
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let sandbox = project.sandbox("output");
     let up = sandbox.run(&["up"]);
     assert_success(&up, &startup_text(sandbox.name(), &sandbox.root()));
-    wait_for_log(&sandbox, "button-release");
+    sandbox.wait_for_log("button-release");
 
     let log = sandbox.run(&["log"]);
     let recorded = fs::read_to_string(sandbox.root().join("app.log")).expect("app log");
@@ -92,7 +92,8 @@ fn command_output_keeps_exact_text_and_silent_input() {
 fn command_errors_keep_stderr_exit_codes_and_empty_stdout() {
     in_test_namespace!();
 
-    let project = Project::with_config("bogus = true\n");
+    let project = Project::new(&Config::default());
+    project.write_config("bogus = true\n");
     let sandbox = project.sandbox("output-errors");
     assert_failure(
         &sandbox.run(&["scroll", "1", "2", "0"]),
@@ -108,7 +109,7 @@ fn command_errors_keep_stderr_exit_codes_and_empty_stdout() {
         &format!("Invalid {}: unknown key \"bogus\"\n", config.display()),
     );
 
-    project.write_config(&config_text(TITLE, JSON_READY));
+    project.write_config(&Config::default().text());
     let root = tempfile::Builder::new()
         .prefix(&format!("ruta-{}", sandbox.name()))
         .rand_bytes(0)
@@ -138,7 +139,7 @@ fn command_errors_keep_stderr_exit_codes_and_empty_stdout() {
 fn capture_emits_startup_before_screenshot_and_cleanup_warnings() {
     in_test_namespace!();
 
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let sandbox = project.sandbox("output-order");
     let folder = tempfile::tempdir().expect("capture output and fake tool");
     let entered = folder.path().join("entered");
@@ -176,14 +177,9 @@ fn capture_emits_startup_before_screenshot_and_cleanup_warnings() {
         .spawn()
         .expect("start capture");
     let mut reader = BufReader::new(reader);
-    let deadline = Instant::now() + Duration::from_secs(30);
-
-    while !entered.exists() && Instant::now() < deadline {
-        if child.try_wait().expect("check capture").is_some() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    poll_until(Duration::from_secs(30), Duration::from_millis(10), || {
+        entered.exists() || child.try_wait().expect("check capture").is_some()
+    });
     let screenshot_started = entered.exists();
     let mut first = String::new();
     let first_read = reader.read_line(&mut first);
@@ -209,11 +205,11 @@ fn capture_emits_startup_before_screenshot_and_cleanup_warnings() {
     if sandbox.capture_root().exists() {
         fs::set_permissions(sandbox.capture_root(), fs::Permissions::from_mode(0o700))
             .expect("restore the capture root mode");
-        let cleanup = sandbox
-            .command(&["down"])
-            .env("RUTA_NAME", format!("{}-capture", sandbox.name()))
-            .output()
-            .expect("clean up the capture sandbox");
+        let cleanup = Sandbox::run_command(
+            sandbox
+                .command(&["down"])
+                .env("RUTA_NAME", format!("{}-capture", sandbox.name())),
+        );
         assert_eq!(cleanup.status.code(), Some(0), "{cleanup:?}");
     }
 
@@ -261,7 +257,7 @@ fn assert_capture_startup(output: &Output, sandbox: &Sandbox) {
 fn capture_keeps_startup_stdout_on_success_and_later_failure() {
     in_test_namespace!();
 
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let sandbox = project.sandbox("output-capture");
     let folder = tempfile::tempdir().expect("capture output");
     let path = folder.path().to_str().expect("UTF-8 path");

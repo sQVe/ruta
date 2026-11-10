@@ -15,17 +15,7 @@ pub(crate) fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
 }
 
-// The first statement of every test that sends a signal, or calls code that does. On the host it
-// runs the test in a test namespace instead; see `namespace.rs`.
-macro_rules! in_test_namespace {
-    () => {
-        if crate::test_support::namespace::rerun_outside_test_namespace() {
-            return;
-        }
-    };
-}
-
-pub(crate) use in_test_namespace;
+pub(crate) use namespace::in_test_namespace;
 
 // The prefix never matches a sandbox root, even when `TMPDIR` is `/var/tmp`.
 pub(crate) fn temporary_directory() -> TempDir {

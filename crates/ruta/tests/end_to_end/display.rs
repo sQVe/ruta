@@ -4,33 +4,28 @@ use std::os::unix::ffi::OsStrExt as _;
 
 use crate::support::*;
 
-const JSON: &str = r#"line = "json""#;
-
-fn recorded_pid(sandbox: &Sandbox, record: &str) -> u32 {
-    fs::read_to_string(sandbox.root().join(record))
-        .expect("read the record")
-        .split_whitespace()
-        .next()
-        .and_then(|pid| pid.parse().ok())
-        .expect("a recorded PID")
-}
-
 #[test]
 #[ignore = "needs Weston, Xwayland, xdotool, and ImageMagick"]
 fn up_after_a_size_change_recreates_the_display_at_the_new_size() {
     in_test_namespace!();
 
     let larger = (1000, 700);
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let sandbox = project.sandbox("resize");
     sandbox.succeed(&["up"]);
-    let first_weston = recorded_pid(&sandbox, "weston.pid");
+    let first_weston = sandbox.recorded_pid("weston.pid");
 
-    project.write_config(&config_text_at_size(TITLE, JSON, larger));
+    project.write_config(
+        &Config {
+            size: larger,
+            ..Config::default()
+        }
+        .text(),
+    );
     sandbox.succeed(&["up"]);
 
     assert_ne!(
-        recorded_pid(&sandbox, "weston.pid"),
+        sandbox.recorded_pid("weston.pid"),
         first_weston,
         "a new size starts a new display"
     );
@@ -45,23 +40,17 @@ fn up_after_a_size_change_recreates_the_display_at_the_new_size() {
 fn up_skips_a_caller_variable_that_is_not_utf8() {
     in_test_namespace!();
 
-    let project = Project::new(TITLE);
+    let project = Project::new(&Config::default());
     let sandbox = project.sandbox("non-utf8");
 
-    let output = sandbox
-        .command(&["up"])
-        .env("LC_RUTA_GOOD", "kept")
-        .env("LC_RUTA_BAD", OsStr::from_bytes(b"\xff\xfe"))
-        .output()
-        .expect("run the ruta binary");
-
-    assert!(
-        output.status.success(),
-        "up succeeds: {}",
-        String::from_utf8_lossy(&output.stderr)
+    Sandbox::succeed_command(
+        sandbox
+            .command(&["up"])
+            .env("LC_RUTA_GOOD", "kept")
+            .env("LC_RUTA_BAD", OsStr::from_bytes(b"\xff\xfe")),
     );
 
-    let app = recorded_pid(&sandbox, "pid");
+    let app = sandbox.recorded_pid("pid");
     let environment = fs::read(format!("/proc/{app}/environ")).expect("read the app environment");
     let entries: Vec<&[u8]> = environment.split(|byte| *byte == 0).collect();
 
