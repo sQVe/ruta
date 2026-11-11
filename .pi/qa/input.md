@@ -31,9 +31,9 @@ fields than a row names: a key line also has `keycode`, and every line has `stat
 2. Run one command from the table.
 3. Wait one second, then print the new lines:
    `tail -c +$((SIZE + 1)) /var/tmp/ruta-$NAME/app.log`.
-4. Repeat steps 1 to 3 for each row, and keep `hold` and `release` for last.
-5. After `hold Shift_L`, run `click 150 160`.
-6. Run `release Shift_L`, then `click 170 180`.
+4. Repeat steps 1 to 3 for each row except `hold` and `release`.
+5. With steps 1 to 3, run `hold Shift_L`, then `click 150 160`.
+6. With steps 1 to 3, run `release Shift_L`, then `click 170 180`.
 7. Run `shot`, and read the file it prints.
 
 ## Observable results

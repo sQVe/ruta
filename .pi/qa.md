@@ -75,8 +75,12 @@ Never:
 
 ### Reach it
 
-Needs the binary and `$PROJECT`, and nothing running. Run the binary proof above. Then
-`ls -d /var/tmp/ruta-$NAME-idle` must fail. When the folder exists, stop and ask the parent.
+Needs the binary and `$PROJECT`, and nothing running. Run the binary proof above. Then:
+
+1. `command -v xdotool import` prints two paths. Without these tools, `shot` and the input
+   commands report a missing tool instead of the refusal.
+2. `ls -d /var/tmp/ruta-$NAME-idle` fails.
+3. When a step gives another result, stop and ask the parent.
 
 ### Use it safely
 
