@@ -12,7 +12,7 @@ Most modules serve every command, so choose by behavior, not by path.
 | Section | Test it when the change touches |
 | ------- | ------------------------------- |
 | Refusals | Command parsing, the usage text, the `guide` text, `ruta.toml` reading, error text, exit codes, the root safety checks |
-| Running sandbox | Shots, any input command, `status`, `log`, `opened`, the stub openers, the environment that tools and the app get, tool timeouts |
+| Running sandbox | Shots, any input command, `status`, the check that a sandbox is up, `log`, `opened`, the stub openers, the environment that tools and the app get, tool timeouts |
 
 Cross-effects:
 
@@ -50,10 +50,17 @@ The manager starts:
 - The fixture folder. Start: `PROJECT=$(mktemp -d /tmp/qa-ruta-XXXXXX)`, then write
   `$PROJECT/ruta.toml` from the setup. Up: `$PROJECT/ruta.toml` exists. Stop: `rm -r $PROJECT`.
 - The sandbox, for Running sandbox only. Pick a `$NAME` that starts with `qa-`, is at most 24
-  bytes, and has no `/var/tmp/ruta-$NAME` or `/var/tmp/ruta-$NAME-idle`. Start:
+  bytes, and has no `/var/tmp/ruta-$NAME`, `/var/tmp/ruta-$NAME-idle`, or
+  `/var/tmp/ruta-$NAME-gone`. Start:
   `cd $PROJECT && RUTA_NAME=$NAME $RUTA up`. Up: it prints the `up` line that the guide gives, with
   `$NAME` as the name. Stop: `cd $PROJECT && RUTA_NAME=$NAME $RUTA down` prints the `down` line
   that the guide gives, and `/var/tmp/ruta-$NAME` is gone.
+- The sandbox whose app exited, for Running sandbox only. Start:
+  `cd $PROJECT && RUTA_NAME=$NAME-gone $RUTA up`, then
+  `kill $(cut -d' ' -f1 /var/tmp/ruta-$NAME-gone/pid)`. Up:
+  `cd $PROJECT && RUTA_NAME=$NAME-gone $RUTA status` exits 1 and prints
+  `ruta $NAME-gone is not up`. Stop: `cd $PROJECT && RUTA_NAME=$NAME-gone $RUTA down` prints the
+  `down` line, and `/var/tmp/ruta-$NAME-gone` is gone.
 
 Ask the user:
 
@@ -64,8 +71,9 @@ The brief must give:
 - `$RUTA` and `$APP`: the absolute paths of `target/debug/ruta` and `target/debug/ruta-test-app`
   in this worktree, and the commit they were built from.
 - `$PROJECT` and `$NAME`, and for Running sandbox the output of the manager's `up`.
-- That the worker may also use the name `$NAME-idle`.
-- That data writes are allowed in `$PROJECT` and `/var/tmp/ruta-$NAME`.
+- That the worker may also use the name `$NAME-idle`, and for Running sandbox `$NAME-gone`.
+- That data writes are allowed in `$PROJECT` and `/var/tmp/ruta-$NAME`, and not in
+  `/var/tmp/ruta-$NAME-gone`.
 
 ## Rules for every section
 
@@ -77,7 +85,7 @@ Run every command as `cd $PROJECT && RUTA_NAME=<name> $RUTA <command>`.
 A command that a section or a recipe here gives wins over the guide:
 
 - The Refusals section runs commands under `$NAME-idle` without the `status` check, because
-  nothing is up under that name.
+  nothing is up under that name. The same holds for `$NAME-gone` in the Running sandbox section.
 - Some refusals need another folder or a bad name. Use them only where a row or a step names
   them.
 - `guide` is not in the guide's `You may run` list. Run it.
@@ -91,8 +99,11 @@ Prove that the binaries serve this worktree:
 
 1. Never run a bare `ruta`. That is the installed release, not this worktree.
 2. In the worktree, run
-   `find crates Cargo.toml Cargo.lock -newer $RUTA \( -name '*.rs' -o -name 'Cargo.*' \)`, and
-   again with `$APP`. A file outside `crates/ruta/tests` in the output means a stale binary.
+   `find crates Cargo.toml Cargo.lock -newer $RUTA \( -name '*.rs' -o -name 'Cargo.*' \)`. A file
+   outside `crates/ruta/tests` in the output means a stale binary. For `$APP`, run
+   `find crates/ruta-test-app Cargo.toml Cargo.lock -newer $APP \( -name '*.rs' -o -name 'Cargo.*' \)`.
+   Any file in the output means a stale binary. Cargo does not build the app again when only
+   `crates/ruta` changes.
 3. `ruta` has no `--version`. When a binary is missing or stale, stop and ask the parent to build
    it.
 
@@ -134,9 +145,11 @@ and prints nothing, and `guide` exits 0 and prints its three parts.
 
 ### Reach it
 
-Needs a sandbox that the parent started in `$PROJECT` under `$NAME`.
+Needs a sandbox that the parent started in `$PROJECT` under `$NAME`, and a second one under
+`$NAME-gone` whose app the parent stopped.
 
-1. Run the binary proof above.
+1. Run the binary proof above. `command -v xdotool import` prints two paths. Without `xdotool`,
+   `status` reports a missing tool for a sandbox whose display runs.
 2. `status` exits 0 and prints `ruta $NAME is up and serves $PROJECT`. That is the `status` line
    of the guide, with the name and the folder filled in.
 3. `log` holds the line `ruta-test-app: running`.
@@ -148,6 +161,10 @@ Needs a sandbox that the parent started in `$PROJECT` under `$NAME`.
   `cp $PROJECT/ruta.toml $PROJECT/other/`. Then `cd $PROJECT/other && RUTA_NAME=$NAME $RUTA status`
   exits 1, prints nothing on stdout, and prints `ruta $NAME serves $PROJECT, not $PROJECT/other`
   on stderr. `status` in `$PROJECT` still exits 0 afterwards.
+- The app exited: run these under `RUTA_NAME=$NAME-gone`. `status` exits 1, prints nothing on
+  stdout, and prints `ruta $NAME-gone is not up` on stderr. `shot` and `click 1 2` exit 1 and
+  print `ruta $NAME-gone is not up; run 'ruta up' first` on stderr. `log` still exits 0 and prints
+  the app log. `/var/tmp/ruta-$NAME-gone/shot.png` does not exist afterwards.
 - `shot` prints `/var/tmp/ruta-$NAME/shot.png`, and `file` reports a 640 x 480 PNG. `shot <file>`
   prints and writes that file instead.
 - `log` prints the app log byte for byte:
