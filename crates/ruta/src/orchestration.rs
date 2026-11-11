@@ -14,7 +14,7 @@ use crate::display_start::{
 use crate::environment::{caller_environment, sandbox_environment};
 use crate::identity::stop::{stop_recorded, stop_window};
 use crate::identity::{RECORD_TIMEOUT, record_xwayland};
-use crate::input::{focus_window, send, window_id};
+use crate::input::{focus_window, send, window_exists, window_id};
 use crate::log_tail::last_lines;
 use crate::root::{
     create_root, install_openers, prepare_root, record_folder, record_root_creation, remove_root,
@@ -74,7 +74,7 @@ pub(crate) fn execute(
         Sandbox::Release { keys } => with_window(name, &root, |display, _| {
             send::release(&root, display, &keys)
         }),
-        Sandbox::Status => status::status(config, &root),
+        Sandbox::Status => status::status(config, &root, recorded_window_exists),
         Sandbox::Log => log(&root),
         Sandbox::Opened => opened(&root),
         Sandbox::Down => down(name, &root),
@@ -188,7 +188,7 @@ fn prepare_capture_folder(folder: &Path) -> anyhow::Result<()> {
 }
 
 fn capture_window(name: &str, root: &Path, out: &Path) -> anyhow::Result<()> {
-    let display = require_up(name, root)?;
+    let display = require_up(name, root, recorded_window_exists)?;
     let window = window_id(root)?;
     let environment = sandbox_environment(&caller_environment(), root, &display);
     let ready_line = match fs::read_to_string(root.join(crate::root::record::READY)) {
@@ -375,7 +375,7 @@ where
 {
     require_program(Tool::Xdotool)?;
 
-    let display = require_up(name, root)?;
+    let display = require_up(name, root, recorded_window_exists)?;
     let window = window_id(root)?;
 
     action(&display, &window)?;
@@ -391,27 +391,52 @@ enum SandboxError {
     RestartNotUp,
 }
 
-fn require_up(name: &str, root: &Path) -> anyhow::Result<String> {
-    let display = up_display(root)?.ok_or_else(|| SandboxError::NotUp {
+fn require_up(
+    name: &str,
+    root: &Path,
+    window_exists: impl FnOnce(&Path, &str) -> anyhow::Result<bool>,
+) -> anyhow::Result<String> {
+    let display = up_display(root, window_exists)?.ok_or_else(|| SandboxError::NotUp {
         name: name.to_string(),
     })?;
 
     Ok(display)
 }
 
-fn up_display(root: &Path) -> anyhow::Result<Option<String>> {
+fn up_display(
+    root: &Path,
+    window_exists: impl FnOnce(&Path, &str) -> anyhow::Result<bool>,
+) -> anyhow::Result<Option<String>> {
     require_trusted_root(root)?;
 
-    let has_window = root.join(crate::root::record::WINDOW).is_file();
+    let Some(display) = display_up(root) else {
+        return Ok(None);
+    };
 
-    Ok(display_up(root).filter(|_| has_window))
+    if !root.join(crate::root::record::WINDOW).is_file() {
+        return Ok(None);
+    }
+
+    // The window record outlives the app, so only the display can say that the window is there.
+    if !window_exists(root, &display)? {
+        return Ok(None);
+    }
+
+    Ok(Some(display))
+}
+
+#[mutants::skip]
+fn recorded_window_exists(root: &Path, display: &str) -> anyhow::Result<bool> {
+    require_program(Tool::Xdotool)?;
+
+    window_exists(root, display)
 }
 
 #[mutants::skip]
 fn shot(name: &str, root: &Path, file: Option<PathBuf>) -> anyhow::Result<String> {
     require_program(Tool::Import)?;
 
-    let display = require_up(name, root)?;
+    let display = require_up(name, root, recorded_window_exists)?;
     let window = window_id(root)?;
     let path = file.unwrap_or_else(|| root.join(crate::root::record::SHOT));
     let environment = sandbox_environment(&caller_environment(), root, &display);

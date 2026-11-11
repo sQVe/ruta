@@ -71,6 +71,14 @@ none, or from before the root keeps running.
 ruta's own tests that send signals run in a user and PID namespace with its own `/proc`, so a bug
 in this selection, or a mutant during mutation testing, can reach only test processes.
 
+### When a sandbox is up
+
+A sandbox is up when its recorded window still exists on the private display, not when the recorded
+app process lives. A launch command can start the app as a child and then exit, and the child keeps
+a working window. A shot and an input need the window, so the window is what `status`, a shot, and
+an input ask for. When ruta cannot ask the display, it reports that failure and does not call the
+sandbox up.
+
 ### What each project owns
 
 Each project has a small `ruta.toml`. It names the launch command, how ruta detects that the window
@@ -121,6 +129,12 @@ shown benefit.
 Record the launch command and check that the process still names it. Rejected because a launch
 script that `exec`s the app replaces its command line, so a valid start fails at random, depending
 on when ruta reads it.
+
+### Calling a sandbox up while its recorded app process lives
+
+Check the recorded app process by its PID and start time. Rejected because that process can be a
+launcher that exits while its child keeps a working window, so a usable sandbox would be reported
+as not up. A live process also does not prove that a window exists.
 
 ### The developer's real display
 

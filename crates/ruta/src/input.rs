@@ -39,6 +39,8 @@ enum WindowError {
         height: u32,
         timeout: Duration,
     },
+    #[error("xdotool getwindowgeometry {window} failed: {errors}")]
+    QueryFailed { window: String, errors: String },
 }
 
 pub(crate) fn window_id(root: &Path) -> anyhow::Result<String> {
@@ -51,6 +53,36 @@ pub(crate) fn window_id(root: &Path) -> anyhow::Result<String> {
     }
 
     Ok(window)
+}
+
+#[mutants::skip]
+pub(crate) fn window_exists(root: &Path, display: &str) -> anyhow::Result<bool> {
+    let window = window_id(root)?;
+    let environment = sandbox_environment(&caller_environment(), root, display);
+    let command = xdotool_command(&environment, &["getwindowgeometry", &window]);
+    let output = process::run_with_timeout(command, process::TOOL_TIMEOUT)?;
+    let errors = String::from_utf8_lossy(&output.stderr);
+
+    Ok(window_answer(&window, output.status.success(), &errors)?)
+}
+
+// The X server names a window id that it does not know with this error. Any other failure, such
+// as a display that does not answer, says nothing about the window.
+const UNKNOWN_WINDOW: &str = "BadWindow";
+
+fn window_answer(window: &str, succeeded: bool, errors: &str) -> Result<bool, WindowError> {
+    if succeeded {
+        return Ok(true);
+    }
+
+    if errors.contains(UNKNOWN_WINDOW) {
+        return Ok(false);
+    }
+
+    Err(WindowError::QueryFailed {
+        window: window.to_string(),
+        errors: errors.trim().to_string(),
+    })
 }
 
 #[mutants::skip]
@@ -278,6 +310,25 @@ mod tests {
     }
 
     #[test]
+    fn window_answer_tells_a_gone_window_from_a_failed_query() {
+        let bad_window = "X Error of failed request:  BadWindow (invalid Window parameter)\n";
+
+        assert_eq!(window_answer("123", true, ""), Ok(true));
+        assert_eq!(window_answer("123", false, bad_window), Ok(false));
+
+        for errors in ["Failed creating new xdo instance.\n", ""] {
+            assert_eq!(
+                window_answer("123", false, errors),
+                Err(WindowError::QueryFailed {
+                    window: "123".to_string(),
+                    errors: errors.trim().to_string(),
+                }),
+                "{errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn pick_window_waits_for_a_window_and_takes_the_only_one() {
         assert_eq!(pick_window(Vec::new(), "greppa", (640, 480)), Ok(None));
         assert_eq!(
@@ -347,6 +398,13 @@ mod tests {
                     timeout: Duration::from_secs(10),
                 },
                 "No window titled \"greppa\" at 640x480 appeared within 10 seconds.",
+            ),
+            (
+                WindowError::QueryFailed {
+                    window: "123".to_string(),
+                    errors: "Failed creating new xdo instance.".to_string(),
+                },
+                "xdotool getwindowgeometry 123 failed: Failed creating new xdo instance.",
             ),
         ];
 

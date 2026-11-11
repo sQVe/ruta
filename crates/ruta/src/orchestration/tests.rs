@@ -219,7 +219,7 @@ fn require_up_refuses_a_symlinked_root() {
     let root = folder.path().join("root");
     std::os::unix::fs::symlink(target.path(), &root).expect("link the root");
 
-    let error = require_up("test", &root).expect_err("the symlink is refused");
+    let error = require_up("test", &root, never_queried).expect_err("the symlink is refused");
     let root_error = error
         .downcast_ref::<RootError>()
         .expect("the refusal is a root error");
@@ -345,6 +345,36 @@ fn live_sandbox(label: &str) -> tempfile::TempDir {
     root
 }
 
+fn window_exists(_: &Path, _: &str) -> anyhow::Result<bool> {
+    Ok(true)
+}
+
+fn window_gone(_: &Path, _: &str) -> anyhow::Result<bool> {
+    Ok(false)
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("the window was queried")]
+struct Queried;
+
+fn never_queried(_: &Path, _: &str) -> anyhow::Result<bool> {
+    Err(Queried.into())
+}
+
+fn missing_xdotool(_: &Path, _: &str) -> anyhow::Result<bool> {
+    Err(crate::tool::MissingTool {
+        tool: Tool::Xdotool,
+    }
+    .into())
+}
+
+fn assert_missing_xdotool(error: &anyhow::Error) {
+    assert_eq!(
+        error.to_string(),
+        "The tool \"xdotool\" is missing. Install the xdotool package and try again."
+    );
+}
+
 fn assert_not_up(error: &anyhow::Error, case: &str) {
     assert_eq!(
         error.downcast_ref::<SandboxError>(),
@@ -360,7 +390,7 @@ fn require_up_returns_the_display_of_a_live_sandbox() {
     let root = live_sandbox("require-up");
 
     assert_eq!(
-        require_up("test", root.path()).expect("the sandbox is up"),
+        require_up("test", root.path(), window_exists).expect("the sandbox is up"),
         ":7"
     );
 }
@@ -371,7 +401,8 @@ fn require_up_refuses_a_stale_display() {
         let root = live_sandbox("require-stale");
         make_stale(root.path());
 
-        let error = require_up("test", root.path()).expect_err("a stale display is refused");
+        let error =
+            require_up("test", root.path(), never_queried).expect_err("a stale display is refused");
 
         assert_not_up(&error, case);
     }
@@ -382,10 +413,48 @@ fn require_up_refuses_a_missing_window() {
     let root = live_sandbox("require-window");
     fs::remove_file(root.path().join("window")).expect("remove the window");
 
-    let error = require_up("test", root.path()).expect_err("a missing window is refused");
+    let error =
+        require_up("test", root.path(), never_queried).expect_err("a missing window is refused");
 
     assert_not_up(&error, "missing window");
     assert_eq!(display_up(root.path()), Some(":7".to_string()));
+}
+
+#[test]
+fn require_up_refuses_a_window_that_no_longer_exists() {
+    let root = live_sandbox("require-gone");
+
+    let error = require_up("test", root.path(), window_gone).expect_err("a gone window is refused");
+
+    assert_not_up(&error, "gone window");
+    assert_eq!(
+        error.to_string(),
+        "ruta test is not up; run 'ruta up' first"
+    );
+}
+
+#[test]
+fn require_up_asks_the_recorded_display_about_the_window() {
+    let root = live_sandbox("require-query");
+    let mut asked = None;
+
+    require_up("test", root.path(), |root, display| {
+        asked = Some((root.to_path_buf(), display.to_string()));
+        Ok(true)
+    })
+    .expect("the sandbox is up");
+
+    assert_eq!(asked, Some((root.path().to_path_buf(), ":7".to_string())));
+}
+
+#[test]
+fn require_up_returns_a_failed_window_query() {
+    let root = live_sandbox("require-failed-query");
+
+    let error = require_up("test", root.path(), missing_xdotool)
+        .expect_err("a failed query is not reported as up");
+
+    assert_missing_xdotool(&error);
 }
 
 fn io_kind(error: &anyhow::Error) -> Option<std::io::ErrorKind> {
