@@ -41,7 +41,7 @@ and undo it after the worker reports.
    cd $PROJECT && RUTA_NAME=$NAME <worktree>/target/debug/ruta up
    ```
 
-6. For the Parent only section, run the end-to-end tests as
+6. For a change that falls under Not testable, run the end-to-end tests as
    [the development guide](../../docs/development.md) describes.
 
 ## Undo
