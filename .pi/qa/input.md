@@ -7,8 +7,9 @@ Run every command as `cd $PROJECT && RUTA_NAME=$NAME $RUTA <command>`.
 
 ## Entry points
 
-The test app logs one line per event, `ruta-test-app: <event>`. Each row lists the new lines, after
-the `motion x=0 y=0` line that the gotchas describe.
+The test app logs one line per event, `ruta-test-app: <event>`. Each row lists the fields to find
+in the new lines, after the `motion x=0 y=0` line that the gotchas describe. A line holds more
+fields than a row names: a key line also has `keycode`, and every line has `state`.
 
 | Entry point | Command | New log lines |
 | ----------- | ------- | ------------- |
@@ -26,9 +27,10 @@ the `motion x=0 y=0` line that the gotchas describe.
 
 ## Driving steps
 
-1. Record the log size: `wc -c < /var/tmp/ruta-$NAME/app.log`.
+1. Record the log size: `SIZE=$(wc -c < /var/tmp/ruta-$NAME/app.log)`.
 2. Run one command from the table.
-3. Wait one second, then print the new lines: `tail -c +<size + 1> /var/tmp/ruta-$NAME/app.log`.
+3. Wait one second, then print the new lines:
+   `tail -c +$((SIZE + 1)) /var/tmp/ruta-$NAME/app.log`.
 4. Repeat steps 1 to 3 for each row, and keep `hold` and `release` for last.
 5. After `hold Shift_L`, run `click 150 160`.
 6. Run `release Shift_L`, then `click 170 180`.
@@ -39,12 +41,10 @@ the `motion x=0 y=0` line that the gotchas describe.
 - Each command prints nothing and exits 0.
 - The log is the second view: the output of `RUTA_NAME=$NAME $RUTA log` ends with the same lines
   as the `tail`.
-- An event's `x` and `y` equal the command's numbers. They are window pixels, the same scale as a
-  shot.
+- An event's `x` and `y` equal the command's numbers.
 - Step 5: the `button-press x=150 y=160` line has `state=0x1`. Shift stayed down across commands.
 - Step 6: the `button-press x=170 y=180` line has `state=0x0`.
-- Step 7: the shot is still a 640 x 480 PNG. The test app draws nothing, so the picture does not
-  change.
+- Step 7: the shot is a 640 x 480 PNG.
 
 ## Gotchas
 

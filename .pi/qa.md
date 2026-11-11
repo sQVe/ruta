@@ -73,8 +73,6 @@ Never:
 
 ## Refusals
 
-Checked: 2026-11-11 at 7a96412.
-
 ### Reach it
 
 Needs the binary and `$PROJECT`, and nothing running. Run the binary proof above. Then
@@ -87,7 +85,8 @@ Use the name `$NAME-idle`, which has no sandbox, so a mistake cannot reach the p
 ### What to check
 
 Every refusal exits 1, prints one message on stderr, prints nothing on stdout, and leaves
-`/var/tmp/ruta-$NAME-idle` absent.
+`/var/tmp/ruta-$NAME-idle` absent. `opened` is no refusal: with nothing up it exits 0 and prints
+nothing.
 
 ### Recipes
 
@@ -95,8 +94,6 @@ Every refusal exits 1, prints one message on stderr, prints nothing on stdout, a
   section.
 
 ## Running sandbox
-
-Checked: 2026-11-11 at 7a96412.
 
 ### Reach it
 
@@ -113,10 +110,10 @@ Needs a sandbox that the parent started in `$PROJECT` under `$NAME`.
   prints and writes that file instead.
 - `log` prints the app log byte for byte:
   `RUTA_NAME=$NAME $RUTA log | cmp - /var/tmp/ruta-$NAME/app.log` prints nothing.
-- Input reaches the window at the pixel a shot shows.
+- Each input event in the log has the `x` and `y` of its command.
 - `opened` prints the links that the stub openers logged. Run
   `/var/tmp/ruta-$NAME/bin/xdg-open https://example.com/qa`, then `opened` prints that link, and
-  so does `cat /var/tmp/ruta-$NAME/opened`. Nothing opens on the real desktop.
+  so does `cat /var/tmp/ruta-$NAME/opened`.
 
 ### Recipes
 
@@ -127,6 +124,9 @@ Needs a sandbox that the parent started in `$PROJECT` under `$NAME`.
 - `up`, `restart`, `down`, and `capture`: they start and stop processes.
 - `--headed`: it shows a window on the user's real screen, so only the user can judge it.
 - "The app opens a link": the test app never opens a link itself.
+- "A shot pixel is the pixel that input reaches": the test app draws nothing, so a shot shows no
+  target.
+- "No link opens on the real desktop": a worker cannot watch the user's desktop.
 
 Report each of these as not verified.
 
