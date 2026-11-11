@@ -23,6 +23,10 @@ decisions, and code states behavior.
 - Code and tests state behavior.
 - `docs/` holds only what no feature owns: the documentation index, the development guide, the
   coding guide, and the ADRs.
+- `.pi/qa.md` and the recipes it links hold the manual test procedures for QA agents: which
+  sections a change needs, how to reach ruta safely, and the visible result that proves a flow.
+  They state what to check, not how a feature works. No test runs them, so a change that alters a
+  result they name updates them in the same change.
 - The root README introduces the project and links to the rest. Topic details go in `docs/` and are
   linked from the [documentation index](../README.md).
 
@@ -50,14 +54,16 @@ never reused. Git keeps the history, and `git show <commit>:docs/adr/<file>` res
 ### Positive
 
 - Fewer descriptions of behavior to keep in sync with code.
+- A QA agent gets exact commands and expected results without reading the code.
 
 ### Negative
 
-- Readers who want current behavior must read the code.
+- Readers who want current behavior beyond the QA procedures must read the code.
 - A reader who wants a guided tour of a feature does not get one.
 - Every change to a decision must update its ADR in the same change, or the ADR drifts from the
   code.
 - The reasoning behind an earlier version of a decision lives only in Git history.
+- The QA procedures repeat some output text that the code defines, and they can drift from it.
 
 ## Alternatives considered
 

@@ -1,0 +1,58 @@
+# Input
+
+Use it when an input command, its pacing, or the environment that `xdotool` gets changes. It needs
+the parent's running sandbox.
+
+Run every command as `cd $PROJECT && RUTA_NAME=$NAME $RUTA <command>`.
+
+## Entry points
+
+The test app logs one line per event, `ruta-test-app: <event>`. Each row lists the new lines, after
+the `motion x=0 y=0` line that the gotchas describe.
+
+| Entry point | Command | New log lines |
+| ----------- | ------- | ------------- |
+| `move` | `move 10 20 200 210` | `motion` lines from `x=10 y=20` to `x=200 y=210` |
+| `click` | `click 100 120` | `motion x=100 y=120`, `button-press x=100 y=120 button=1 state=0x0`, `button-release x=100 y=120 button=1 state=0x100` |
+| `click` with a button | `click 30 40 3` | `button-press x=30 y=40 button=3 state=0x0` and its `button-release` |
+| `drag` | `drag 50 60 200 210` | `button-press x=50 y=60 button=1`, `motion` lines with `state=0x100`, `button-release x=200 y=210 button=1 state=0x100` |
+| `type` | `type hi` | `key-press` and `key-release` with `keysym=0x68`, then with `keysym=0x69` |
+| `key` | `key Return` | `key-press` and `key-release` with `keysym=0xff0d` |
+| `key` with a modifier | `key s ctrl` | `key-press keysym=0xffe3`, then `key-press keysym=0x73 state=0x4`, then both releases |
+| `scroll` down | `scroll 300 200 3` | Three `button-press x=300 y=200 button=5` and their releases |
+| `scroll` up | `scroll 300 200 -2` | Two `button-press x=300 y=200 button=4` and their releases |
+| `hold` | `hold Shift_L` | One `key-press keysym=0xffe1`, and no `key-release` |
+| `release` | `release Shift_L` | One `key-release keysym=0xffe1` |
+
+## Driving steps
+
+1. Record the log size: `wc -c < /var/tmp/ruta-$NAME/app.log`.
+2. Run one command from the table.
+3. Wait one second, then print the new lines: `tail -c +<size + 1> /var/tmp/ruta-$NAME/app.log`.
+4. Repeat steps 1 to 3 for each row, and keep `hold` and `release` for last.
+5. After `hold Shift_L`, run `click 150 160`.
+6. Run `release Shift_L`, then `click 170 180`.
+7. Run `shot`, and read the file it prints.
+
+## Observable results
+
+- Each command prints nothing and exits 0.
+- The log is the second view: the output of `RUTA_NAME=$NAME $RUTA log` ends with the same lines
+  as the `tail`.
+- An event's `x` and `y` equal the command's numbers. They are window pixels, the same scale as a
+  shot.
+- Step 5: the `button-press x=150 y=160` line has `state=0x1`. Shift stayed down across commands.
+- Step 6: the `button-press x=170 y=180` line has `state=0x0`.
+- Step 7: the shot is still a 640 x 480 PNG. The test app draws nothing, so the picture does not
+  change.
+
+## Gotchas
+
+- Read only the lines after your command. The parent's `up` leaves one focus click in the log.
+- Each command except `hold` and `release` first moves the pointer to `0 0`, so its new lines
+  start with `motion x=0 y=0`.
+- `state` is the modifier and button mask before the event, so a `button-release` shows its own
+  button as down.
+- A held key stays down after the command ends. Run `release Shift_L` before you finish, also
+  when a step after `hold` fails.
+- The app logs asynchronously. When lines are missing, wait and read again before you report.
