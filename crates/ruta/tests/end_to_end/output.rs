@@ -88,6 +88,36 @@ fn command_output_keeps_exact_text_and_silent_input() {
 }
 
 #[test]
+fn rules_print_without_a_config_and_status_refuses_an_absent_sandbox() {
+    let folder = tempfile::tempdir().expect("create a folder without ruta.toml");
+    let mut rules = std::process::Command::new(env!("CARGO_BIN_EXE_ruta"));
+    rules.arg("rules").current_dir(folder.path());
+
+    assert_success(
+        &Sandbox::run_command(&mut rules),
+        "Rules for a session that did not start the sandbox:
+- Run from the project folder, with the RUTA_NAME=<name> you were given.
+- `ruta status` must exit 0 before any input.
+- Never run up, restart, down, or capture.
+- Touch no sandbox with another name.
+- Write under /var/tmp/ruta-* only where your brief says so.
+- Never call xdotool, import, or ydotool, or start the app, yourself. They reach the real display.
+- Follow each hold with a release of the same keys.
+- Pass shot a file outside the sandbox folder.
+",
+    );
+
+    let project = Project::new(&Config::default());
+    let sandbox = project.sandbox("status-absent");
+
+    assert_failure(
+        &sandbox.run(&["status"]),
+        &format!("ruta {} is not up\n", sandbox.name()),
+    );
+    assert!(!sandbox.root().exists(), "status creates no root");
+}
+
+#[test]
 #[ignore = "checks installed dependencies before refusing absent sandboxes"]
 fn command_errors_keep_stderr_exit_codes_and_empty_stdout() {
     in_test_namespace!();

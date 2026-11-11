@@ -1,4 +1,6 @@
+use std::ffi::OsString;
 use std::fs;
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::os::unix::fs::{DirBuilderExt as _, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -26,8 +28,9 @@ pub(crate) mod record {
     pub(crate) const READY: &str = "ready.json";
     pub(crate) const SHOT: &str = "shot.png";
     pub(crate) const CREATED: &str = "created";
+    pub(crate) const FOLDER: &str = "folder";
 
-    pub(crate) const ALL: [&str; 14] = [
+    pub(crate) const ALL: [&str; 15] = [
         DISPLAY,
         WESTON_PID,
         XWAYLAND_PID,
@@ -42,6 +45,7 @@ pub(crate) mod record {
         READY,
         SHOT,
         CREATED,
+        FOLDER,
     ];
 }
 
@@ -265,7 +269,7 @@ pub(crate) fn remove_root(root: &Path) -> anyhow::Result<()> {
     fs::remove_dir_all(root).with_context(|| format!("Could not remove {}", root.display()))
 }
 
-pub(crate) fn write_unlinked(path: &Path, contents: &str) -> anyhow::Result<()> {
+pub(crate) fn write_unlinked(path: &Path, contents: impl AsRef<[u8]>) -> anyhow::Result<()> {
     write_unlinked_with(
         path,
         contents,
@@ -275,7 +279,11 @@ pub(crate) fn write_unlinked(path: &Path, contents: &str) -> anyhow::Result<()> 
     )
 }
 
-fn write_unlinked_with(path: &Path, contents: &str, linked_error: RootError) -> anyhow::Result<()> {
+fn write_unlinked_with(
+    path: &Path,
+    contents: impl AsRef<[u8]>,
+    linked_error: RootError,
+) -> anyhow::Result<()> {
     if is_symlink(path) {
         return Err(linked_error.into());
     }
@@ -289,7 +297,7 @@ fn write_unlinked_with(path: &Path, contents: &str, linked_error: RootError) -> 
 pub(crate) fn record_root_creation(root: &Path) -> anyhow::Result<()> {
     let created = boot_ticks_now();
 
-    write_unlinked(&root.join(record::CREATED), &format!("{created}\n"))?;
+    write_unlinked(&root.join(record::CREATED), format!("{created}\n"))?;
 
     while boot_ticks_now() <= created {
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -304,6 +312,22 @@ pub(crate) fn root_created(root: &Path) -> Option<u64> {
         .trim()
         .parse()
         .ok()
+}
+
+// The record holds the path's own bytes and nothing else, so a folder with any name reads back
+// as the same path.
+pub(crate) fn record_folder(root: &Path, folder: &Path) -> anyhow::Result<()> {
+    write_unlinked(&root.join(record::FOLDER), folder.as_os_str().as_bytes())
+}
+
+pub(crate) fn recorded_folder(root: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let path = root.join(record::FOLDER);
+
+    match fs::read(&path) {
+        Ok(folder) => Ok(Some(PathBuf::from(OsString::from_vec(folder)))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("Could not read {}", path.display())),
+    }
 }
 
 pub(crate) fn install_openers(root: &Path) -> anyhow::Result<()> {

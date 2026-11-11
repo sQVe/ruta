@@ -368,6 +368,7 @@ fn linked_paths_lists_control_files() {
         "ready.json",
         "shot.png",
         "created",
+        "folder",
         "run",
         "config",
         "state",
@@ -429,6 +430,61 @@ fn write_unlinked_refuses_a_symlink_and_leaves_its_target() {
     std::os::unix::fs::symlink(&marker, &link).expect("link the record");
 
     let error = write_unlinked(&link, "{}\n").expect_err("the link is refused");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<RootError>(),
+            Some(RootError::LinkedPath { path }) if path == &link
+        ),
+        "unexpected error: {error}"
+    );
+    assert_eq!(fs::read_to_string(&marker).expect("the marker"), "keep");
+}
+
+#[test]
+fn recorded_folder_returns_the_exact_folder_that_was_recorded() {
+    let root = crate::test_support::temporary_directory();
+
+    for folder in ["/home/user/project", "/odd/ name \n", "/trailing/newline\n"] {
+        record_folder(root.path(), Path::new(folder)).expect("the folder is recorded");
+
+        assert_eq!(
+            recorded_folder(root.path()).expect("the record is read"),
+            Some(PathBuf::from(folder)),
+            "{folder:?}"
+        );
+    }
+}
+
+#[test]
+fn recorded_folder_is_none_without_a_record_and_fails_on_an_unreadable_one() {
+    let root = crate::test_support::temporary_directory();
+
+    assert_eq!(
+        recorded_folder(root.path()).expect("a missing record is no error"),
+        None
+    );
+
+    fs::create_dir(root.path().join("folder")).expect("put a folder in the record's place");
+
+    let error = recorded_folder(root.path()).expect_err("a folder is no record");
+
+    assert!(
+        error.to_string().contains("Could not read"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn record_folder_refuses_a_symlink_and_leaves_its_target() {
+    let root = crate::test_support::temporary_directory();
+    let target = crate::test_support::temporary_directory();
+    let marker = target.path().join("marker");
+    fs::write(&marker, "keep").expect("write the marker");
+    let link = root.path().join("folder");
+    std::os::unix::fs::symlink(&marker, &link).expect("link the record");
+
+    let error = record_folder(root.path(), Path::new("/project")).expect_err("the link is refused");
 
     assert!(
         matches!(

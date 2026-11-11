@@ -17,10 +17,12 @@ use crate::identity::{RECORD_TIMEOUT, record_xwayland};
 use crate::input::{focus_window, send, window_id};
 use crate::log_tail::last_lines;
 use crate::root::{
-    create_root, install_openers, prepare_root, record_root_creation, remove_root,
+    create_root, install_openers, prepare_root, record_folder, record_root_creation, remove_root,
     require_trusted_root, root_path,
 };
 use crate::tool::{Tool, require_program};
+
+mod status;
 
 const DISPLAY_MARGIN: u32 = 200;
 
@@ -72,6 +74,7 @@ pub(crate) fn execute(
         Sandbox::Release { keys } => with_window(name, &root, |display, _| {
             send::release(&root, display, &keys)
         }),
+        Sandbox::Status => status::status(config, &root),
         Sandbox::Log => log(&root),
         Sandbox::Opened => opened(&root),
         Sandbox::Down => down(name, &root),
@@ -335,6 +338,7 @@ fn start_sandbox(
     let size = (config.app.width, config.app.height);
 
     prepare_root(root)?;
+    record_folder(root, &config.folder)?;
 
     let display = ensure_display(name, root, session, display_size(size))?;
 
@@ -388,18 +392,19 @@ enum SandboxError {
 }
 
 fn require_up(name: &str, root: &Path) -> anyhow::Result<String> {
-    require_trusted_root(root)?;
-
-    let not_up = || SandboxError::NotUp {
+    let display = up_display(root)?.ok_or_else(|| SandboxError::NotUp {
         name: name.to_string(),
-    };
-    let display = display_up(root).ok_or_else(not_up)?;
-
-    if !root.join(crate::root::record::WINDOW).is_file() {
-        return Err(not_up().into());
-    }
+    })?;
 
     Ok(display)
+}
+
+fn up_display(root: &Path) -> anyhow::Result<Option<String>> {
+    require_trusted_root(root)?;
+
+    let has_window = root.join(crate::root::record::WINDOW).is_file();
+
+    Ok(display_up(root).filter(|_| has_window))
 }
 
 #[mutants::skip]

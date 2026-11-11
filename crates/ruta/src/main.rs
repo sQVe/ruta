@@ -43,7 +43,14 @@ fn main() -> ExitCode {
 )]
 fn run() -> anyhow::Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let command = command::parse(&arguments)?;
+    let command = match command::parse(&arguments)? {
+        command::Command::Rules => {
+            println!("{}", command::RULES);
+
+            return Ok(());
+        }
+        command::Command::Sandbox(command) => command,
+    };
     let config = load_config()?;
 
     // Capture's startup line needs its newline so stdout flushes before capture continues.

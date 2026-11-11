@@ -17,6 +17,8 @@ Usage:
   ruta scroll <x> <y> [notches]
   ruta hold <keysym>...
   ruta release <keysym>...
+  ruta status
+  ruta rules
   ruta log
   ruta opened
   ruta down
@@ -29,10 +31,30 @@ Input goes to the app window, in window pixels. scroll turns the wheel 1 notch b
 positive count scrolls down and a negative one up. hold keeps keys down for later commands until
 release lets them go.
 
+status exits 0 only when the sandbox is up and was started from this project folder. rules prints
+the rules for a session that drives a sandbox it did not start.
+
 Set RUTA_NAME=<name> to run a second sandbox side by side.";
+
+pub(crate) const RULES: &str = "\
+Rules for a session that did not start the sandbox:
+- Run from the project folder, with the RUTA_NAME=<name> you were given.
+- `ruta status` must exit 0 before any input.
+- Never run up, restart, down, or capture.
+- Touch no sandbox with another name.
+- Write under /var/tmp/ruta-* only where your brief says so.
+- Never call xdotool, import, or ydotool, or start the app, yourself. They reach the real display.
+- Follow each hold with a release of the same keys.
+- Pass shot a file outside the sandbox folder.";
 
 const HEADED: &str = "--headed";
 const END_OF_OPTIONS: &str = "--";
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Command {
+    Rules,
+    Sandbox(Sandbox),
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Sandbox {
@@ -82,6 +104,7 @@ pub(crate) enum Sandbox {
     Release {
         keys: Vec<String>,
     },
+    Status,
     Log,
     Opened,
     Down,
@@ -100,7 +123,15 @@ pub(crate) enum ParseError {
     NoNotches,
 }
 
-pub(crate) fn parse(arguments: &[String]) -> Result<Sandbox, ParseError> {
+pub(crate) fn parse(arguments: &[String]) -> Result<Command, ParseError> {
+    if arguments == ["rules"] {
+        return Ok(Command::Rules);
+    }
+
+    parse_sandbox(arguments).map(Command::Sandbox)
+}
+
+fn parse_sandbox(arguments: &[String]) -> Result<Sandbox, ParseError> {
     let (command, rest) = arguments.split_first().ok_or(ParseError::Usage)?;
 
     match (command.as_str(), rest) {
@@ -175,6 +206,7 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Sandbox, ParseError> {
         ("release", keys) if !keys.is_empty() => Ok(Sandbox::Release {
             keys: keys.to_vec(),
         }),
+        ("status", []) => Ok(Sandbox::Status),
         ("log", []) => Ok(Sandbox::Log),
         ("opened", []) => Ok(Sandbox::Opened),
         ("down", []) => Ok(Sandbox::Down),

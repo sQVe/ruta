@@ -7,10 +7,10 @@ fn capture_requires_out_and_passes_app_arguments() {
     let parsed = parse(&strings(&["capture", "--out", "shots", "--", "smoke-2"]));
     assert_eq!(
         parsed,
-        Ok(Sandbox::Capture {
+        Ok(Command::Sandbox(Sandbox::Capture {
             out: PathBuf::from("shots"),
             arguments: strings(&["smoke-2"]),
-        })
+        }))
     );
     for arguments in [
         strings(&["capture"]),
@@ -29,10 +29,10 @@ fn capture_requires_out_and_passes_app_arguments() {
         input.extend(arguments.clone());
         assert_eq!(
             parse(&input),
-            Ok(Sandbox::Capture {
+            Ok(Command::Sandbox(Sandbox::Capture {
                 out: PathBuf::from("shots"),
                 arguments,
-            })
+            }))
         );
     }
 }
@@ -40,6 +40,54 @@ fn capture_requires_out_and_passes_app_arguments() {
 #[test]
 fn usage_lists_capture() {
     assert!(USAGE.contains("ruta capture --out <folder>"));
+}
+
+#[test]
+fn usage_lists_status_and_rules() {
+    for command in ["status", "rules"] {
+        assert!(
+            USAGE.contains(&format!("\n  ruta {command}\n")),
+            "{command}: {USAGE}"
+        );
+    }
+}
+
+#[test]
+fn parse_reads_rules_apart_from_the_sandbox_commands() {
+    assert_eq!(parse(&strings(&["rules"])), Ok(Command::Rules));
+    assert_eq!(
+        parse(&strings(&["status"])),
+        Ok(Command::Sandbox(Sandbox::Status))
+    );
+    assert_eq!(
+        parse(&strings(&["down"])),
+        Ok(Command::Sandbox(Sandbox::Down))
+    );
+
+    for arguments in [
+        strings(&[]),
+        strings(&["rules", "x"]),
+        strings(&["status", "x"]),
+    ] {
+        assert_eq!(parse(&arguments), Err(ParseError::Usage), "{arguments:?}");
+    }
+}
+
+#[test]
+fn rules_keep_the_heading_and_the_eight_rules() {
+    assert_eq!(
+        RULES,
+        "\
+Rules for a session that did not start the sandbox:
+- Run from the project folder, with the RUTA_NAME=<name> you were given.
+- `ruta status` must exit 0 before any input.
+- Never run up, restart, down, or capture.
+- Touch no sandbox with another name.
+- Write under /var/tmp/ruta-* only where your brief says so.
+- Never call xdotool, import, or ydotool, or start the app, yourself. They reach the real display.
+- Follow each hold with a release of the same keys.
+- Pass shot a file outside the sandbox folder."
+    );
 }
 
 #[test]
@@ -86,7 +134,11 @@ fn parse_reads_every_command() {
     ];
 
     for (arguments, expected) in cases {
-        assert_eq!(parse(&arguments), Ok(expected), "{arguments:?}");
+        assert_eq!(
+            parse(&arguments),
+            Ok(Command::Sandbox(expected)),
+            "{arguments:?}"
+        );
     }
 }
 
@@ -174,7 +226,11 @@ fn parse_reads_every_input_command() {
     ];
 
     for (arguments, expected) in cases {
-        assert_eq!(parse(&arguments), Ok(expected), "{arguments:?}");
+        assert_eq!(
+            parse(&arguments),
+            Ok(Command::Sandbox(expected)),
+            "{arguments:?}"
+        );
     }
 }
 
@@ -202,17 +258,17 @@ fn usage_lists_every_input_command() {
 fn headed_after_the_first_app_argument_goes_to_the_app() {
     assert_eq!(
         parse(&strings(&["up", "smoke-2", "--headed"])),
-        Ok(Sandbox::Up {
+        Ok(Command::Sandbox(Sandbox::Up {
             arguments: strings(&["smoke-2", "--headed"]),
             headed: false,
-        })
+        }))
     );
     assert_eq!(
         parse(&strings(&["restart", "smoke-2", "--headed"])),
-        Ok(Sandbox::Restart {
+        Ok(Command::Sandbox(Sandbox::Restart {
             arguments: Some(strings(&["smoke-2", "--headed"])),
             force_headed: false,
-        })
+        }))
     );
 }
 
@@ -220,10 +276,10 @@ fn headed_after_the_first_app_argument_goes_to_the_app() {
 fn end_of_options_passes_the_rest_to_the_app() {
     assert_eq!(
         parse(&strings(&["up", "--headed", "--", "--headed", "--"])),
-        Ok(Sandbox::Up {
+        Ok(Command::Sandbox(Sandbox::Up {
             arguments: strings(&["--headed", "--"]),
             headed: true,
-        })
+        }))
     );
 }
 
@@ -231,17 +287,17 @@ fn end_of_options_passes_the_rest_to_the_app() {
 fn restart_with_only_end_of_options_clears_the_arguments() {
     assert_eq!(
         parse(&strings(&["restart", "--"])),
-        Ok(Sandbox::Restart {
+        Ok(Command::Sandbox(Sandbox::Restart {
             arguments: Some(Vec::new()),
             force_headed: false,
-        })
+        }))
     );
     assert_eq!(
         parse(&strings(&["restart", "--headed"])),
-        Ok(Sandbox::Restart {
+        Ok(Command::Sandbox(Sandbox::Restart {
             arguments: None,
             force_headed: true,
-        })
+        }))
     );
 }
 

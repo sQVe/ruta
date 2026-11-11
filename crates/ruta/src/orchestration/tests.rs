@@ -18,6 +18,7 @@ mod capture;
 mod down;
 mod failed_start;
 mod restart;
+mod status;
 
 #[derive(Debug, Error)]
 #[error("the process will not stop")]
