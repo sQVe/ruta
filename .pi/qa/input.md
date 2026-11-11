@@ -55,6 +55,6 @@ fields than a row names: a key line also has `keycode`, and every line has `stat
   start with `motion x=0 y=0`.
 - `state` is the modifier and button mask before the event, so a `button-release` shows its own
   button as down.
-- A held key stays down after the command ends. Run `release Shift_L` before you finish, also
-  when a step after `hold` fails.
+- The guide's `release` rule also holds when a step after `hold` fails. Run `release Shift_L`
+  before you report.
 - The app logs asynchronously. When lines are missing, wait and read again before you report.

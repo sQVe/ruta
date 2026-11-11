@@ -104,3 +104,26 @@ advisories fail cargo-deny without a code change.
 
 Only runs on `main` save the build cache. Renovate updates dependencies, actions, and the toolchain
 every Monday, after a release is three days old.
+
+## Release
+
+A release is a tag on a commit of `main`. Other repositories install ruta by tag, with the command
+that [ADR 0002](adr/0002-purpose-and-design.md) gives, so the tag is the version.
+
+1. Name the tag `v<major>.<minor>.<patch>`.
+2. Create the tag signed and annotated, with the message `ruta <tag>`:
+
+   ```sh
+   git tag --sign --message "ruta <tag>" <tag> <commit>
+   ```
+
+3. Check the signature, then push the tag:
+
+   ```sh
+   git tag --verify <tag>
+   git push origin <tag>
+   ```
+
+The `version` in `crates/ruta/Cargo.toml` stays at `0.0.0`. Do not change it for a release. So
+`cargo install --list` shows every installed ruta as `v0.0.0`, with the tag in the source URL beside
+it.

@@ -1,6 +1,6 @@
 # Documentation
 
-- [Development](./development.md): local setup and verification.
+- [Development](./development.md): local setup, verification, and releases.
 - [Rust coding guide](./coding.md): the Rust rules that change or add to Tau's coding instructions.
 - [Architecture decisions](./adr/README.md): technical choices and their benefits and costs.
 
