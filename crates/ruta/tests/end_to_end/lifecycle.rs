@@ -48,6 +48,55 @@ fn up_shoots_logs_and_goes_down() {
 
 #[test]
 #[ignore = "needs Weston, Xwayland, xdotool, and ImageMagick"]
+fn status_proves_which_folder_started_the_sandbox() {
+    in_test_namespace!();
+
+    let project = Project::new(&Config::default());
+    let sandbox = project.sandbox("status");
+    let other_project = Project::new(&Config::default());
+    let other_folder = other_project.sandbox("status");
+    assert_eq!(sandbox.name(), other_folder.name());
+    let name = sandbox.name();
+    let folder = project.folder().display();
+
+    sandbox.succeed(&["up"]);
+    let before = sandbox.records();
+
+    assert_eq!(
+        sandbox.succeed(&["status"]),
+        format!("ruta {name} is up and serves {folder}\n")
+    );
+    let refused = other_folder.fail(&["status"]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        format!(
+            "ruta {name} serves {folder}, not {}\n",
+            other_project.folder().display()
+        )
+    );
+    assert_eq!(sandbox.records(), before, "status changes no record");
+
+    fs::remove_file(sandbox.root().join("folder")).expect("remove the folder record");
+    let refused = sandbox.fail(&["status"]);
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        format!("ruta {name} has no folder record; start it again with this ruta\n")
+    );
+
+    sandbox.succeed(&["restart"]);
+    assert_eq!(
+        sandbox.succeed(&["status"]),
+        format!("ruta {name} is up and serves {folder}\n"),
+        "restart records the folder again"
+    );
+
+    sandbox.succeed(&["down"]);
+    sandbox.assert_gone();
+}
+
+#[test]
+#[ignore = "needs Weston, Xwayland, xdotool, and ImageMagick"]
 fn failed_up_leaves_no_root_and_no_process() {
     in_test_namespace!();
 

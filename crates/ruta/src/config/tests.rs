@@ -505,3 +505,10 @@ fn the_config_errors_name_the_key() {
         assert_eq!(error.to_string(), expected, "{error:?}");
     }
 }
+
+#[test]
+fn guide_names_the_name_limit() {
+    assert!(crate::command::GUIDE.contains(&format!(
+        "holds at most {NAME_LIMIT} lowercase letters,\n  digits, and hyphens."
+    )));
+}

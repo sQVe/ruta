@@ -79,7 +79,7 @@ pub(crate) fn start_app(
 
     write_unlinked(
         &root.join(crate::root::record::ARGUMENTS),
-        &format!("{recorded}\n"),
+        format!("{recorded}\n"),
     )
 }
 
@@ -103,7 +103,7 @@ fn start_with_ready_line(
     let (line, rest) = read_ready_line(stdout, reader_log, &log_path, pid, READY_TIMEOUT)?;
 
     copy_rest(rest, log, environment, pid)?;
-    write_unlinked(&root.join(crate::root::record::READY), &format!("{line}\n"))
+    write_unlinked(&root.join(crate::root::record::READY), format!("{line}\n"))
 }
 
 fn spawn_recorded(mut command: Command, root: &Path) -> anyhow::Result<Child> {

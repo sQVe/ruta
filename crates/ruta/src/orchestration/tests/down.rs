@@ -35,6 +35,20 @@ fn down_removes_a_private_root_without_records() {
 }
 
 #[test]
+fn guide_quotes_the_line_down_prints() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("down-guide");
+
+    let output = down("<name>", root.path()).expect("the sandbox goes down");
+
+    assert!(
+        crate::command::GUIDE.contains(&format!("ruta down prints `{}`.", output.trim_end())),
+        "{output}"
+    );
+}
+
+#[test]
 fn down_refuses_an_unsafe_root_before_stopping_a_recorded_child() {
     crate::test_support::in_test_namespace!();
 

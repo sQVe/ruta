@@ -23,6 +23,7 @@ const RECORDS: &[&str] = &[
     "ready.json",
     "weston.pid",
     "xwayland.pid",
+    "folder",
 ];
 
 pub(crate) struct Project {
@@ -40,6 +41,10 @@ impl Project {
         project.write_config(&config.text());
 
         project
+    }
+
+    pub(crate) fn folder(&self) -> &Path {
+        self.folder.path()
     }
 
     pub(crate) fn write_config(&self, text: &str) {

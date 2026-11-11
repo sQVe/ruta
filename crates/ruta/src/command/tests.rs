@@ -7,10 +7,10 @@ fn capture_requires_out_and_passes_app_arguments() {
     let parsed = parse(&strings(&["capture", "--out", "shots", "--", "smoke-2"]));
     assert_eq!(
         parsed,
-        Ok(Sandbox::Capture {
+        Ok(Command::Sandbox(Sandbox::Capture {
             out: PathBuf::from("shots"),
             arguments: strings(&["smoke-2"]),
-        })
+        }))
     );
     for arguments in [
         strings(&["capture"]),
@@ -29,10 +29,10 @@ fn capture_requires_out_and_passes_app_arguments() {
         input.extend(arguments.clone());
         assert_eq!(
             parse(&input),
-            Ok(Sandbox::Capture {
+            Ok(Command::Sandbox(Sandbox::Capture {
                 out: PathBuf::from("shots"),
                 arguments,
-            })
+            }))
         );
     }
 }
@@ -40,6 +40,98 @@ fn capture_requires_out_and_passes_app_arguments() {
 #[test]
 fn usage_lists_capture() {
     assert!(USAGE.contains("ruta capture --out <folder>"));
+}
+
+#[test]
+fn usage_lists_status_and_guide() {
+    for command in ["status", "guide"] {
+        assert!(
+            USAGE.contains(&format!("\n  ruta {command}\n")),
+            "{command}: {USAGE}"
+        );
+    }
+}
+
+#[test]
+fn parse_reads_guide_apart_from_the_sandbox_commands() {
+    assert_eq!(parse(&strings(&["guide"])), Ok(Command::Guide));
+    assert_eq!(
+        parse(&strings(&["status"])),
+        Ok(Command::Sandbox(Sandbox::Status))
+    );
+    assert_eq!(
+        parse(&strings(&["down"])),
+        Ok(Command::Sandbox(Sandbox::Down))
+    );
+
+    for arguments in [
+        strings(&[]),
+        strings(&["guide", "x"]),
+        strings(&["status", "x"]),
+    ] {
+        assert_eq!(parse(&arguments), Err(ParseError::Usage), "{arguments:?}");
+    }
+}
+
+#[test]
+fn guide_keeps_its_text() {
+    assert_eq!(
+        GUIDE,
+        "\
+Every session:
+- Run every command from the project folder, with RUTA_NAME=<name> set. Without RUTA_NAME, every
+  worktree of a repository shares the one name in ruta.toml.
+- A name starts with a lowercase letter or a digit, and holds at most 32 lowercase letters,
+  digits, and hyphens.
+- Touch no sandbox with another name, and no other /var/tmp/ruta-* folder.
+- The shot is the only view of the window. Pass shot a file outside the sandbox folder.
+- Never call xdotool, import, or ydotool, or start the app, yourself. They reach the real display.
+- Follow each hold with a release of the same keys.
+
+The session that starts the sandbox:
+- Pick a name that no other running sandbox has.
+- ruta up prints `ruta <name> is up on <display> (log: /var/tmp/ruta-<name>/app.log)`.
+- ruta down prints `ruta <name> is gone`. Run it when the work is done.
+- up --headed and restart --headed open a window on the user's real screen. Ask the user first.
+
+A session that did not start the sandbox:
+- Use only the name you were given.
+- `ruta status` must exit 0 before any input. It then prints
+  `ruta <name> is up and serves <folder>`.
+- Never run up, restart, down, or capture. Only the session that started the sandbox runs them.
+- You may run status, shot, move, click, drag, scroll, type, key, hold, release, log, and opened.
+- Write under /var/tmp/ruta-<name> only where your brief says so."
+    );
+}
+
+#[test]
+fn guide_sorts_every_sandbox_command_of_the_usage_text() {
+    let mut commands: Vec<&str> = USAGE
+        .lines()
+        .filter_map(|line| line.strip_prefix("  ruta "))
+        .filter_map(|line| line.split(' ').next())
+        .filter(|command| *command != "guide")
+        .collect();
+    commands.sort_unstable();
+    let refused = ["up", "restart", "down", "capture"];
+    let allowed = [
+        "status", "shot", "move", "click", "drag", "scroll", "type", "key", "hold", "release",
+        "log", "opened",
+    ];
+    let mut sorted: Vec<&str> = refused.into_iter().chain(allowed).collect();
+    sorted.sort_unstable();
+
+    assert_eq!(commands, sorted);
+    assert!(GUIDE.contains(&format!(
+        "- Never run {}, or {}.",
+        refused[..3].join(", "),
+        refused[3]
+    )));
+    assert!(GUIDE.contains(&format!(
+        "- You may run {}, and {}.",
+        allowed[..11].join(", "),
+        allowed[11]
+    )));
 }
 
 #[test]
@@ -86,7 +178,11 @@ fn parse_reads_every_command() {
     ];
 
     for (arguments, expected) in cases {
-        assert_eq!(parse(&arguments), Ok(expected), "{arguments:?}");
+        assert_eq!(
+            parse(&arguments),
+            Ok(Command::Sandbox(expected)),
+            "{arguments:?}"
+        );
     }
 }
 
@@ -174,7 +270,11 @@ fn parse_reads_every_input_command() {
     ];
 
     for (arguments, expected) in cases {
-        assert_eq!(parse(&arguments), Ok(expected), "{arguments:?}");
+        assert_eq!(
+            parse(&arguments),
+            Ok(Command::Sandbox(expected)),
+            "{arguments:?}"
+        );
     }
 }
 
@@ -202,17 +302,17 @@ fn usage_lists_every_input_command() {
 fn headed_after_the_first_app_argument_goes_to_the_app() {
     assert_eq!(
         parse(&strings(&["up", "smoke-2", "--headed"])),
-        Ok(Sandbox::Up {
+        Ok(Command::Sandbox(Sandbox::Up {
             arguments: strings(&["smoke-2", "--headed"]),
             headed: false,
-        })
+        }))
     );
     assert_eq!(
         parse(&strings(&["restart", "smoke-2", "--headed"])),
-        Ok(Sandbox::Restart {
+        Ok(Command::Sandbox(Sandbox::Restart {
             arguments: Some(strings(&["smoke-2", "--headed"])),
             force_headed: false,
-        })
+        }))
     );
 }
 
@@ -220,10 +320,10 @@ fn headed_after_the_first_app_argument_goes_to_the_app() {
 fn end_of_options_passes_the_rest_to_the_app() {
     assert_eq!(
         parse(&strings(&["up", "--headed", "--", "--headed", "--"])),
-        Ok(Sandbox::Up {
+        Ok(Command::Sandbox(Sandbox::Up {
             arguments: strings(&["--headed", "--"]),
             headed: true,
-        })
+        }))
     );
 }
 
@@ -231,17 +331,17 @@ fn end_of_options_passes_the_rest_to_the_app() {
 fn restart_with_only_end_of_options_clears_the_arguments() {
     assert_eq!(
         parse(&strings(&["restart", "--"])),
-        Ok(Sandbox::Restart {
+        Ok(Command::Sandbox(Sandbox::Restart {
             arguments: Some(Vec::new()),
             force_headed: false,
-        })
+        }))
     );
     assert_eq!(
         parse(&strings(&["restart", "--headed"])),
-        Ok(Sandbox::Restart {
+        Ok(Command::Sandbox(Sandbox::Restart {
             arguments: None,
             force_headed: true,
-        })
+        }))
     );
 }
 
