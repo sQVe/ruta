@@ -33,13 +33,31 @@ Cross-effects:
 
 ## Before a launch
 
-The parent follows [the setup](qa/setup.md). The brief must then give:
+[The setup](qa/setup.md) holds the fixture file and the full steps.
+
+The manager starts:
+
+- The build. Start: `cargo build --locked -p ruta -p ruta-test-app` in the worktree. Up:
+  `target/debug/ruta` and `target/debug/ruta-test-app` exist. Stop: nothing.
+- The fixture folder. Start: `PROJECT=$(mktemp -d /tmp/qa-ruta-XXXXXX)`, then write
+  `$PROJECT/ruta.toml` from the setup. Up: `$PROJECT/ruta.toml` exists. Stop: `rm -r $PROJECT`.
+- The sandbox, for Running sandbox only. Pick a `$NAME` that starts with `qa-`, is at most 24
+  bytes, and has no `/var/tmp/ruta-$NAME` or `/var/tmp/ruta-$NAME-idle`. Start:
+  `cd $PROJECT && RUTA_NAME=$NAME $RUTA up`. Up: it prints
+  `ruta $NAME is up on <display> (log: /var/tmp/ruta-$NAME/app.log)`. Stop:
+  `cd $PROJECT && RUTA_NAME=$NAME $RUTA down` prints `ruta $NAME is gone`, and
+  `/var/tmp/ruta-$NAME` is gone.
+
+Ask the user:
+
+- The end-to-end tests: their sandbox names are the same in every worktree.
+- `up --headed`: it opens a window on the user's real screen.
+
+The brief must give:
 
 - `$RUTA` and `$APP`: the absolute paths of `target/debug/ruta` and `target/debug/ruta-test-app`
   in this worktree, and the commit they were built from.
-- `$PROJECT`: the fixture folder outside every repository.
-- `$NAME`: the sandbox name. It starts with `qa-` and is at most 24 bytes.
-- For Running sandbox: the output of the parent's `up`.
+- `$PROJECT` and `$NAME`, and for Running sandbox the output of the manager's `up`.
 - That data writes are allowed in `$PROJECT` and `/var/tmp/ruta-$NAME`.
 
 ## Rules for every section
@@ -114,7 +132,7 @@ Needs a sandbox that the parent started in `$PROJECT` under `$NAME`.
   prints and writes that file instead.
 - `log` prints the app log byte for byte:
   `RUTA_NAME=$NAME $RUTA log | cmp - /var/tmp/ruta-$NAME/app.log` prints nothing.
-- Each input event in the log has the `x` and `y` of its command.
+- A `click` logs a `button-press` with the `x` and `y` of the command.
 - `opened` prints the links that the stub openers logged. Run
   `/var/tmp/ruta-$NAME/bin/xdg-open https://example.com/qa`, then `opened` prints that link, and
   so does `cat /var/tmp/ruta-$NAME/opened`.
@@ -134,11 +152,6 @@ Needs a sandbox that the parent started in `$PROJECT` under `$NAME`.
 
 Report each of these as not verified.
 
-The end-to-end tests cover the four commands, and `cargo xtask check` leaves them out. The parent
-runs them as [the development guide](../docs/development.md) describes, and reports the result.
-The parent also reports the output of its own `up` and `down`:
-
-- `up` prints `ruta <name> is up on <display> (log: /var/tmp/ruta-<name>/app.log)`.
-- `restart` without arguments prints the same line, and `arguments` in the root is unchanged.
-- `down` prints `ruta <name> is gone`, and the root is gone. A second `down` prints
-  `ruta <name> is not up`.
+The end-to-end tests cover the four commands, and `cargo xtask check` leaves them out.
+[The development guide](../docs/development.md) gives their commands. The manager reports the
+output of its own `up` and `down`, as Before a launch states it.

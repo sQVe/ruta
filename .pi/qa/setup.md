@@ -1,6 +1,6 @@
 # QA setup
 
-For the parent. A `qa` worker never builds and never starts a sandbox, so do this before a launch
+For the manager. A `qa` worker never builds and never starts a sandbox, so do this before a launch
 and undo it after the worker reports.
 
 ## Prepare
@@ -41,8 +41,9 @@ and undo it after the worker reports.
    cd $PROJECT && RUTA_NAME=$NAME <worktree>/target/debug/ruta up
    ```
 
-6. For a change that falls under Not testable, run the end-to-end tests as
-   [the development guide](../../docs/development.md) describes.
+6. For a change that falls under Not testable, ask the user before you run the end-to-end tests
+   as [the development guide](../../docs/development.md) describes. Their sandbox names are the
+   same in every worktree.
 
 ## Undo
 

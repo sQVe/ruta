@@ -8,7 +8,8 @@ Run every command as `cd $PROJECT && RUTA_NAME=$NAME $RUTA <command>`.
 ## Entry points
 
 The test app logs one line per event, `ruta-test-app: <event>`. Each row lists the fields to find
-in the new lines, after the `motion x=0 y=0` line that the gotchas describe. A line holds more
+in the new lines. Every command except `hold` and `release` first logs `motion x=0 y=0`, as the
+gotchas describe. A line holds more
 fields than a row names: a key line also has `keycode`, and every line has `state`.
 
 | Entry point | Command | New log lines |
@@ -38,10 +39,11 @@ fields than a row names: a key line also has `keycode`, and every line has `stat
 
 ## Observable results
 
-- Each command prints nothing and exits 0.
+- Each input command prints nothing and exits 0. `shot` prints the path of its file.
 - The log is the second view: the output of `RUTA_NAME=$NAME $RUTA log` ends with the same lines
   as the `tail`.
-- An event's `x` and `y` equal the command's numbers.
+- A press or release has the `x` and `y` of its command. The last `motion` line of `move` and
+  `drag` has the end point.
 - Step 5: the `button-press x=150 y=160` line has `state=0x1`. Shift stayed down across commands.
 - Step 6: the `button-press x=170 y=180` line has `state=0x0`.
 - Step 7: the shot is a 640 x 480 PNG.
