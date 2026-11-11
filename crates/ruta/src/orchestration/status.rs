@@ -21,10 +21,14 @@ pub(super) enum StatusError {
 }
 
 // Proves only which project folder started the sandbox, and changes nothing in the root.
-pub(super) fn status(config: &Config, root: &Path) -> anyhow::Result<String> {
+pub(super) fn status(
+    config: &Config,
+    root: &Path,
+    window_exists: impl FnOnce(&Path, &str) -> anyhow::Result<bool>,
+) -> anyhow::Result<String> {
     let name = &config.name;
 
-    if up_display(root)?.is_none() {
+    if up_display(root, window_exists)?.is_none() {
         return Err(StatusError::NotUp { name: name.clone() }.into());
     }
 
