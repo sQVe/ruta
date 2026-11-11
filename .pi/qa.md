@@ -99,7 +99,7 @@ Prove that the binaries serve this worktree:
 
 1. Never run a bare `ruta`. That is the installed release, not this worktree.
 2. In the worktree, run
-   `find crates Cargo.toml Cargo.lock -newer $RUTA \( -name '*.rs' -o -name 'Cargo.*' \)`. A file
+   `find crates/ruta Cargo.toml Cargo.lock -newer $RUTA \( -name '*.rs' -o -name 'Cargo.*' \)`. A file
    outside `crates/ruta/tests` in the output means a stale binary. For `$APP`, run
    `find crates/ruta-test-app Cargo.toml Cargo.lock -newer $APP \( -name '*.rs' -o -name 'Cargo.*' \)`.
    Any file in the output means a stale binary. Cargo does not build the app again when only
