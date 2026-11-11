@@ -88,6 +88,11 @@ in the sandbox, so later commands and project scripts can read what the app repo
 
 Commands that only one app needs stay in that project and call ruta.
 
+### Releases
+
+A release is a signed, annotated tag, and the tag is the version. The package version in the
+manifest stays at `0.0.0`, so a release needs no commit.
+
 ## Consequences
 
 ### Positive
@@ -104,6 +109,7 @@ Commands that only one app needs stay in that project and call ruta.
 - The sandbox covers an app's X11 backend under Xwayland, not a native Wayland backend.
 - The sandbox is not a security boundary against a process that already has host shell access.
 - During a headed demo, the user's own mouse over the window mixes with the agent's input.
+- Cargo lists every installed ruta as `0.0.0`. Only the source URL beside it names the tag.
 
 ## Alternatives considered
 
@@ -135,6 +141,11 @@ on when ruta reads it.
 Check the recorded app process by its PID and start time. Rejected because that process can be a
 launcher that exits while its child keeps a working window, so a usable sandbox would be reported
 as not up. A live process also does not prove that a window exists.
+
+### A package version that follows the tag
+
+Set the manifest version to the tag's version for each release. Rejected because each release
+would need a version commit before its tag, and the two can drift apart.
 
 ### The developer's real display
 
