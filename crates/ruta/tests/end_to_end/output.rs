@@ -9,6 +9,32 @@ use std::time::Duration;
 
 use crate::support::*;
 
+const GUIDE: &str = "\
+Every session:
+- Run every command from the project folder, with RUTA_NAME=<name> set. Without RUTA_NAME, every
+  worktree of a repository shares the one name in ruta.toml.
+- A name starts with a lowercase letter or a digit, and holds at most 32 lowercase letters,
+  digits, and hyphens.
+- Touch no sandbox with another name, and no other /var/tmp/ruta-* folder.
+- The shot is the only view of the window. Pass shot a file outside the sandbox folder.
+- Never call xdotool, import, or ydotool, or start the app, yourself. They reach the real display.
+- Follow each hold with a release of the same keys.
+
+The session that starts the sandbox:
+- Pick a name that no other running sandbox has.
+- ruta up prints `ruta <name> is up on <display> (log: /var/tmp/ruta-<name>/app.log)`.
+- ruta down prints `ruta <name> is gone`. Run it when the work is done.
+- up --headed and restart --headed open a window on the user's real screen. Ask the user first.
+
+A session that did not start the sandbox:
+- Use only the name you were given.
+- `ruta status` must exit 0 before any input. It then prints
+  `ruta <name> is up and serves <folder>`.
+- Never run up, restart, down, or capture. Only the session that started the sandbox runs them.
+- You may run status, shot, move, click, drag, scroll, type, key, hold, release, log, and opened.
+- Write under /var/tmp/ruta-<name> only where your brief says so.
+";
+
 const INPUT_COMMANDS: [&[&str]; 8] = [
     &["move", "1", "2", "3", "4"],
     &["click", "1", "2"],
@@ -51,6 +77,15 @@ fn command_output_keeps_exact_text_and_silent_input() {
     let sandbox = project.sandbox("output");
     let up = sandbox.run(&["up"]);
     assert_success(&up, &startup_text(sandbox.name(), &sandbox.root()));
+    let display = fs::read_to_string(sandbox.root().join("display")).expect("recorded display");
+    let quoted = String::from_utf8_lossy(&up.stdout)
+        .trim_end()
+        .replace(sandbox.name(), "<name>")
+        .replace(&format!(" on {} ", display.trim()), " on <display> ");
+    assert!(
+        GUIDE.contains(&format!("ruta up prints `{quoted}`.")),
+        "the guide quotes the line up prints: {quoted}"
+    );
     sandbox.wait_for_log("button-release");
 
     let log = sandbox.run(&["log"]);
@@ -87,25 +122,24 @@ fn command_output_keeps_exact_text_and_silent_input() {
     );
 }
 
-#[test]
-fn rules_print_without_a_config_and_status_refuses_an_absent_sandbox() {
-    let folder = tempfile::tempdir().expect("create a folder without ruta.toml");
-    let mut rules = std::process::Command::new(env!("CARGO_BIN_EXE_ruta"));
-    rules.arg("rules").current_dir(folder.path());
+fn run_in(folder: &Path, argument: &str) -> Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_ruta"));
+    command.arg(argument).current_dir(folder);
 
-    assert_success(
-        &Sandbox::run_command(&mut rules),
-        "Rules for a session that did not start the sandbox:
-- Run from the project folder, with the RUTA_NAME=<name> you were given.
-- `ruta status` must exit 0 before any input.
-- Never run up, restart, down, or capture.
-- Touch no sandbox with another name.
-- Write under /var/tmp/ruta-* only where your brief says so.
-- Never call xdotool, import, or ydotool, or start the app, yourself. They reach the real display.
-- Follow each hold with a release of the same keys.
-- Pass shot a file outside the sandbox folder.
-",
-    );
+    Sandbox::run_command(&mut command)
+}
+
+#[test]
+fn guide_prints_without_a_config_and_status_refuses_an_absent_sandbox() {
+    let folder = tempfile::tempdir().expect("create a folder without ruta.toml");
+
+    assert_success(&run_in(folder.path(), "guide"), GUIDE);
+
+    let unknown = run_in(folder.path(), "rules");
+    let usage = String::from_utf8_lossy(&unknown.stderr);
+    assert_eq!(unknown.status.code(), Some(1), "{unknown:?}");
+    assert_eq!(unknown.stdout, b"");
+    assert!(usage.starts_with("Usage:\n"), "{usage}");
 
     let project = Project::new(&Config::default());
     let sandbox = project.sandbox("status-absent");

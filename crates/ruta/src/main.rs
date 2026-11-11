@@ -44,8 +44,8 @@ fn main() -> ExitCode {
 fn run() -> anyhow::Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let command = match command::parse(&arguments)? {
-        command::Command::Rules => {
-            println!("{}", command::RULES);
+        command::Command::Guide => {
+            println!("{}", command::GUIDE);
 
             return Ok(());
         }

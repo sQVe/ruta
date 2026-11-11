@@ -43,8 +43,8 @@ fn usage_lists_capture() {
 }
 
 #[test]
-fn usage_lists_status_and_rules() {
-    for command in ["status", "rules"] {
+fn usage_lists_status_and_guide() {
+    for command in ["status", "guide"] {
         assert!(
             USAGE.contains(&format!("\n  ruta {command}\n")),
             "{command}: {USAGE}"
@@ -53,8 +53,8 @@ fn usage_lists_status_and_rules() {
 }
 
 #[test]
-fn parse_reads_rules_apart_from_the_sandbox_commands() {
-    assert_eq!(parse(&strings(&["rules"])), Ok(Command::Rules));
+fn parse_reads_guide_apart_from_the_sandbox_commands() {
+    assert_eq!(parse(&strings(&["guide"])), Ok(Command::Guide));
     assert_eq!(
         parse(&strings(&["status"])),
         Ok(Command::Sandbox(Sandbox::Status))
@@ -66,7 +66,7 @@ fn parse_reads_rules_apart_from_the_sandbox_commands() {
 
     for arguments in [
         strings(&[]),
-        strings(&["rules", "x"]),
+        strings(&["guide", "x"]),
         strings(&["status", "x"]),
     ] {
         assert_eq!(parse(&arguments), Err(ParseError::Usage), "{arguments:?}");
@@ -74,20 +74,64 @@ fn parse_reads_rules_apart_from_the_sandbox_commands() {
 }
 
 #[test]
-fn rules_keep_the_heading_and_the_eight_rules() {
+fn guide_keeps_its_text() {
     assert_eq!(
-        RULES,
+        GUIDE,
         "\
-Rules for a session that did not start the sandbox:
-- Run from the project folder, with the RUTA_NAME=<name> you were given.
-- `ruta status` must exit 0 before any input.
-- Never run up, restart, down, or capture.
-- Touch no sandbox with another name.
-- Write under /var/tmp/ruta-* only where your brief says so.
+Every session:
+- Run every command from the project folder, with RUTA_NAME=<name> set. Without RUTA_NAME, every
+  worktree of a repository shares the one name in ruta.toml.
+- A name starts with a lowercase letter or a digit, and holds at most 32 lowercase letters,
+  digits, and hyphens.
+- Touch no sandbox with another name, and no other /var/tmp/ruta-* folder.
+- The shot is the only view of the window. Pass shot a file outside the sandbox folder.
 - Never call xdotool, import, or ydotool, or start the app, yourself. They reach the real display.
 - Follow each hold with a release of the same keys.
-- Pass shot a file outside the sandbox folder."
+
+The session that starts the sandbox:
+- Pick a name that no other running sandbox has.
+- ruta up prints `ruta <name> is up on <display> (log: /var/tmp/ruta-<name>/app.log)`.
+- ruta down prints `ruta <name> is gone`. Run it when the work is done.
+- up --headed and restart --headed open a window on the user's real screen. Ask the user first.
+
+A session that did not start the sandbox:
+- Use only the name you were given.
+- `ruta status` must exit 0 before any input. It then prints
+  `ruta <name> is up and serves <folder>`.
+- Never run up, restart, down, or capture. Only the session that started the sandbox runs them.
+- You may run status, shot, move, click, drag, scroll, type, key, hold, release, log, and opened.
+- Write under /var/tmp/ruta-<name> only where your brief says so."
     );
+}
+
+#[test]
+fn guide_sorts_every_sandbox_command_of_the_usage_text() {
+    let mut commands: Vec<&str> = USAGE
+        .lines()
+        .filter_map(|line| line.strip_prefix("  ruta "))
+        .filter_map(|line| line.split(' ').next())
+        .filter(|command| *command != "guide")
+        .collect();
+    commands.sort_unstable();
+    let refused = ["up", "restart", "down", "capture"];
+    let allowed = [
+        "status", "shot", "move", "click", "drag", "scroll", "type", "key", "hold", "release",
+        "log", "opened",
+    ];
+    let mut sorted: Vec<&str> = refused.into_iter().chain(allowed).collect();
+    sorted.sort_unstable();
+
+    assert_eq!(commands, sorted);
+    assert!(GUIDE.contains(&format!(
+        "- Never run {}, or {}.",
+        refused[..3].join(", "),
+        refused[3]
+    )));
+    assert!(GUIDE.contains(&format!(
+        "- You may run {}, and {}.",
+        allowed[..11].join(", "),
+        allowed[11]
+    )));
 }
 
 #[test]

@@ -18,7 +18,7 @@ Usage:
   ruta hold <keysym>...
   ruta release <keysym>...
   ruta status
-  ruta rules
+  ruta guide
   ruta log
   ruta opened
   ruta down
@@ -31,28 +31,42 @@ Input goes to the app window, in window pixels. scroll turns the wheel 1 notch b
 positive count scrolls down and a negative one up. hold keeps keys down for later commands until
 release lets them go.
 
-status exits 0 only when the sandbox is up and was started from this project folder. rules prints
-the rules for a session that drives a sandbox it did not start.
+status exits 0 only when the sandbox is up and was started from this project folder. guide prints
+the rules for the session that starts a sandbox and for a session that only drives it.
 
 Set RUTA_NAME=<name> to run a second sandbox side by side.";
 
-pub(crate) const RULES: &str = "\
-Rules for a session that did not start the sandbox:
-- Run from the project folder, with the RUTA_NAME=<name> you were given.
-- `ruta status` must exit 0 before any input.
-- Never run up, restart, down, or capture.
-- Touch no sandbox with another name.
-- Write under /var/tmp/ruta-* only where your brief says so.
+pub(crate) const GUIDE: &str = "\
+Every session:
+- Run every command from the project folder, with RUTA_NAME=<name> set. Without RUTA_NAME, every
+  worktree of a repository shares the one name in ruta.toml.
+- A name starts with a lowercase letter or a digit, and holds at most 32 lowercase letters,
+  digits, and hyphens.
+- Touch no sandbox with another name, and no other /var/tmp/ruta-* folder.
+- The shot is the only view of the window. Pass shot a file outside the sandbox folder.
 - Never call xdotool, import, or ydotool, or start the app, yourself. They reach the real display.
 - Follow each hold with a release of the same keys.
-- Pass shot a file outside the sandbox folder.";
+
+The session that starts the sandbox:
+- Pick a name that no other running sandbox has.
+- ruta up prints `ruta <name> is up on <display> (log: /var/tmp/ruta-<name>/app.log)`.
+- ruta down prints `ruta <name> is gone`. Run it when the work is done.
+- up --headed and restart --headed open a window on the user's real screen. Ask the user first.
+
+A session that did not start the sandbox:
+- Use only the name you were given.
+- `ruta status` must exit 0 before any input. It then prints
+  `ruta <name> is up and serves <folder>`.
+- Never run up, restart, down, or capture. Only the session that started the sandbox runs them.
+- You may run status, shot, move, click, drag, scroll, type, key, hold, release, log, and opened.
+- Write under /var/tmp/ruta-<name> only where your brief says so.";
 
 const HEADED: &str = "--headed";
 const END_OF_OPTIONS: &str = "--";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command {
-    Rules,
+    Guide,
     Sandbox(Sandbox),
 }
 
@@ -124,8 +138,8 @@ pub(crate) enum ParseError {
 }
 
 pub(crate) fn parse(arguments: &[String]) -> Result<Command, ParseError> {
-    if arguments == ["rules"] {
-        return Ok(Command::Rules);
+    if arguments == ["guide"] {
+        return Ok(Command::Guide);
     }
 
     parse_sandbox(arguments).map(Command::Sandbox)

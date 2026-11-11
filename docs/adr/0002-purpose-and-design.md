@@ -42,8 +42,8 @@ ruta owns the parts every project shares:
   leaves a running sandbox untouched.
 - A record of the project folder that started a sandbox, so a session that did not start the
   sandbox can prove it serves that session's project.
-- The rules for a session that drives a sandbox it did not start. ruta prints them, so no project
-  keeps its own copy.
+- The rules for the session that starts a sandbox and for a session that only drives it. ruta
+  prints them as one text, so no project keeps its own copy.
 
 Input is xdotool XTest, and a shot is ImageMagick `import` of the private window, so a shot's pixels
 and an input coordinate share one scale.

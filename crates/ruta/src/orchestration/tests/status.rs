@@ -54,6 +54,20 @@ fn status_names_the_folder_a_live_sandbox_serves() {
 }
 
 #[test]
+fn guide_quotes_the_line_status_prints() {
+    let root = served_sandbox("status-guide", Path::new("<folder>"));
+    let mut config = test_config("<name>");
+    config.folder = PathBuf::from("<folder>");
+
+    let output = status(&config, root.path()).expect("the sandbox serves the folder");
+
+    assert!(
+        crate::command::GUIDE.contains(&format!("prints\n  `{}`.", output.trim_end())),
+        "{output}"
+    );
+}
+
+#[test]
 fn status_refuses_a_sandbox_that_is_not_up() {
     let not_up = StatusError::NotUp {
         name: "test".to_string(),
