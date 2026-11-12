@@ -9,22 +9,22 @@ Run every command as `cd $PROJECT && RUTA_NAME=$NAME $RUTA <command>`.
 
 The test app logs one line per event, `ruta-test-app: <event>`. Each row lists the fields to find
 in the new lines. Every command except `hold` and `release` first logs `motion x=0 y=0`, as the
-gotchas describe. A line holds more
-fields than a row names: a key line also has `keycode`, and every line has `state`.
+gotchas describe. A line holds more fields than a row names: a key line also has `keycode`, and
+every line has `state`.
 
-| Entry point | Command | New log lines |
-| ----------- | ------- | ------------- |
-| `move` | `move 10 20 200 210` | `motion` lines from `x=10 y=20` to `x=200 y=210` |
-| `click` | `click 100 120` | `motion x=100 y=120`, `button-press x=100 y=120 button=1 state=0x0`, `button-release x=100 y=120 button=1 state=0x100` |
-| `click` with a button | `click 30 40 3` | `button-press x=30 y=40 button=3 state=0x0` and its `button-release` |
-| `drag` | `drag 50 60 200 210` | `button-press x=50 y=60 button=1`, `motion` lines with `state=0x100`, `button-release x=200 y=210 button=1 state=0x100` |
-| `type` | `type hi` | `key-press` and `key-release` with `keysym=0x68`, then with `keysym=0x69` |
-| `key` | `key Return` | `key-press` and `key-release` with `keysym=0xff0d` |
-| `key` with a modifier | `key s ctrl` | `key-press keysym=0xffe3`, then `key-press keysym=0x73 state=0x4`, then both releases |
-| `scroll` down | `scroll 300 200 3` | Three `button-press x=300 y=200 button=5` and their releases |
-| `scroll` up | `scroll 300 200 -2` | Two `button-press x=300 y=200 button=4` and their releases |
-| `hold` | `hold Shift_L` | One `key-press keysym=0xffe1`, and no `key-release` |
-| `release` | `release Shift_L` | One `key-release keysym=0xffe1` |
+| Entry point           | Command              | New log lines |
+| --------------------- | -------------------- | ------------- |
+| `move`                | `move 10 20 200 210` | `motion` lines from `x=10 y=20` to `x=200 y=210` |
+| `click`               | `click 100 120`      | `motion x=100 y=120`, `button-press x=100 y=120 button=1 state=0x0`, `button-release x=100 y=120 button=1 state=0x100` |
+| `click` with a button | `click 30 40 3`      | `button-press x=30 y=40 button=3 state=0x0` and its `button-release` |
+| `drag`                | `drag 50 60 200 210` | `button-press x=50 y=60 button=1`, `motion` lines with `state=0x100`, `button-release x=200 y=210 button=1 state=0x100` |
+| `type`                | `type hi`            | `key-press` and `key-release` with `keysym=0x68`, then with `keysym=0x69` |
+| `key`                 | `key Return`         | `key-press` and `key-release` with `keysym=0xff0d` |
+| `key` with a modifier | `key s ctrl`         | `key-press keysym=0xffe3`, then `key-press keysym=0x73 state=0x4`, then both releases |
+| `scroll` down         | `scroll 300 200 3`   | Three `button-press x=300 y=200 button=5` and their releases |
+| `scroll` up           | `scroll 300 200 -2`  | Two `button-press x=300 y=200 button=4` and their releases |
+| `hold`                | `hold Shift_L`       | One `key-press keysym=0xffe1`, and no `key-release` |
+| `release`             | `release Shift_L`    | One `key-release keysym=0xffe1` |
 
 ## Driving steps
 
@@ -55,6 +55,6 @@ fields than a row names: a key line also has `keycode`, and every line has `stat
   start with `motion x=0 y=0`.
 - `state` is the modifier and button mask before the event, so a `button-release` shows its own
   button as down.
-- The guide's `release` rule also holds when a step after `hold` fails. Run `release Shift_L`
-  before you report.
+- The `release` rule of the `ruta guide` text also holds when a step after `hold` fails. Run
+  `release Shift_L` before you report.
 - The app logs asynchronously. When lines are missing, wait and read again before you report.
