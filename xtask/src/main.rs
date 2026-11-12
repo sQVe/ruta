@@ -1,5 +1,6 @@
 mod check;
 mod mutation;
+mod release;
 #[cfg(test)]
 mod test_support;
 
@@ -9,6 +10,7 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 Usage:
   cargo xtask check [tidy|build]
+  cargo xtask release-check <tag>
   cargo xtask mutation changed <base> [--max-mutants N]
   cargo xtask mutation audit <file>... [--max-mutants N]";
 
@@ -31,6 +33,7 @@ fn main() -> ExitCode {
 
     match arguments.split_first() {
         Some((task, rest)) if task == "check" => check::run(&root, rest),
+        Some((task, rest)) if task == "release-check" => release::run(&root, rest),
         Some((task, rest)) if task == "mutation" => mutation::run(&root, rest),
         _ => {
             eprintln!("{USAGE}");

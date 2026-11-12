@@ -1,6 +1,6 @@
 [package]
 name = "ruta"
-version = "0.0.0"
+version = "0.2.2"
 description = "Throwaway app windows on a private headless display, for agents and tests."
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +13,7 @@ mutants = "0.0.3"
 rustix = { version = "1", features = ["fs", "mount", "param", "process", "thread", "time"] }
 serde_json.workspace = true
 thiserror.workspace = true
-toml = "1.2.0"
+toml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

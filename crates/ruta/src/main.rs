@@ -49,6 +49,11 @@ fn run() -> anyhow::Result<()> {
 
             return Ok(());
         }
+        command::Command::Version => {
+            println!("ruta {}", env!("CARGO_PKG_VERSION"));
+
+            return Ok(());
+        }
         command::Command::Sandbox(command) => command,
     };
     let config = load_config()?;

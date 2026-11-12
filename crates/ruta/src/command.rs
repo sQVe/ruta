@@ -19,6 +19,7 @@ Usage:
   ruta release <keysym>...
   ruta status
   ruta guide
+  ruta --version
   ruta log
   ruta opened
   ruta down
@@ -33,6 +34,7 @@ release lets them go.
 
 status exits 0 only when the sandbox is up and was started from this project folder. guide prints
 the rules for the session that starts a sandbox and for a session that only drives it.
+--version prints the release.
 
 Set RUTA_NAME=<name> to run a second sandbox side by side.";
 
@@ -67,6 +69,7 @@ const END_OF_OPTIONS: &str = "--";
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command {
     Guide,
+    Version,
     Sandbox(Sandbox),
 }
 
@@ -140,6 +143,10 @@ pub(crate) enum ParseError {
 pub(crate) fn parse(arguments: &[String]) -> Result<Command, ParseError> {
     if arguments == ["guide"] {
         return Ok(Command::Guide);
+    }
+
+    if arguments == ["--version"] {
+        return Ok(Command::Version);
     }
 
     parse_sandbox(arguments).map(Command::Sandbox)

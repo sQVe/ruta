@@ -44,7 +44,7 @@ fn usage_lists_capture() {
 
 #[test]
 fn usage_lists_status_and_guide() {
-    for command in ["status", "guide"] {
+    for command in ["status", "guide", "--version"] {
         assert!(
             USAGE.contains(&format!("\n  ruta {command}\n")),
             "{command}: {USAGE}"
@@ -70,6 +70,23 @@ fn parse_reads_guide_apart_from_the_sandbox_commands() {
         strings(&["status", "x"]),
     ] {
         assert_eq!(parse(&arguments), Err(ParseError::Usage), "{arguments:?}");
+    }
+}
+
+#[test]
+fn parse_reads_only_the_version_option_alone() {
+    assert_eq!(parse(&strings(&["--version"])), Ok(Command::Version));
+    for arguments in [
+        vec!["--version", "extra"],
+        vec!["-V"],
+        vec!["version"],
+        vec!["--help"],
+    ] {
+        assert_eq!(
+            parse(&strings(&arguments)),
+            Err(ParseError::Usage),
+            "{arguments:?}"
+        );
     }
 }
 
@@ -110,7 +127,7 @@ fn guide_sorts_every_sandbox_command_of_the_usage_text() {
         .lines()
         .filter_map(|line| line.strip_prefix("  ruta "))
         .filter_map(|line| line.split(' ').next())
-        .filter(|command| *command != "guide")
+        .filter(|command| !["guide", "--version"].contains(command))
         .collect();
     commands.sort_unstable();
     let refused = ["up", "restart", "down", "capture"];

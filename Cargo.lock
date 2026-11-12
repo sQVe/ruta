@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "ruta"
-version = "0.0.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "mutants",
@@ -360,6 +360,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "toml",
 ]
 
 [[package]]
