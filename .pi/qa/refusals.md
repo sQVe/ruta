@@ -13,8 +13,8 @@ otherwise.
 | Entry point | Command | stderr |
 | ----------- | ------- | ------ |
 | No command | none | The usage text, starting with `Usage:` |
-| Unknown command or option | `nonsense`, `--help`, `--version` | The usage text |
-| Wrong argument count | `log x`, `shot a b`, `type`, `status x`, `guide x` | The usage text |
+| Unknown command or option | `nonsense`, `--help`, `-V` | The usage text |
+| Wrong argument count | `log x`, `shot a b`, `type`, `status x`, `guide x`, `--version extra` | The usage text |
 | Zero notches | `scroll 1 2 0` | `scroll needs a nonzero number of notches` |
 | Not a number | `click a 2` | `x must be a whole number, not "a"` |
 | Button out of range | `click 1 2 300` | `button must be a whole number, not "300"` |
@@ -27,6 +27,7 @@ otherwise.
 | Log with nothing up | `log` | `Could not read the app log: No such file or directory (os error 2)` |
 | Opened with nothing up | `opened` | Empty, and the command exits 0 |
 | Guide | `guide` | Empty, and the command exits 0 |
+| Release | `--version`, run in an empty folder under `/tmp` | Empty; stdout is `ruta <version>` and a newline, and the command exits 0 |
 | Refusals of `up`, `restart`, `down`, and `capture` | none | Report as not verified |
 
 ## Driving steps
@@ -55,7 +56,7 @@ otherwise.
 ## Gotchas
 
 - When a parent sandbox runs, a config edit in `$PROJECT` also breaks every command on it except
-  `guide` until the line is removed. Remove the line before you do anything else.
+  `guide` and `--version` until the line is removed. Remove the line before you do anything else.
 - Never edit a tracked `ruta.toml`.
 - The guide's rule against `up`, `restart`, `down`, and `capture` covers their refusals too. When
   the change under test breaks the order of their checks, they start or stop processes.
