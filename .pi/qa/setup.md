@@ -1,18 +1,20 @@
 # QA setup
 
 For the manager. A `qa` worker never builds and never starts a sandbox, so do this before a launch
-and undo it after the worker reports.
+and undo it after the worker reports. [The QA guide](../qa.md) says which steps each section
+needs.
 
 ## Prepare
 
-1. Build both binaries in the worktree:
+1. Build both binaries in the worktree. Afterwards `target/debug/ruta` and
+   `target/debug/ruta-test-app` exist.
 
    ```sh
    cargo build --locked -p ruta -p ruta-test-app
    ```
 
-2. Print the guide, and follow its parts "Every session" and "The session that starts the
-   sandbox" in the steps below:
+2. Print the `ruta guide` text. Follow its parts "Every session" and "The session that starts the
+   sandbox" in the steps below. These steps add what is specific to testing ruta itself.
 
    ```sh
    <worktree>/target/debug/ruta guide
@@ -25,7 +27,8 @@ and undo it after the worker reports.
    PROJECT=$(mktemp -d /tmp/qa-ruta-XXXXXX)
    ```
 
-4. Write `$PROJECT/ruta.toml`. Replace `<worktree>` with the absolute path of the worktree:
+4. Write `$PROJECT/ruta.toml`. Replace `<worktree>` with the absolute path of the worktree.
+   Afterwards `$PROJECT/ruta.toml` exists.
 
    ```toml
    name = "qa"
@@ -43,15 +46,15 @@ and undo it after the worker reports.
 5. Pick `$NAME`: `qa-` and a short label, at most 24 bytes. Check that `/var/tmp/ruta-$NAME`,
    `/var/tmp/ruta-$NAME-idle`, and `/var/tmp/ruta-$NAME-gone` do not exist. The worker uses
    `$NAME-idle` for the refusals.
-6. For the Running sandbox section, start the sandbox and keep the output for the brief. It is
-   the `up` line of the guide:
+6. For the Running sandbox section, start the sandbox. It prints the `up` line that the
+   `ruta guide` text gives, with `$NAME` as the name. Keep the output for the brief.
 
    ```sh
    cd $PROJECT && RUTA_NAME=$NAME <worktree>/target/debug/ruta up
    ```
 
 7. For the Running sandbox section, also start a second sandbox and stop its app. Its `status`
-   then exits 1 and prints `ruta $NAME-gone is not up`:
+   then exits 1 and prints `ruta $NAME-gone is not up`.
 
    ```sh
    cd $PROJECT && RUTA_NAME=$NAME-gone <worktree>/target/debug/ruta up
@@ -65,8 +68,8 @@ and undo it after the worker reports.
 
 ## Undo
 
-1. Stop both sandboxes, and keep the output for your report. Each prints the `down` line of the
-   guide:
+1. Stop both sandboxes, and keep the output for your report. Each prints the `down` line that the
+   `ruta guide` text gives.
 
    ```sh
    cd $PROJECT && RUTA_NAME=$NAME <worktree>/target/debug/ruta down
@@ -74,4 +77,8 @@ and undo it after the worker reports.
    ```
 
 2. Check that `/var/tmp/ruta-$NAME` and `/var/tmp/ruta-$NAME-gone` are gone.
-3. Remove `$PROJECT`.
+3. Remove the fixture folder.
+
+   ```sh
+   rm -r $PROJECT
+   ```

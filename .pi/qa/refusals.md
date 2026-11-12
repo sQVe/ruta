@@ -1,7 +1,7 @@
 # Refusals
 
-Use it when command parsing, the usage text, the `guide` text, `ruta.toml` reading, error text, or
-exit codes change.
+Use it when command parsing, the usage text, the `ruta guide` text, `ruta.toml` reading, error
+text, or exit codes change.
 
 Run every command as `cd $PROJECT && RUTA_NAME=$NAME-idle $RUTA <command>`, unless a row says
 otherwise.
@@ -10,25 +10,25 @@ otherwise.
 
 `<toml>` is the path of the `ruta.toml` that ruta found.
 
-| Entry point | Command | stderr |
-| ----------- | ------- | ------ |
-| No command | none | The usage text, starting with `Usage:` |
-| Unknown command or option | `nonsense`, `--help`, `-V` | The usage text |
-| Wrong argument count | `log x`, `shot a b`, `type`, `status x`, `guide x`, `--version extra` | The usage text |
-| Zero notches | `scroll 1 2 0` | `scroll needs a nonzero number of notches` |
-| Not a number | `click a 2` | `x must be a whole number, not "a"` |
-| Button out of range | `click 1 2 300` | `button must be a whole number, not "300"` |
-| No config | `log`, run in an empty folder under `/tmp` | `No ruta.toml in <folder> or a folder above it.` |
-| Unknown config key | `log`, after step 3 below | `Invalid <toml>: unknown key "colour"` |
-| Bad name | `RUTA_NAME=Bad_Name $RUTA log` | `Invalid <toml>: "RUTA_NAME" must be one name of lowercase letters, digits, and dashes, at most 32 bytes, not "Bad_Name"` |
-| Shot with nothing up | `shot` | `ruta <name> is not up; run 'ruta up' first` |
-| Input with nothing up | `click 1 2`, `hold Shift_L`, and the other six input commands | `ruta <name> is not up; run 'ruta up' first` |
-| Status with nothing up | `status` | `ruta <name> is not up` |
-| Log with nothing up | `log` | `Could not read the app log: No such file or directory (os error 2)` |
-| Opened with nothing up | `opened` | Empty, and the command exits 0 |
-| Guide | `guide` | Empty, and the command exits 0 |
-| Release | `--version`, run in an empty folder under `/tmp` | Empty; stdout is `ruta <version>` and a newline, and the command exits 0 |
-| Refusals of `up`, `restart`, `down`, and `capture` | none | Report as not verified |
+| Entry point                                        | Command                                                               | stderr |
+| -------------------------------------------------- | --------------------------------------------------------------------- | ------ |
+| No command                                         | none                                                                  | The usage text, starting with `Usage:` |
+| Unknown command or option                          | `nonsense`, `--help`, `-V`                                            | The usage text |
+| Wrong argument count                               | `log x`, `shot a b`, `type`, `status x`, `guide x`, `--version extra` | The usage text |
+| Zero notches                                       | `scroll 1 2 0`                                                        | `scroll needs a nonzero number of notches` |
+| Not a number                                       | `click a 2`                                                           | `x must be a whole number, not "a"` |
+| Button out of range                                | `click 1 2 300`                                                       | `button must be a whole number, not "300"` |
+| No config                                          | `log`, run in an empty folder under `/tmp`                            | `No ruta.toml in <folder> or a folder above it.` |
+| Unknown config key                                 | `log`, after step 3 below                                             | `Invalid <toml>: unknown key "colour"` |
+| Bad name                                           | `RUTA_NAME=Bad_Name $RUTA log`                                        | `Invalid <toml>: "RUTA_NAME" must be one name of lowercase letters, digits, and dashes, at most 32 bytes, not "Bad_Name"` |
+| Shot with nothing up                               | `shot`                                                                | `ruta <name> is not up; run 'ruta up' first` |
+| Input with nothing up                              | `click 1 2`, `hold Shift_L`, and the other six input commands         | `ruta <name> is not up; run 'ruta up' first` |
+| Status with nothing up                             | `status`                                                              | `ruta <name> is not up` |
+| Log with nothing up                                | `log`                                                                 | `Could not read the app log: No such file or directory (os error 2)` |
+| Opened with nothing up                             | `opened`                                                              | Empty; stdout is empty too, and the command exits 0 |
+| Guide                                              | `guide`                                                               | Empty; stdout is the three parts, and the command exits 0 |
+| Release                                            | `--version`, run in an empty folder under `/tmp`                      | Empty; stdout is `ruta <version>` and a newline, and the command exits 0 |
+| Refusals of `up`, `restart`, `down`, and `capture` | none                                                                  | Report as not verified |
 
 ## Driving steps
 
@@ -49,7 +49,7 @@ otherwise.
 - `guide` reads no config. Both runs of step 4 print the same text on stdout. It has three parts,
   which start with `Every session:`, `The session that starts the sandbox:`, and
   `A session that did not start the sandbox:`.
-- The `guide` text holds the `up`, `down`, and `status` lines with `<name>`, `<display>`, and
+- The `ruta guide` text holds the `up`, `down`, and `status` lines with `<name>`, `<display>`, and
   `<folder>` in place of the values. Every command in its line `You may run` is in the usage text.
 - `ls -d /var/tmp/ruta-$NAME-idle` fails before and after: no refusal makes a root.
 
@@ -58,5 +58,7 @@ otherwise.
 - When a parent sandbox runs, a config edit in `$PROJECT` also breaks every command on it except
   `guide` and `--version` until the line is removed. Remove the line before you do anything else.
 - Never edit a tracked `ruta.toml`.
-- The guide's rule against `up`, `restart`, `down`, and `capture` covers their refusals too. When
-  the change under test breaks the order of their checks, they start or stop processes.
+- Use another folder or a bad name only where a row or a step names it.
+- The rule of the `ruta guide` text against `up`, `restart`, `down`, and `capture` covers their
+  refusals too. When the change under test breaks the order of their checks, they start or stop
+  processes.
