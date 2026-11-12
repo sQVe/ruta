@@ -18,7 +18,7 @@ Cross-effects:
 
 - The environment, root, process, and tool modules serve every command. Assign both sections.
 - The config is read before every command that parses, `log` and `down` included. Only `guide`
-  reads no config. Assign both sections.
+  and `--version` read no config. Assign both sections.
 - The `guide` text quotes the output lines of `up`, `down`, and `status`, and it lists the
   commands. A change to `status`, to one of those lines, or to the command list falls under both
   sections.
@@ -104,8 +104,8 @@ Prove that the binaries serve this worktree:
    `find crates/ruta-test-app Cargo.toml Cargo.lock -newer $APP \( -name '*.rs' -o -name 'Cargo.*' \)`.
    Any file in the output means a stale binary. Cargo does not build the app again when only
    `crates/ruta` changes.
-3. `ruta` has no `--version`. When a binary is missing or stale, stop and ask the parent to build
-   it.
+3. `$RUTA --version` prints the release, not the build's source revision. Keep the freshness check
+   above. When a binary is missing or stale, stop and ask the parent to build it.
 
 Never:
 
@@ -133,8 +133,9 @@ Use the name `$NAME-idle`, which has no sandbox, so a mistake cannot reach the p
 ### What to check
 
 Every refusal exits 1, prints one message on stderr, prints nothing on stdout, and leaves
-`/var/tmp/ruta-$NAME-idle` absent. Two commands are no refusal: `opened` with nothing up exits 0
-and prints nothing, and `guide` exits 0 and prints its three parts.
+`/var/tmp/ruta-$NAME-idle` absent. Three commands are no refusal: `opened` with nothing up exits 0
+and prints nothing, `guide` exits 0 and prints its three parts, and `--version` exits 0 and prints
+the release.
 
 ### Recipes
 

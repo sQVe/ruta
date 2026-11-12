@@ -102,6 +102,9 @@ advisories fail cargo-deny without a code change.
   `cargo mutants --workspace` and uploads `mutants.out` as an artifact. Survivors and timeouts
   pass the job; other cargo-mutants failures fail it.
 
+`.github/workflows/release.yml` runs `cargo xtask release-check <tag>` when a tag starting with
+`v` is pushed. It fails when the tag differs from the crate version.
+
 Only runs on `main` save the build cache. Renovate updates dependencies, actions, and the toolchain
 every Monday, after a release is three days old.
 
@@ -111,19 +114,19 @@ A release is a tag on a commit of `main`. Other repositories install ruta by tag
 that [ADR 0002](adr/0002-purpose-and-design.md) gives, so the tag is the version.
 
 1. Name the tag `v<major>.<minor>.<patch>`.
-2. Create the tag signed and annotated, with the message `ruta <tag>`:
+2. Set `package.version` in `crates/ruta/Cargo.toml` to the tag without `v`. Run `cargo check -p ruta`
+   to update `Cargo.lock`, then commit both files on `main`.
+3. Run `cargo xtask release-check <tag>` on that commit. CI runs the same check when the tag is
+   pushed.
+4. Create the tag signed and annotated, with the message `ruta <tag>`:
 
    ```sh
    git tag --sign --message "ruta <tag>" <tag> <commit>
    ```
 
-3. Check the signature, then push the tag:
+5. Check the signature, then push the tag:
 
    ```sh
    git tag --verify <tag>
    git push origin <tag>
    ```
-
-The `version` in `crates/ruta/Cargo.toml` stays at `0.0.0`. Do not change it for a release. So
-`cargo install --list` shows every installed ruta as `v0.0.0`, with the tag in the source URL beside
-it.

@@ -8,3 +8,4 @@ mod namespace;
 mod output;
 mod preflight;
 mod support;
+mod version;
