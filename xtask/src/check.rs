@@ -3,6 +3,8 @@ use std::process::{Command, ExitCode};
 
 use thiserror::Error;
 
+use crate::adr_index;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Group {
     Tidy,
@@ -78,6 +80,10 @@ const STEPS: &[Step] = &[
     },
 ];
 
+type SourceCheck = fn(&Path) -> anyhow::Result<()>;
+
+const SOURCE_CHECKS: &[(&str, SourceCheck)] = &[("adr-index", adr_index::check)];
+
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("Unknown check arguments: {}. Use tidy, build, or none.", arguments.join(" "))]
 struct UnknownArguments {
@@ -137,8 +143,31 @@ fn failed_steps<'a>(root: &Path, steps: &'a [Step], groups: &[Group]) -> Vec<&'a
     clippy::print_stderr,
     reason = "check progress and failures are the command's output"
 )]
+fn failed_source_checks(root: &Path) -> Vec<&'static str> {
+    let mut failed = Vec::new();
+
+    for (name, source_check) in SOURCE_CHECKS {
+        eprintln!("==> {name}");
+
+        if let Err(error) = source_check(root) {
+            eprintln!("{error:#}");
+            failed.push(*name);
+        }
+    }
+
+    failed
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "check progress and failures are the command's output"
+)]
 fn check_steps(root: &Path, steps: &[Step], groups: &[Group]) -> ExitCode {
-    let failed = failed_steps(root, steps, groups);
+    let mut failed = failed_steps(root, steps, groups);
+
+    if groups.contains(&Group::Tidy) {
+        failed.extend(failed_source_checks(root));
+    }
 
     if failed.is_empty() {
         eprintln!("All checks passed.");
@@ -197,6 +226,44 @@ mod tests {
             ["rustfmt", "typos", "taplo", "cargo-deny", "cargo-shear"]
         );
         assert_eq!(names(Group::Build), ["clippy", "nextest", "rustdoc"]);
+
+        let in_process: Vec<&str> = SOURCE_CHECKS.iter().map(|(name, _)| *name).collect();
+
+        assert_eq!(in_process, ["adr-index"]);
+    }
+
+    fn adr_tree(heading: &str) -> tempfile::TempDir {
+        let root = crate::test_support::temporary_directory();
+        let directory = root.path().join("docs/adr");
+
+        fs::create_dir_all(&directory).expect("create the ADR folder");
+        fs::write(
+            directory.join("README.md"),
+            "## Index\n\n- [0001: Choice](./0001-choice.md)\n",
+        )
+        .expect("write the index");
+        fs::write(directory.join("0001-choice.md"), heading).expect("write the ADR");
+
+        root
+    }
+
+    #[test]
+    fn tidy_runs_the_adr_index_check() {
+        let valid = adr_tree("# ADR 0001: Choice\n");
+        let broken = adr_tree("# Choice\n");
+
+        assert_eq!(
+            check_steps(valid.path(), &[], &[Group::Tidy]),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            check_steps(broken.path(), &[], &[Group::Tidy]),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            check_steps(broken.path(), &[], &[Group::Build]),
+            ExitCode::SUCCESS
+        );
     }
 
     #[test]
@@ -259,12 +326,17 @@ mod tests {
 
     #[test]
     fn check_steps_fails_when_a_step_fails_and_runs_later_steps() {
-        let root = crate::test_support::temporary_directory();
+        let root = adr_tree("# ADR 0001: Choice\n");
+        let passing = [shell_step("passes", &["-c", "exit 0"])];
         let steps = [
             shell_step("fails", &["-c", "exit 7"]),
             shell_step("later", &["-c", "touch later"]),
         ];
 
+        assert_eq!(
+            check_steps(root.path(), &passing, &[Group::Tidy]),
+            ExitCode::SUCCESS
+        );
         assert_eq!(
             check_steps(root.path(), &steps, &[Group::Tidy]),
             ExitCode::FAILURE
