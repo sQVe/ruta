@@ -34,8 +34,6 @@ impl ProcessStat {
         Self::parse(&bytes)
     }
 
-    // The command name in parentheses may hold spaces, `)`, and bytes that are not UTF-8, so the
-    // fields start after the last `)`.
     fn parse(bytes: &[u8]) -> Option<Self> {
         let end_of_name = bytes.iter().rposition(|byte| *byte == b')')?;
         let text = std::str::from_utf8(&bytes[end_of_name + 1..]).ok()?;

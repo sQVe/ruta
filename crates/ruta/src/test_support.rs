@@ -67,8 +67,6 @@ pub(crate) fn wait_until_gone(variable: &str, timeout: Duration) -> Vec<u32> {
     live_processes_with(variable)
 }
 
-// The kernel names a process after the base name of the path it executes, so a link with this
-// name gives `sleep` a command name that is not UTF-8.
 const INVALID_UTF8_NAME: &[u8] = b"ruta-\xff";
 
 pub(crate) fn link_sleep_with_invalid_utf8_name(directory: &Path) -> PathBuf {
