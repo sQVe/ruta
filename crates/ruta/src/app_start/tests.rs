@@ -1,6 +1,8 @@
 use std::fs;
+use std::os::unix::net::UnixStream;
 
 use super::*;
+use crate::identity::IdentityError;
 use crate::identity::process_is_zombie;
 use crate::test_support::ChildGuard;
 
@@ -56,6 +58,75 @@ fn wait_for_zombie(pid: u32) {
     .expect("the zombie check cannot fail");
 
     assert!(zombie.is_some(), "the app became a zombie");
+}
+
+#[test]
+fn a_ready_line_app_that_exits_before_recording_keeps_its_output_in_the_log() {
+    crate::test_support::in_test_namespace!();
+
+    let folder = crate::test_support::temporary_directory();
+    let (log, log_path) = log_file(folder.path());
+    let mut command = Command::new("sh");
+    command
+        .args(["-c", "echo 'ruta-test: the setup is broken'; exit 3"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .process_group(0);
+    let mut child = command.spawn().expect("spawn the app");
+    wait_for_zombie(child.id());
+
+    let error = record_spawned_child(&mut child, folder.path(), &log)
+        .expect_err("the app exited before it was recorded");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<IdentityError>(),
+            Some(IdentityError::MissingProcess { .. })
+        ),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(
+        fs::read_to_string(&log_path).expect("read the log"),
+        "ruta-test: the setup is broken\n"
+    );
+}
+
+#[test]
+fn draining_the_pipe_stops_at_would_block_while_a_writer_stays_open() {
+    let folder = crate::test_support::temporary_directory();
+    let (log, log_path) = log_file(folder.path());
+    let (reader, mut writer) = UnixStream::pair().expect("create a socket pair");
+    writer.write_all(b"kept\n").expect("write to the pipe");
+
+    let started = Instant::now();
+    drain_stdout(reader, &log, DRAIN_LIMIT).expect("the pipe drains");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "the drain took {elapsed:?} while the writer stayed open"
+    );
+    assert_eq!(
+        fs::read_to_string(&log_path).expect("read the log"),
+        "kept\n"
+    );
+}
+
+#[test]
+fn draining_the_pipe_stops_at_the_limit() {
+    let folder = crate::test_support::temporary_directory();
+    let (log, log_path) = log_file(folder.path());
+    let (reader, mut writer) = UnixStream::pair().expect("create a socket pair");
+    writer
+        .write_all(b"kept\nnot kept\n")
+        .expect("write to the pipe");
+
+    drain_stdout(reader, &log, 5).expect("the pipe drains");
+
+    assert_eq!(
+        fs::read_to_string(&log_path).expect("read the log"),
+        "kept\n"
+    );
 }
 
 #[test]
