@@ -65,6 +65,8 @@ pub(crate) fn boot_ticks_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     const STAT: &str = "4242 (a b) c) S 17 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 \
@@ -201,5 +203,96 @@ mod tests {
 
         assert!(!stat.is_zombie());
         assert_eq!(ProcessStat::read(u32::MAX), None);
+    }
+
+    proptest! {
+        #![proptest_config(crate::test_support::property_config())]
+
+        #[test]
+        fn parse_reads_back_the_fields_of_a_generated_line(
+            pid in any::<u32>(),
+            comm in "[a-z0-9 ()]{0,15}",
+            state in "[RSDZTtXI]",
+            parent in any::<u32>(),
+            group in any::<u32>(),
+            middle in prop::collection::vec(any::<i64>(), 16),
+            start in any::<u64>(),
+            tail in prop::collection::vec(any::<u64>(), 0..=5),
+        ) {
+            let prefix = format!("{pid} ({comm}) {state} {parent} {group}");
+            let line = stat_line(&prefix, &middle, start, &tail);
+
+            prop_assert_eq!(
+                ProcessStat::parse(line.as_bytes()),
+                Some(ProcessStat {
+                    state,
+                    parent,
+                    group,
+                    start,
+                }),
+                "line {:?}",
+                line
+            );
+        }
+
+        #[test]
+        fn parse_returns_none_for_a_line_cut_before_the_start_field(
+            pid in any::<u32>(),
+            comm in "[a-z0-9 ()]{0,15}",
+            state in "[RSDZTtXI]",
+            parent in any::<u32>(),
+            group in any::<u32>(),
+            middle in prop::collection::vec(any::<i64>(), 16),
+            start in any::<u64>(),
+            tail in prop::collection::vec(any::<u64>(), 0..=5),
+            kept in 0usize..=19,
+        ) {
+            let prefix = format!("{pid} ({comm}) {state} {parent} {group}");
+            let line = stat_line(&prefix, &middle, start, &tail);
+            let (head, rest) = line
+                .rsplit_once(')')
+                .expect("the line has a closing parenthesis");
+            let fields: Vec<&str> = rest.split_whitespace().collect();
+            let cut = format!("{head}) {}", fields[..kept].join(" "));
+
+            prop_assert_eq!(ProcessStat::parse(cut.as_bytes()), None, "line {:?}", cut);
+        }
+
+        #[test]
+        fn parse_returns_none_for_a_line_without_a_closing_parenthesis(line in "[^)]{0,200}") {
+            prop_assert_eq!(ProcessStat::parse(line.as_bytes()), None, "line {:?}", line);
+        }
+
+        #[test]
+        fn parse_never_panics(
+            raw_bytes in prop::collection::vec(any::<u8>(), 0..=200),
+            pid in any::<u32>(),
+            comm in "[a-z0-9 ()]{0,15}",
+            state in "[RSDZTtXI]",
+            parent in any::<u32>(),
+            group in any::<u32>(),
+            middle in prop::collection::vec(any::<i64>(), 16),
+            start in any::<u64>(),
+            tail in prop::collection::vec(any::<u64>(), 0..=5),
+            position in any::<usize>(),
+            splice in prop::collection::vec(any::<u8>(), 0..=16),
+        ) {
+            let _from_raw_bytes = ProcessStat::parse(&raw_bytes);
+            let prefix = format!("{pid} ({comm}) {state} {parent} {group}");
+            let line = stat_line(&prefix, &middle, start, &tail);
+            let mut bytes = line.into_bytes();
+            let position = position % (bytes.len() + 1);
+            bytes.splice(position..position, splice);
+            let _from_splice = ProcessStat::parse(&bytes);
+        }
+    }
+
+    fn stat_line(prefix: &str, middle: &[i64], start: u64, tail: &[u64]) -> String {
+        let mut fields = vec![prefix.to_string()];
+        fields.extend(middle.iter().map(i64::to_string));
+        fields.push(start.to_string());
+        fields.extend(tail.iter().map(u64::to_string));
+
+        fields.join(" ")
     }
 }

@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crate::process::poll_until;
 
+use proptest::test_runner::{Config, RngSeed};
 use tempfile::{Builder, TempDir};
 
 pub(crate) mod display;
@@ -16,6 +17,14 @@ pub(crate) mod namespace;
 
 pub(crate) fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
+}
+
+pub(crate) fn property_config() -> Config {
+    Config {
+        rng_seed: RngSeed::Fixed(0x5eed),
+        failure_persistence: None,
+        ..Config::default()
+    }
 }
 
 pub(crate) use namespace::in_test_namespace;
