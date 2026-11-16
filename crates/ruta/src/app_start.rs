@@ -20,7 +20,6 @@ use crate::root::write_unlinked;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_GRACE: Duration = Duration::from_millis(500);
-// A process that left the app's group can keep writing, so the drain stops after this many bytes.
 const DRAIN_LIMIT: u64 = 1024 * 1024;
 
 #[derive(Debug, Error)]
