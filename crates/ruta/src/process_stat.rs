@@ -29,15 +29,17 @@ impl ProcessStat {
 
     // `None` when the process is gone or its stat file cannot be read.
     pub(crate) fn read(pid: u32) -> Option<Self> {
-        let text = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let bytes = fs::read(format!("/proc/{pid}/stat")).ok()?;
 
-        Self::parse(&text)
+        Self::parse(&bytes)
     }
 
-    // The command name in parentheses may hold spaces and `)`, so the fields start after the last
-    // `)`.
-    fn parse(text: &str) -> Option<Self> {
-        let fields: Vec<&str> = text.rsplit_once(')')?.1.split_whitespace().collect();
+    // The command name in parentheses may hold spaces, `)`, and bytes that are not UTF-8, so the
+    // fields start after the last `)`.
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        let end_of_name = bytes.iter().rposition(|byte| *byte == b')')?;
+        let text = std::str::from_utf8(&bytes[end_of_name + 1..]).ok()?;
+        let fields: Vec<&str> = text.split_whitespace().collect();
 
         Some(Self {
             state: fields.first()?.to_string(),
@@ -73,7 +75,7 @@ mod tests {
     #[test]
     fn parse_reads_the_fields_after_a_command_name_with_spaces_and_parens() {
         assert_eq!(
-            ProcessStat::parse(STAT),
+            ProcessStat::parse(STAT.as_bytes()),
             Some(ProcessStat {
                 state: "S".to_string(),
                 parent: 17,
@@ -91,14 +93,15 @@ mod tests {
             ("bad parent", STAT.replace(" 17 ", " x ").as_str()),
             ("empty", ""),
         ] {
-            assert_eq!(ProcessStat::parse(text), None, "{case}");
+            assert_eq!(ProcessStat::parse(text.as_bytes()), None, "{case}");
         }
     }
 
     #[test]
     fn is_zombie_reads_the_state() {
-        let zombie = ProcessStat::parse(&STAT.replace(") S ", ") Z ")).expect("a zombie line");
-        let sleeping = ProcessStat::parse(STAT).expect("a sleeping line");
+        let zombie =
+            ProcessStat::parse(STAT.replace(") S ", ") Z ").as_bytes()).expect("a zombie line");
+        let sleeping = ProcessStat::parse(STAT.as_bytes()).expect("a sleeping line");
 
         assert!(zombie.is_zombie());
         assert!(!sleeping.is_zombie());
@@ -139,6 +142,23 @@ mod tests {
             ProcessStat::read_live(std::process::id()),
             ProcessStat::read(std::process::id())
         );
+    }
+
+    #[test]
+    fn read_live_reads_a_process_whose_command_name_is_not_utf8() {
+        crate::test_support::in_test_namespace!();
+
+        let directory = crate::test_support::temporary_directory();
+        let link = crate::test_support::link_sleep_with_invalid_utf8_name(directory.path());
+        let mut command = std::process::Command::new(link);
+        command.arg("30");
+        let child = crate::test_support::ChildGuard::spawn(&mut command);
+        crate::test_support::wait_for_invalid_utf8_name(&child);
+
+        let stat = ProcessStat::read_live(child.id()).expect("the live process has a stat");
+
+        assert_eq!(stat.parent, std::process::id());
+        assert!(!stat.is_zombie());
     }
 
     #[test]

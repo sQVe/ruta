@@ -1,6 +1,9 @@
+use std::ffi::OsStr;
 use std::fs;
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::CommandExt as _;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command};
 use std::time::Duration;
 
@@ -62,6 +65,37 @@ pub(crate) fn wait_until_gone(variable: &str, timeout: Duration) -> Vec<u32> {
     .expect("the process scan cannot fail");
 
     live_processes_with(variable)
+}
+
+// The kernel names a process after the base name of the path it executes, so a link with this
+// name gives `sleep` a command name that is not UTF-8.
+const INVALID_UTF8_NAME: &[u8] = b"ruta-\xff";
+
+pub(crate) fn link_sleep_with_invalid_utf8_name(directory: &Path) -> PathBuf {
+    let sleep = std::env::split_paths(&std::env::var_os("PATH").expect("PATH is set"))
+        .map(|directory| directory.join("sleep"))
+        .find(|path| path.is_file())
+        .expect("sleep is on PATH");
+    let link = directory.join(OsStr::from_bytes(INVALID_UTF8_NAME));
+    std::os::unix::fs::symlink(sleep, &link).expect("link sleep");
+
+    link
+}
+
+pub(crate) fn wait_for_invalid_utf8_name(child: &ChildGuard) {
+    let mut expected = INVALID_UTF8_NAME.to_vec();
+    expected.push(b'\n');
+    let named = poll_until(Duration::from_secs(2), || {
+        let name = fs::read(format!("/proc/{}/comm", child.id())).unwrap_or_default();
+
+        Ok((name == expected).then_some(()))
+    })
+    .expect("the name check cannot fail");
+
+    assert!(
+        named.is_some(),
+        "the child runs under the name that is not UTF-8"
+    );
 }
 
 pub(crate) fn stop_child(child: &mut Child) {

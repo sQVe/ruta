@@ -61,6 +61,30 @@ fn stop_window_stops_a_marked_process_outside_the_app_group() {
 }
 
 #[test]
+fn stop_window_stops_a_marked_process_whose_command_name_is_not_utf8() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("stop-window-not-utf8");
+    record_root_creation(root.path()).expect("record the root creation");
+    let directory = crate::test_support::temporary_directory();
+    let link = crate::test_support::link_sleep_with_invalid_utf8_name(directory.path());
+    let mut command = Command::new("setsid");
+    command
+        .arg(link)
+        .arg("30")
+        .env("RUTA_ROOT", root.path().as_os_str());
+    let mut escaped = ChildGuard::spawn(&mut command);
+    crate::test_support::wait_for_invalid_utf8_name(&escaped);
+
+    stop_window(root.path()).expect("stop_window");
+
+    assert!(
+        escaped.wait_for_exit(Duration::from_secs(2)),
+        "a marked process whose command name is not UTF-8 is stopped"
+    );
+}
+
+#[test]
 fn stop_window_leaves_a_marked_process_that_started_before_the_root() {
     crate::test_support::in_test_namespace!();
 
