@@ -74,6 +74,7 @@ pub(crate) fn link_sleep_with_invalid_utf8_name(directory: &Path) -> PathBuf {
         .map(|directory| directory.join("sleep"))
         .find(|path| path.is_file())
         .expect("sleep is on PATH");
+    let sleep = std::path::absolute(sleep).expect("resolve the path of sleep");
     let link = directory.join(OsStr::from_bytes(INVALID_UTF8_NAME));
     std::os::unix::fs::symlink(sleep, &link).expect("link sleep");
 
