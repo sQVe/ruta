@@ -1,5 +1,6 @@
 use std::fs::File;
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufRead as _, BufReader, Read, Write as _};
+use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -19,6 +20,8 @@ use crate::root::write_unlinked;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_GRACE: Duration = Duration::from_millis(500);
+// A process that left the app's group can keep writing, so the drain stops after this many bytes.
+const DRAIN_LIMIT: u64 = 1024 * 1024;
 
 #[derive(Debug, Error)]
 enum AppStartError {
@@ -62,7 +65,7 @@ pub(crate) fn start_app(
         Ready::Line => start_with_ready_line(command, root, log, &environment)?,
         Ready::Command(probe) => {
             command.stdout(clone_log(&log, &log_path)?);
-            let child = spawn_recorded(command, root)?;
+            let child = spawn_recorded(command, root, &log)?;
             let pid = child.id();
             drop(child);
 
@@ -90,7 +93,7 @@ fn start_with_ready_line(
     environment: &[(String, String)],
 ) -> anyhow::Result<()> {
     command.stdout(Stdio::piped());
-    let mut child = spawn_recorded(command, root)?;
+    let mut child = spawn_recorded(command, root, &log)?;
     let stdout = child
         .stdout
         .take()
@@ -106,23 +109,58 @@ fn start_with_ready_line(
     write_unlinked(&root.join(crate::root::record::READY), format!("{line}\n"))
 }
 
-fn spawn_recorded(mut command: Command, root: &Path) -> anyhow::Result<Child> {
+fn spawn_recorded(mut command: Command, root: &Path, log: &File) -> anyhow::Result<Child> {
     let program = PathBuf::from(command.get_program());
     let mut child = command
         .spawn()
         .with_context(|| format!("Could not start {}", program.display()))?;
 
+    record_spawned_child(&mut child, root, log)?;
+
+    Ok(child)
+}
+
+fn record_spawned_child(child: &mut Child, root: &Path, log: &File) -> anyhow::Result<()> {
     if let Err(error) = record_marked_process(
         &root.join(crate::root::record::PID),
         child.id(),
         root,
         RECORD_TIMEOUT,
     ) {
-        cleanup::stop_child_group(&mut child);
+        // The app may have printed its last line before it exited, so keep the output that is
+        // already in the pipe. A process outside the group can still hold the pipe open.
+        let stdout = child.stdout.take();
+        cleanup::stop_child_group(child);
+
+        if let Some(stdout) = stdout {
+            cleanup::warn(
+                "copy the app's output to its log",
+                drain_stdout(stdout, log, DRAIN_LIMIT),
+            );
+        }
+
         return Err(error);
     }
 
-    Ok(child)
+    Ok(())
+}
+
+fn drain_stdout(stdout: impl Read + AsFd, log: &File, limit: u64) -> std::io::Result<()> {
+    let flags = rustix::fs::fcntl_getfl(&stdout).map_err(std::io::Error::from)?;
+    rustix::fs::fcntl_setfl(&stdout, flags | rustix::fs::OFlags::NONBLOCK)
+        .map_err(std::io::Error::from)?;
+    let mut stdout = stdout.take(limit);
+    let mut log = log.try_clone()?;
+    let mut buffer = [0_u8; 4096];
+
+    loop {
+        match stdout.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(written) => log.write_all(&buffer[..written])?,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn clone_log(log: &File, path: &Path) -> anyhow::Result<File> {
