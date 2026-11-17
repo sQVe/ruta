@@ -78,8 +78,7 @@ pub(crate) fn reached(pressed: &[String], after: &[String]) -> bool {
     !after.is_empty() && pressed.ends_with(after)
 }
 
-pub(crate) fn launch_child(mut arguments: Vec<String>) -> anyhow::Result<()> {
-    arguments.retain(|argument| argument != "--launch-child");
+pub(crate) fn launch_child(arguments: Vec<String>) -> anyhow::Result<()> {
     let ready = std::env::temp_dir().join(format!("ruta-test-app-ready-{}", std::process::id()));
     let executable = std::env::current_exe().context("Could not find the test app executable")?;
     let mut child = Command::new(executable)
@@ -400,6 +399,69 @@ mod tests {
         );
 
         stop_child(&mut child).expect("stop the sleeping child");
+    }
+
+    #[test]
+    fn timeout_lists_only_the_ruta_record_it_never_saw() {
+        crate::test_support::in_test_namespace!();
+
+        let folder = tempfile::tempdir().expect("create the temp folder");
+        let ready = folder.path().join("child-ready");
+        let ruta_ready = folder.path().join("ready.json");
+        fs::write(&ruta_ready, []).expect("write the ruta ready record");
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("start the sleeping child");
+
+        let error = ReadyWait {
+            ready: &ready,
+            ruta_ready: Some(&ruta_ready),
+            timeout: Duration::from_millis(100),
+            settle: Duration::from_millis(50),
+        }
+        .wait(&mut child)
+        .expect_err("the child never writes its ready file");
+        let ReadyError::Timeout { missing, .. } = error
+            .downcast_ref::<ReadyError>()
+            .expect("the wait reports its typed timeout error");
+
+        assert_eq!(missing, &[ready]);
+        assert!(
+            matches!(child.try_wait(), Ok(Some(_))),
+            "the child was stopped"
+        );
+    }
+
+    #[test]
+    fn timeout_lists_the_ruta_record_that_never_appeared() {
+        crate::test_support::in_test_namespace!();
+
+        let folder = tempfile::tempdir().expect("create the temp folder");
+        let ready = folder.path().join("child-ready");
+        let ruta_ready = folder.path().join("ready.json");
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("start the sleeping child");
+
+        let error = ReadyWait {
+            ready: &ready,
+            ruta_ready: Some(&ruta_ready),
+            timeout: Duration::from_millis(100),
+            settle: Duration::from_millis(50),
+        }
+        .wait(&mut child)
+        .expect_err("the child never writes its ready file");
+        let ReadyError::Timeout { missing, .. } = error
+            .downcast_ref::<ReadyError>()
+            .expect("the wait reports its typed timeout error");
+
+        assert_eq!(missing, &[ready, ruta_ready]);
+        assert!(
+            matches!(child.try_wait(), Ok(Some(_))),
+            "the child was stopped"
+        );
     }
 
     #[test]

@@ -25,19 +25,33 @@ pub(crate) struct Geometry {
 pub(crate) struct Options {
     pub(crate) window: Window,
     pub(crate) modes: modes::Modes,
-    pub(crate) arguments: Vec<String>,
+    pub(crate) child_arguments: Vec<String>,
 }
 
 pub(crate) fn parse(arguments: Vec<String>) -> anyhow::Result<Options> {
-    let mut window = parse_window(arguments.clone())?;
+    let mut window = parse_window(arguments)?;
     let (modes, remaining) = modes::parse(&window.arguments)?;
+    let child_arguments = child_arguments(&window, &remaining);
     window.arguments = remaining;
 
     Ok(Options {
         window,
         modes,
-        arguments,
+        child_arguments,
     })
+}
+
+// The child gets the positional arguments and every rest argument except the mode flags, so a title
+// or an argument that spells a flag keeps its place.
+fn child_arguments(window: &Window, remaining: &[String]) -> Vec<String> {
+    let mut arguments = vec![
+        window.title.clone(),
+        window.width.to_string(),
+        window.height.to_string(),
+    ];
+    arguments.extend(remaining.iter().cloned());
+
+    arguments
 }
 
 pub(crate) fn ready_line(window: &Window) -> serde_json::Value {
@@ -109,6 +123,30 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn child_arguments_keep_a_title_that_spells_a_mode_flag() {
+        let options = parse(strings(&[
+            "--launch-child",
+            "300",
+            "200",
+            "--launch-child",
+            "--geometry",
+            "10,20,100,50,2",
+        ]))
+        .expect("parse");
+
+        assert_eq!(
+            options.child_arguments,
+            strings(&[
+                "--launch-child",
+                "300",
+                "200",
+                "--geometry",
+                "10,20,100,50,2",
+            ])
+        );
     }
 
     #[test]

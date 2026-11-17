@@ -54,7 +54,7 @@ fn main() -> anyhow::Result<()> {
     let modes = options.modes;
 
     if modes.launch_child {
-        return modes::launch_child(options.arguments);
+        return modes::launch_child(options.child_arguments);
     }
 
     writeln!(std::io::stderr(), "ruta-test-app: starting")?;
