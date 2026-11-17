@@ -56,7 +56,7 @@ fn read_ready_after(script: &str, timeout: Duration, before_read: impl FnOnce(u3
 }
 
 fn identity_of(pid: u32) -> ProcessIdentity {
-    let stat = ProcessStat::read_live(pid).expect("the app process is live");
+    let stat = ProcessStat::read(pid).expect("the unreaped app process has a stat");
 
     ProcessIdentity {
         pid,
