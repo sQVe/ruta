@@ -13,8 +13,12 @@ use crate::root::root_created;
 pub(crate) const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) fn stop_window(root: &Path) -> anyhow::Result<()> {
-    stop_group(root, STOP_TIMEOUT)?;
+    stop_app_group(root)?;
     stop_marked(root, std::process::id(), STOP_TIMEOUT)
+}
+
+pub(crate) fn stop_app_group(root: &Path) -> anyhow::Result<()> {
+    stop_group(root, STOP_TIMEOUT)
 }
 
 pub(crate) fn stop_recorded(path: &Path) -> anyhow::Result<()> {

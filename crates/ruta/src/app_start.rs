@@ -12,7 +12,9 @@ use thiserror::Error;
 use crate::cleanup;
 use crate::config::{CommandLine, Config, Ready};
 use crate::environment::{app_environment, caller_environment};
-use crate::identity::stop::{group_alive, stop_window};
+#[cfg(test)]
+use crate::identity::stop::stop_window;
+use crate::identity::stop::{group_alive, stop_app_group};
 use crate::identity::{ProcessIdentity, RECORD_TIMEOUT, record_marked_process};
 use crate::process::{POLL, ProcessError, TOOL_TIMEOUT, poll_until, run_until};
 use crate::root::write_unlinked;
@@ -39,7 +41,7 @@ pub(crate) fn start_app(
     arguments: &[String],
     display: &str,
 ) -> anyhow::Result<()> {
-    stop_window(root)?;
+    stop_app_group(root)?;
 
     let log_path = root.join(crate::root::record::APP_LOG);
     let ready_path = root.join(crate::root::record::READY);

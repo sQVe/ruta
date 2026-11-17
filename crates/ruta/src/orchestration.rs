@@ -339,6 +339,7 @@ fn start_sandbox(
 
     prepare_root(root)?;
     record_folder(root, &config.folder)?;
+    stop_window(root)?;
 
     let display = ensure_display(name, root, session, display_size(size))?;
 
