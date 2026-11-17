@@ -1,11 +1,15 @@
+mod layout;
+mod modes;
+mod tree;
+
 use std::io::Write as _;
 
 use anyhow::Context as _;
 use x11rb::connection::Connection as _;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    AtomEnum, ButtonPressEvent, ConnectionExt as _, CreateWindowAux, EventMask, KeyPressEvent,
-    MotionNotifyEvent, PropMode, WindowClass,
+    AtomEnum, ButtonPressEvent, ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask,
+    KeyPressEvent, MotionNotifyEvent, PropMode, WindowClass,
 };
 use x11rb::wrapper::ConnectionExt as _;
 
@@ -17,7 +21,8 @@ x11rb::atom_manager! {
 }
 
 const USAGE: &str = "Usage: ruta-test-app <title> <width> <height> \
-                     [--geometry <x>,<y>,<width>,<height>,<scale>] [arguments]";
+                     [--geometry <x>,<y>,<width>,<height>,<scale>] \
+                     [--panic-after <a,b>] [--exit-after <a,b>] [--launch-child] [arguments]";
 
 #[derive(Debug, PartialEq)]
 struct Window {
@@ -38,7 +43,14 @@ struct Geometry {
 }
 
 fn main() -> anyhow::Result<()> {
-    let window = parse_arguments(std::env::args().skip(1).collect())?;
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut window = parse_arguments(arguments.clone())?;
+    let (modes, remaining) = modes::parse(&window.arguments)?;
+    window.arguments = remaining;
+
+    if modes.launch_child {
+        return modes::launch_child(arguments);
+    }
 
     writeln!(std::io::stderr(), "ruta-test-app: starting")?;
 
@@ -71,6 +83,8 @@ fn main() -> anyhow::Result<()> {
         0,
         &attributes,
     )?;
+    let gc = connection.generate_id()?;
+    connection.create_gc(gc, id, &CreateGCAux::new().foreground(screen.black_pixel))?;
     connection.change_property8(
         PropMode::REPLACE,
         id,
@@ -89,17 +103,114 @@ fn main() -> anyhow::Result<()> {
     connection.flush()?;
 
     wait_for_expose(&connection)?;
+    draw(&connection, id, gc)?;
     print_ready(&window)?;
+
+    if let Some(path) = &modes.child_ready {
+        modes::announce_ready(path)?;
+    }
+
+    let mut tree = tree::Tree::new(&window.title, (window.width, window.height));
+    let mut pressed = Vec::new();
 
     loop {
         let event = connection.wait_for_event()?;
 
         if let Some(line) = describe_input(&connection, &event)? {
-            let mut stdout = std::io::stdout().lock();
-
-            writeln!(stdout, "ruta-test-app: {line}")?;
-            stdout.flush()?;
+            write_line(&line)?;
         }
+
+        if let Some(line) = describe_change(&connection, &event, &mut tree)? {
+            write_line(&line)?;
+
+            if let Some(name) = line.strip_prefix("press name=") {
+                pressed.push(name.to_string());
+
+                let pressed = pressed.iter().map(String::as_str).collect::<Vec<_>>();
+
+                if let Some(mode) = modes.after_press(&pressed) {
+                    apply_mode(mode, &pressed)?;
+                }
+            }
+        }
+
+        if let Event::Expose(_) = event {
+            draw(&connection, id, gc)?;
+        }
+    }
+}
+
+fn apply_mode(mode: modes::Mode, pressed: &[&str]) -> anyhow::Result<()> {
+    let sequence = pressed.join(",");
+
+    match mode {
+        modes::Mode::Panic => {
+            panic!("ruta-test-app: panicking after the button sequence {sequence}")
+        }
+        modes::Mode::Exit => {
+            write_line(&format!("exiting after {sequence}"))?;
+            std::process::exit(0);
+        }
+    }
+}
+
+fn write_line(line: &str) -> anyhow::Result<()> {
+    let mut stdout = std::io::stdout().lock();
+
+    writeln!(stdout, "ruta-test-app: {line}")?;
+    stdout.flush()?;
+
+    Ok(())
+}
+
+fn draw(
+    connection: &impl x11rb::connection::Connection,
+    window: u32,
+    gc: u32,
+) -> anyhow::Result<()> {
+    connection.poly_fill_rectangle(window, gc, &layout::drawn_rectangles())?;
+    connection.flush()?;
+
+    Ok(())
+}
+
+fn describe_change(
+    connection: &impl x11rb::connection::Connection,
+    event: &Event,
+    tree: &mut tree::Tree,
+) -> anyhow::Result<Option<String>> {
+    match event {
+        Event::ButtonPress(button) if button.detail == 1 => {
+            tree.press();
+
+            let x = i32::from(button.event_x);
+            let y = i32::from(button.event_y);
+
+            if let Some(name) = layout::hit_button(x, y) {
+                return Ok(Some(format!("press name={name}")));
+            }
+
+            if layout::hit_text_field(x, y) {
+                tree.focus_text_field();
+
+                return Ok(Some("focus name=text".to_string()));
+            }
+
+            Ok(None)
+        }
+        Event::KeyPress(key) => {
+            let keysym = keysym(connection, key)?;
+
+            if layout::printable(keysym).is_none() || !tree.type_character(keysym) {
+                return Ok(None);
+            }
+
+            Ok(Some(format!(
+                "text {}",
+                serde_json::to_string(&tree.text())?
+            )))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -146,14 +257,22 @@ fn describe_key(
     kind: &str,
     key: &KeyPressEvent,
 ) -> anyhow::Result<String> {
-    let mapping = connection.get_keyboard_mapping(key.detail, 1)?.reply()?;
-    let keysym = mapping.keysyms.first().copied().unwrap_or(0);
+    let keysym = keysym(connection, key)?;
 
     Ok(format!(
         "{kind} keycode={} keysym={keysym:#x} state={:#x}",
         key.detail,
         u16::from(key.state)
     ))
+}
+
+fn keysym(
+    connection: &impl x11rb::connection::Connection,
+    key: &KeyPressEvent,
+) -> anyhow::Result<u32> {
+    let mapping = connection.get_keyboard_mapping(key.detail, 1)?.reply()?;
+
+    Ok(mapping.keysyms.first().copied().unwrap_or(0))
 }
 
 fn parse_arguments(arguments: Vec<String>) -> anyhow::Result<Window> {
