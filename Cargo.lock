@@ -786,6 +786,7 @@ dependencies = [
  "accesskit_unix",
  "anyhow",
  "serde_json",
+ "tempfile",
  "x11rb",
 ]
 

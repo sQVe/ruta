@@ -1,3 +1,4 @@
+mod args;
 mod layout;
 mod modes;
 mod tree;
@@ -9,7 +10,7 @@ use x11rb::connection::Connection as _;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
     AtomEnum, ButtonPressEvent, ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask,
-    KeyPressEvent, MotionNotifyEvent, PropMode, WindowClass,
+    KeyButMask, KeyPressEvent, MotionNotifyEvent, PropMode, WindowClass,
 };
 use x11rb::wrapper::ConnectionExt as _;
 
@@ -25,31 +26,31 @@ const USAGE: &str = "Usage: ruta-test-app <title> <width> <height> \
                      [--panic-after <a,b>] [--exit-after <a,b>] [--launch-child] [arguments]";
 
 #[derive(Debug, PartialEq)]
-struct Window {
-    title: String,
-    width: u16,
-    height: u16,
-    geometry: Option<Geometry>,
-    arguments: Vec<String>,
+enum Change {
+    Pressed(&'static str),
+    FocusedText,
+    Text(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Geometry {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    scale: f64,
+impl Change {
+    fn line(&self) -> anyhow::Result<String> {
+        let line = match self {
+            Self::Pressed(name) => format!("press name={name}"),
+            Self::FocusedText => "focus name=text".to_string(),
+            Self::Text(text) => format!("text {}", serde_json::to_string(text)?),
+        };
+
+        Ok(line)
+    }
 }
 
 fn main() -> anyhow::Result<()> {
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    let mut window = parse_arguments(arguments.clone())?;
-    let (modes, remaining) = modes::parse(&window.arguments)?;
-    window.arguments = remaining;
+    let options = args::parse(std::env::args().skip(1).collect())?;
+    let window = options.window;
+    let modes = options.modes;
 
     if modes.launch_child {
-        return modes::launch_child(arguments);
+        return modes::launch_child(options.arguments);
     }
 
     writeln!(std::io::stderr(), "ruta-test-app: starting")?;
@@ -115,23 +116,20 @@ fn main() -> anyhow::Result<()> {
 
     loop {
         let event = connection.wait_for_event()?;
-
-        if let Some(line) = describe_input(&connection, &event)? {
-            write_line(&line)?;
-        }
-
         let keysym = match &event {
-            Event::KeyPress(key) => keysym(&connection, key)?,
+            Event::KeyPress(key) | Event::KeyRelease(key) => keysym(&connection, key)?,
             _ => 0,
         };
 
-        if let Some(line) = describe_change(keysym, &event, &mut tree)? {
+        if let Some(line) = describe_input(keysym, &event) {
             write_line(&line)?;
+        }
 
-            if let Some(name) = line.strip_prefix("press name=") {
+        if let Some(change) = describe_change(keysym, &event, &mut tree)? {
+            write_line(&change.line()?)?;
+
+            if let Change::Pressed(name) = change {
                 pressed.push(name.to_string());
-
-                let pressed = pressed.iter().map(String::as_str).collect::<Vec<_>>();
 
                 if let Some(mode) = modes.after_press(&pressed) {
                     apply_mode(mode, &pressed)?;
@@ -145,7 +143,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn apply_mode(mode: modes::Mode, pressed: &[&str]) -> anyhow::Result<()> {
+fn apply_mode(mode: modes::Mode, pressed: &[String]) -> anyhow::Result<()> {
     let sequence = pressed.join(",");
 
     match mode {
@@ -183,7 +181,7 @@ fn describe_change(
     keysym: u32,
     event: &Event,
     tree: &mut tree::Tree,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<Option<Change>> {
     match event {
         Event::ButtonPress(button) if button.detail == 1 => {
             tree.press();
@@ -192,13 +190,13 @@ fn describe_change(
             let y = i32::from(button.event_y);
 
             if let Some(name) = layout::hit_button(x, y) {
-                return Ok(Some(format!("press name={name}")));
+                return Ok(Some(Change::Pressed(name)));
             }
 
             if layout::hit_text_field(x, y) {
                 tree.focus_text_field();
 
-                return Ok(Some("focus name=text".to_string()));
+                return Ok(Some(Change::FocusedText));
             }
 
             Ok(None)
@@ -208,10 +206,7 @@ fn describe_change(
                 return Ok(None);
             }
 
-            Ok(Some(format!(
-                "text {}",
-                serde_json::to_string(&tree.text())?
-            )))
+            Ok(Some(Change::Text(tree.text())))
         }
         _ => Ok(None),
     }
@@ -219,20 +214,17 @@ fn describe_change(
 
 // One log line per input event, in window coordinates. The state is the X modifier and button mask
 // before the event.
-fn describe_input(
-    connection: &impl x11rb::connection::Connection,
-    event: &Event,
-) -> anyhow::Result<Option<String>> {
+fn describe_input(keysym: u32, event: &Event) -> Option<String> {
     let line = match event {
         Event::MotionNotify(motion) => describe_motion(motion),
         Event::ButtonPress(button) => describe_button("button-press", button),
         Event::ButtonRelease(button) => describe_button("button-release", button),
-        Event::KeyPress(key) => describe_key(connection, "key-press", key)?,
-        Event::KeyRelease(key) => describe_key(connection, "key-release", key)?,
-        _ => return Ok(None),
+        Event::KeyPress(key) => describe_key("key-press", key, keysym),
+        Event::KeyRelease(key) => describe_key("key-release", key, keysym),
+        _ => return None,
     };
 
-    Ok(Some(line))
+    Some(line)
 }
 
 fn describe_motion(motion: &MotionNotifyEvent) -> String {
@@ -255,18 +247,12 @@ fn describe_button(kind: &str, button: &ButtonPressEvent) -> String {
 }
 
 // The keymap is read at each key, since another client, such as xdotool, may change it at any time.
-fn describe_key(
-    connection: &impl x11rb::connection::Connection,
-    kind: &str,
-    key: &KeyPressEvent,
-) -> anyhow::Result<String> {
-    let keysym = keysym(connection, key)?;
-
-    Ok(format!(
+fn describe_key(kind: &str, key: &KeyPressEvent, keysym: u32) -> String {
+    format!(
         "{kind} keycode={} keysym={keysym:#x} state={:#x}",
         key.detail,
         u16::from(key.state)
-    ))
+    )
 }
 
 fn keysym(
@@ -275,51 +261,15 @@ fn keysym(
 ) -> anyhow::Result<u32> {
     let mapping = connection.get_keyboard_mapping(key.detail, 1)?.reply()?;
 
-    Ok(mapping.keysyms.first().copied().unwrap_or(0))
+    Ok(effective_keysym(&mapping.keysyms, u16::from(key.state)))
 }
 
-fn parse_arguments(arguments: Vec<String>) -> anyhow::Result<Window> {
-    let [title, width, height, rest @ ..] = arguments.as_slice() else {
-        anyhow::bail!(USAGE);
-    };
+fn effective_keysym(keysyms: &[u32], state: u16) -> u32 {
+    let shifted = state & u16::from(KeyButMask::SHIFT) != 0;
+    let has_shifted_keysym = keysyms.get(1).is_some_and(|keysym| *keysym != 0);
+    let index = usize::from(shifted && has_shifted_keysym);
 
-    Ok(Window {
-        title: title.clone(),
-        width: width.parse().context("The width must be a whole number")?,
-        height: height
-            .parse()
-            .context("The height must be a whole number")?,
-        geometry: parse_geometry(rest)?,
-        arguments: rest.to_vec(),
-    })
-}
-
-fn parse_geometry(arguments: &[String]) -> anyhow::Result<Option<Geometry>> {
-    let Some(flag) = arguments
-        .iter()
-        .position(|argument| argument == "--geometry")
-    else {
-        return Ok(None);
-    };
-    let numbers: Option<Vec<f64>> = arguments
-        .get(flag + 1)
-        .map(|value| value.split(',').map(finite_number).collect())
-        .unwrap_or_default();
-    let Some([x, y, width, height, scale]) = numbers.as_deref() else {
-        anyhow::bail!(USAGE);
-    };
-
-    Ok(Some(Geometry {
-        x: *x,
-        y: *y,
-        width: *width,
-        height: *height,
-        scale: *scale,
-    }))
-}
-
-fn finite_number(text: &str) -> Option<f64> {
-    text.parse().ok().filter(|number: &f64| number.is_finite())
+    keysyms.get(index).copied().unwrap_or(0)
 }
 
 fn wait_for_expose(connection: &impl x11rb::connection::Connection) -> anyhow::Result<()> {
@@ -330,8 +280,8 @@ fn wait_for_expose(connection: &impl x11rb::connection::Connection) -> anyhow::R
     }
 }
 
-fn print_ready(window: &Window) -> anyhow::Result<()> {
-    let ready = ready_line(window);
+fn print_ready(window: &args::Window) -> anyhow::Result<()> {
+    let ready = args::ready_line(window);
     let mut stdout = std::io::stdout().lock();
 
     writeln!(stdout, "{ready}")?;
@@ -341,78 +291,9 @@ fn print_ready(window: &Window) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn ready_line(window: &Window) -> serde_json::Value {
-    let mut ready = serde_json::json!({
-        "title": window.title,
-        "width": window.width,
-        "height": window.height,
-        "arguments": window.arguments,
-    });
-
-    if let Some(geometry) = window.geometry {
-        ready["origin"] = serde_json::json!({ "x": geometry.x, "y": geometry.y });
-        ready["size"] = serde_json::json!({ "width": geometry.width, "height": geometry.height });
-        ready["scale"] = serde_json::json!(geometry.scale);
-    }
-
-    ready
-}
-
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
-
-    fn strings(values: &[&str]) -> Vec<String> {
-        values.iter().map(ToString::to_string).collect()
-    }
-
-    #[test]
-    fn ready_line_without_geometry_keeps_its_shape() {
-        let window = parse_arguments(strings(&["demo", "300", "200", "extra"])).expect("parse");
-
-        assert_eq!(
-            ready_line(&window),
-            json!({ "title": "demo", "width": 300, "height": 200, "arguments": ["extra"] })
-        );
-    }
-
-    #[test]
-    fn geometry_adds_origin_size_and_scale() {
-        let arguments = strings(&["demo", "300", "200", "--geometry", "10,20.5,100,50,2"]);
-        let window = parse_arguments(arguments).expect("parse");
-
-        assert_eq!(
-            ready_line(&window),
-            json!({
-                "title": "demo",
-                "width": 300,
-                "height": 200,
-                "arguments": ["--geometry", "10,20.5,100,50,2"],
-                "origin": { "x": 10.0, "y": 20.5 },
-                "size": { "width": 100.0, "height": 50.0 },
-                "scale": 2.0,
-            })
-        );
-    }
-
-    #[test]
-    fn geometry_without_a_good_value_fails_with_the_usage() {
-        for value in [
-            None,
-            Some("10,20,100,50"),
-            Some("10,20,100,50,2,3"),
-            Some("10,twenty,100,50,2"),
-        ] {
-            let mut arguments = strings(&["demo", "300", "200", "--geometry"]);
-            arguments.extend(value.map(ToString::to_string));
-
-            let error = parse_arguments(arguments).expect_err("bad geometry");
-
-            assert_eq!(error.to_string(), USAGE, "{value:?}");
-        }
-    }
 
     fn button_press(detail: u8, x: i16, y: i16) -> Event {
         Event::ButtonPress(ButtonPressEvent {
@@ -438,7 +319,7 @@ mod tests {
 
         let line = describe_change(0, &button_press(1, x, y), &mut tree).expect("describe");
 
-        assert_eq!(line, Some("press name=alpha".to_string()));
+        assert_eq!(line, Some(Change::Pressed("alpha")));
     }
 
     #[test]
@@ -448,7 +329,7 @@ mod tests {
 
         let line = describe_change(0, &button_press(1, x, y), &mut tree).expect("describe");
 
-        assert_eq!(line, Some("focus name=text".to_string()));
+        assert_eq!(line, Some(Change::FocusedText));
     }
 
     #[test]
@@ -477,7 +358,7 @@ mod tests {
         let (x, y) = centre(&layout::BUTTONS[0]);
 
         let line = describe_change(0, &button_press(1, x, y), &mut tree).expect("describe");
-        assert_eq!(line, Some("press name=alpha".to_string()));
+        assert_eq!(line, Some(Change::Pressed("alpha")));
 
         let typed = describe_change(0x68, &Event::KeyPress(KeyPressEvent::default()), &mut tree)
             .expect("describe");
@@ -496,6 +377,30 @@ mod tests {
         tree.focus_text_field();
 
         let typed = describe_change(0x68, &key, &mut tree).expect("describe");
-        assert_eq!(typed, Some("text \"h\"".to_string()));
+        assert_eq!(typed, Some(Change::Text("h".to_string())));
+    }
+
+    #[test]
+    fn changes_keep_their_log_lines() {
+        assert_eq!(
+            Change::Pressed("alpha").line().expect("line"),
+            "press name=alpha"
+        );
+        assert_eq!(Change::FocusedText.line().expect("line"), "focus name=text");
+        assert_eq!(
+            Change::Text("h\"i".to_string()).line().expect("line"),
+            "text \"h\\\"i\""
+        );
+    }
+
+    #[test]
+    fn shift_selects_the_second_keysym() {
+        let shift = u16::from(KeyButMask::SHIFT);
+
+        assert_eq!(effective_keysym(&[0x68, 0x48], 0), 0x68);
+        assert_eq!(effective_keysym(&[0x68, 0x48], shift), 0x48);
+        assert_eq!(effective_keysym(&[0x68], shift), 0x68);
+        assert_eq!(effective_keysym(&[0xffe1, 0], shift), 0xffe1);
+        assert_eq!(effective_keysym(&[], 0), 0);
     }
 }

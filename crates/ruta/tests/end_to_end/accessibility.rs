@@ -94,7 +94,7 @@ fn typing_changes_the_text_field_value() {
 
     sandbox.succeed(&["click", &x.to_string(), &y.to_string()]);
     sandbox.wait_for_log("ruta-test-app: focus name=text");
-    sandbox.succeed(&["type", "hi"]);
+    sandbox.succeed(&["type", "Hi"]);
 
     let mut value = None;
     let typed = poll_until(Duration::from_secs(5), Duration::from_millis(100), || {
@@ -103,12 +103,12 @@ fn typing_changes_the_text_field_value() {
             .and_then(|nodes| nodes.into_iter().find(|node| node.name == "text"))
             .and_then(|node| node.text);
 
-        value.as_deref() == Some("hi")
+        value.as_deref() == Some("Hi")
     });
 
     assert!(
         typed,
-        "the text field holds hi: {value:?}\n{}",
+        "the text field holds Hi: {value:?}\n{}",
         sandbox.succeed(&["log"])
     );
 

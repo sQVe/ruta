@@ -255,6 +255,19 @@ mod tests {
     }
 
     #[test]
+    fn the_update_exports_the_focused_control() {
+        let mut state = State::default();
+        let unfocused = update(&state, "demo", (640, 480), None);
+
+        assert_eq!(unfocused.focus, WINDOW);
+
+        state.focus_text_field();
+        let focused = update(&state, "demo", (640, 480), None);
+
+        assert_eq!(focused.focus, TEXT_FIELD);
+    }
+
+    #[test]
     fn window_rect_matches_the_window_size() {
         let rect = window_rect((640, 480));
 

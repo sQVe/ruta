@@ -9,6 +9,7 @@ use crate::USAGE;
 
 const READY_POLL: Duration = Duration::from_millis(50);
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
+const READY_SETTLE: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub(crate) struct Modes {
@@ -25,7 +26,7 @@ pub(crate) enum Mode {
 }
 
 impl Modes {
-    pub(crate) fn after_press(&self, pressed: &[&str]) -> Option<Mode> {
+    pub(crate) fn after_press(&self, pressed: &[String]) -> Option<Mode> {
         if reached(pressed, &self.panic_after) {
             return Some(Mode::Panic);
         }
@@ -60,14 +61,8 @@ pub(crate) fn parse(arguments: &[String]) -> anyhow::Result<(Modes, Vec<String>)
     Ok((modes, remaining))
 }
 
-pub(crate) fn reached(pressed: &[&str], after: &[String]) -> bool {
-    if after.is_empty() {
-        return false;
-    }
-
-    let suffix = after.iter().map(String::as_str).collect::<Vec<_>>();
-
-    pressed.ends_with(&suffix)
+pub(crate) fn reached(pressed: &[String], after: &[String]) -> bool {
+    !after.is_empty() && pressed.ends_with(after)
 }
 
 pub(crate) fn launch_child(mut arguments: Vec<String>) -> anyhow::Result<()> {
@@ -81,7 +76,7 @@ pub(crate) fn launch_child(mut arguments: Vec<String>) -> anyhow::Result<()> {
         .spawn()
         .context("Could not start the child test app")?;
 
-    wait_until_ready(&ready, &mut child)?;
+    wait_until_ready(&ready, &mut child, READY_TIMEOUT)?;
 
     fs::remove_file(&ready).with_context(|| format!("Could not remove {}", ready.display()))?;
 
@@ -102,35 +97,39 @@ fn sequence(value: Option<&String>) -> anyhow::Result<Vec<String>> {
         .collect())
 }
 
-fn wait_until_ready(ready: &Path, child: &mut Child) -> anyhow::Result<()> {
-    let deadline = Instant::now() + READY_TIMEOUT;
+fn wait_until_ready(ready: &Path, child: &mut Child, timeout: Duration) -> anyhow::Result<()> {
+    let deadline = Instant::now() + timeout;
+    let ruta_ready = ruta_root().map(|root| root.join("ready.json"));
+    let mut settle_deadline = None;
 
     loop {
-        let child_ready = ready.exists();
-        let ruta_ready = ruta_root().map(|root| root.join("ready.json"));
+        if !ready.exists() {
+            if Instant::now() >= deadline {
+                stop_child(child)?;
 
-        if child_ready && ruta_ready.as_ref().is_none_or(|path| path.exists()) {
+                anyhow::bail!(
+                    "The child test app was not ready within {} seconds; still missing {}",
+                    timeout.as_secs(),
+                    ready.display()
+                );
+            }
+
+            std::thread::sleep(READY_POLL);
+            continue;
+        }
+
+        let Some(ruta_ready) = ruta_ready.as_ref() else {
+            return Ok(());
+        };
+
+        if ruta_ready.exists() {
             return Ok(());
         }
 
-        if Instant::now() >= deadline {
-            let mut missing = Vec::new();
+        let settle_deadline = *settle_deadline.get_or_insert_with(|| Instant::now() + READY_SETTLE);
 
-            if !child_ready {
-                missing.push(ready.display().to_string());
-            }
-
-            if let Some(path) = ruta_ready.as_ref().filter(|path| !path.exists()) {
-                missing.push(path.display().to_string());
-            }
-
-            stop_child(child)?;
-
-            anyhow::bail!(
-                "The child test app was not ready within {} seconds; still missing {}",
-                READY_TIMEOUT.as_secs(),
-                missing.join(", ")
-            );
+        if Instant::now() >= settle_deadline {
+            return Ok(());
         }
 
         std::thread::sleep(READY_POLL);
@@ -164,14 +163,14 @@ mod tests {
     #[test]
     fn reached_needs_a_non_empty_suffix() {
         assert!(!reached(&[], &[]));
-        assert!(!reached(&["alpha"], &[]));
+        assert!(!reached(&strings(&["alpha"]), &[]));
 
         let after = strings(&["alpha", "beta"]);
 
-        assert!(reached(&["alpha", "beta"], &after));
-        assert!(reached(&["gamma", "alpha", "beta"], &after));
-        assert!(!reached(&["alpha"], &after));
-        assert!(!reached(&["alpha", "beta", "gamma"], &after));
+        assert!(reached(&strings(&["alpha", "beta"]), &after));
+        assert!(reached(&strings(&["gamma", "alpha", "beta"]), &after));
+        assert!(!reached(&strings(&["alpha"]), &after));
+        assert!(!reached(&strings(&["alpha", "beta", "gamma"]), &after));
     }
 
     #[test]
@@ -227,6 +226,28 @@ mod tests {
         ]))
         .expect("parse");
 
-        assert_eq!(modes.after_press(&["alpha"]), Some(Mode::Panic));
+        assert_eq!(modes.after_press(&strings(&["alpha"])), Some(Mode::Panic));
+    }
+
+    #[test]
+    fn wait_until_ready_stops_a_child_that_never_writes_the_ready_file() {
+        let folder = tempfile::tempdir().expect("create the temp folder");
+        let ready = folder.path().join("child-ready");
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("start the sleeping child");
+
+        let error = wait_until_ready(&ready, &mut child, Duration::from_millis(100))
+            .expect_err("the child never writes its ready file");
+
+        assert!(
+            error.to_string().contains(&ready.display().to_string()),
+            "{error:#}"
+        );
+        assert!(
+            matches!(child.try_wait(), Ok(Some(_))),
+            "the child was stopped"
+        );
     }
 }

@@ -109,6 +109,27 @@ fn child_launcher_leaves_the_window_to_its_child() {
         ..Config::default()
     });
     let sandbox = project.sandbox("mode-child");
+
+    assert_child_launcher_keeps_the_window(&sandbox);
+}
+
+#[test]
+#[ignore = "needs Weston, Xwayland, xdotool, and ImageMagick"]
+fn child_launcher_with_command_readiness_keeps_the_child() {
+    in_test_namespace!();
+
+    let command = app_command(&["--launch-child"]);
+    let project = Project::new(&Config {
+        command: Some(&command),
+        ready: COMMAND_READY,
+        ..Config::default()
+    });
+    let sandbox = project.sandbox("mode-child-command");
+
+    assert_child_launcher_keeps_the_window(&sandbox);
+}
+
+fn assert_child_launcher_keeps_the_window(sandbox: &Sandbox<'_>) {
     sandbox.succeed(&["up"]);
     sandbox.wait_for_log("ruta-test-app: running");
     let pid = sandbox.recorded_pid("pid");
