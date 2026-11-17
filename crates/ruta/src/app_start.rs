@@ -128,7 +128,7 @@ fn record_spawned_child(
 ) -> anyhow::Result<ProcessIdentity> {
     let identity = match record_marked_process(
         &root.join(crate::root::record::PID),
-        child.id(),
+        child,
         root,
         RECORD_TIMEOUT,
     ) {

@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -124,18 +125,32 @@ pub(crate) fn process_is_zombie(pid: u32) -> bool {
 
 pub(crate) fn record_marked_process(
     path: &Path,
-    pid: u32,
+    child: &Child,
     root: &Path,
     timeout: Duration,
 ) -> anyhow::Result<ProcessIdentity> {
+    let pid = child.id();
     let recorded = poll_until(timeout, || {
-        let Some(stat) = ProcessStat::read_live(pid) else {
+        let Some(stat) = ProcessStat::read(pid) else {
             return Err(IdentityError::MissingProcess {
                 pid,
                 expected: "app".to_string(),
             }
             .into());
         };
+
+        // A zombie's environment cannot be read, and ruta spawned it with the marker.
+        if stat.is_zombie() {
+            let identity = ProcessIdentity {
+                pid,
+                started: stat.start,
+            };
+            identity
+                .write(path)
+                .with_context(|| "Could not record the app process")?;
+
+            return Ok(Some(identity));
+        }
 
         if !process_is_ours(pid, root) {
             return Ok(None);

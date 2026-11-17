@@ -2,7 +2,6 @@ use std::fs;
 use std::os::unix::net::UnixStream;
 
 use super::*;
-use crate::identity::IdentityError;
 use crate::identity::ProcessIdentity;
 use crate::identity::process_is_zombie;
 use crate::identity::stop::stop_window;
@@ -74,10 +73,11 @@ fn wait_for_zombie(pid: u32) {
 }
 
 #[test]
-fn a_ready_line_app_that_exits_before_recording_keeps_its_output_in_the_log() {
+fn a_ready_line_app_whose_record_fails_keeps_its_output_in_the_log() {
     crate::test_support::in_test_namespace!();
 
     let folder = crate::test_support::temporary_directory();
+    fs::create_dir(folder.path().join("pid")).expect("block the app record");
     let (log, log_path) = log_file(folder.path());
     let mut command = Command::new("sh");
     command
@@ -88,14 +88,14 @@ fn a_ready_line_app_that_exits_before_recording_keeps_its_output_in_the_log() {
     let mut child = command.spawn().expect("spawn the app");
     wait_for_zombie(child.id());
 
-    let error = record_spawned_child(&mut child, folder.path(), &log)
-        .expect_err("the app exited before it was recorded");
+    let error =
+        record_spawned_child(&mut child, folder.path(), &log).expect_err("the app record fails");
 
-    assert!(
-        matches!(
-            error.downcast_ref::<IdentityError>(),
-            Some(IdentityError::MissingProcess { .. })
-        ),
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::IsADirectory),
         "unexpected error: {error:#}"
     );
     assert_eq!(
