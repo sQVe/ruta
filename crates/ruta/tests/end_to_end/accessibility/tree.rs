@@ -81,7 +81,6 @@ async fn read_async(address: &str, app_name: &str) -> anyhow::Result<Vec<Node>> 
         let accessible = accessible(connection.connection(), &object).await?;
         let role = accessible.get_role().await.context("read a node's role")?;
         let name = accessible.name().await.context("read a node's name")?;
-        // AccessKit keeps a text input's value in a TextRun child, which get_text reads below.
         if role != Role::Entry {
             pending.extend(accessible.get_children().await?);
         }

@@ -145,8 +145,6 @@ fn app_command(extra: &[&str]) -> String {
     format!("[{}]", command.join(", "))
 }
 
-// The test binary is the namespace init, so an orphaned app stays a zombie until the namespace
-// ends. A zombie has stopped, and its /proc entry stays until init reaps it.
 fn process_runs(pid: u32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
