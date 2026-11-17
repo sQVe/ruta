@@ -321,14 +321,14 @@ pub(crate) fn assert_gone(root: &Path) {
     assert!(!root.exists(), "{}: the root is removed", root.display());
     let marker = format!("RUTA_ROOT={}", root.display());
     assert_eq!(
-        processes_with_marker(&marker),
+        processes_with_environment(&marker),
         Vec::<PathBuf>::new(),
         "{}: every process is stopped",
         root.display()
     );
 }
 
-fn processes_with_marker(marker: &str) -> Vec<PathBuf> {
+pub(crate) fn processes_with_environment(entry: &str) -> Vec<PathBuf> {
     let processes = fs::read_dir("/proc").expect("list /proc");
 
     processes
@@ -338,7 +338,7 @@ fn processes_with_marker(marker: &str) -> Vec<PathBuf> {
             fs::read(environ).is_ok_and(|bytes| {
                 bytes
                     .split(|byte| *byte == 0)
-                    .any(|variable| variable == marker.as_bytes())
+                    .any(|variable| variable == entry.as_bytes())
             })
         })
         .collect()

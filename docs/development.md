@@ -43,8 +43,8 @@ can reach only test processes. They fail instead of running on the host when the
 be made, such as when `unshare` is missing or the system blocks unprivileged user namespaces.
 
 The end-to-end tests start real sandboxes, so the check leaves them out. They need Weston,
-Xwayland, xdotool, and ImageMagick, in the versions that [ADR 0005](adr/0005-linux-only.md)
-names. Run them with:
+Xwayland, xdotool, ImageMagick, dbus, and at-spi2-core. Input needs the Weston and Xwayland
+versions that [ADR 0005](adr/0005-linux-only.md) names. Run them with:
 
 ```sh
 cargo build -p ruta-test-app
