@@ -12,8 +12,6 @@ use thiserror::Error;
 use crate::cleanup;
 use crate::config::{CommandLine, Config, Ready};
 use crate::environment::{app_environment, caller_environment};
-#[cfg(test)]
-use crate::identity::stop::stop_window;
 use crate::identity::stop::{group_alive, stop_app_group};
 use crate::identity::{ProcessIdentity, RECORD_TIMEOUT, record_marked_process};
 use crate::process::{POLL, ProcessError, TOOL_TIMEOUT, poll_until, run_until};

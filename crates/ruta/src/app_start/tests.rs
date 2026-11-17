@@ -5,6 +5,7 @@ use super::*;
 use crate::identity::IdentityError;
 use crate::identity::ProcessIdentity;
 use crate::identity::process_is_zombie;
+use crate::identity::stop::stop_window;
 use crate::process_stat::ProcessStat;
 use crate::test_support::ChildGuard;
 
