@@ -2,8 +2,10 @@ use std::fs;
 use std::os::unix::net::UnixStream;
 
 use super::*;
-use crate::identity::IdentityError;
+use crate::identity::ProcessIdentity;
 use crate::identity::process_is_zombie;
+use crate::identity::stop::stop_window;
+use crate::process_stat::ProcessStat;
 use crate::test_support::ChildGuard;
 
 fn start_script(script: &str) -> (ChildGuard, ChildStdout) {
@@ -39,15 +41,25 @@ fn read_ready_after(script: &str, timeout: Duration, before_read: impl FnOnce(u3
     let folder = crate::test_support::temporary_directory();
     let (log, log_path) = log_file(folder.path());
     let (started, stdout) = start_script(script);
+    let identity = identity_of(started.id());
     before_read(started.id());
 
-    let found = read_ready_line(stdout, log, &log_path, started.id(), timeout);
+    let found = read_ready_line(stdout, log, &log_path, identity, folder.path(), timeout);
     let logged = fs::read_to_string(&log_path).expect("read the log");
 
     ReadReady {
         found: found.map(|(line, _)| line),
         logged,
         log_path,
+    }
+}
+
+fn identity_of(pid: u32) -> ProcessIdentity {
+    let stat = ProcessStat::read(pid).expect("the unreaped app process has a stat");
+
+    ProcessIdentity {
+        pid,
+        started: stat.start,
     }
 }
 
@@ -61,10 +73,11 @@ fn wait_for_zombie(pid: u32) {
 }
 
 #[test]
-fn a_ready_line_app_that_exits_before_recording_keeps_its_output_in_the_log() {
+fn a_ready_line_app_whose_record_fails_keeps_its_output_in_the_log() {
     crate::test_support::in_test_namespace!();
 
     let folder = crate::test_support::temporary_directory();
+    fs::create_dir(folder.path().join("pid")).expect("block the app record");
     let (log, log_path) = log_file(folder.path());
     let mut command = Command::new("sh");
     command
@@ -75,14 +88,14 @@ fn a_ready_line_app_that_exits_before_recording_keeps_its_output_in_the_log() {
     let mut child = command.spawn().expect("spawn the app");
     wait_for_zombie(child.id());
 
-    let error = record_spawned_child(&mut child, folder.path(), &log)
-        .expect_err("the app exited before it was recorded");
+    let error =
+        record_spawned_child(&mut child, folder.path(), &log).expect_err("the app record fails");
 
-    assert!(
-        matches!(
-            error.downcast_ref::<IdentityError>(),
-            Some(IdentityError::MissingProcess { .. })
-        ),
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::IsADirectory),
         "unexpected error: {error:#}"
     );
     assert_eq!(
@@ -252,8 +265,15 @@ fn copy_rest_keeps_copying_output_after_the_ready_line() {
         std::env::var("PATH").unwrap_or_default(),
     )];
 
-    let (line, rest) = read_ready_line(stdout, reader_log, &log_path, pid, Duration::from_secs(5))
-        .expect("a ready line");
+    let (line, rest) = read_ready_line(
+        stdout,
+        reader_log,
+        &log_path,
+        identity_of(pid),
+        folder.path(),
+        Duration::from_secs(5),
+    )
+    .expect("a ready line");
     copy_rest(rest, log, &environment, pid).expect("the copy starts");
 
     let late = poll_until(Duration::from_secs(5), || {
@@ -265,232 +285,6 @@ fn copy_rest_keeps_copying_output_after_the_ready_line() {
 
     assert_eq!(line, "{}");
     assert_eq!(late.as_deref(), Some("{}\nbuffered\nlate\n"));
-}
-
-fn counting_probe(folder: &Path) -> Command {
-    let mut command = Command::new("sh");
-    command
-        .args([
-            "-c",
-            r#"count=$(cat count 2>/dev/null || echo 0); count=$((count + 1)); echo "$count" > count; [ "$count" -ge "$RUTA_TEST_LIMIT" ]"#,
-        ])
-        .current_dir(folder)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("RUTA_TEST_LIMIT", "3");
-
-    command
-}
-
-#[test]
-fn wait_for_ready_command_polls_until_the_probe_exits_0() {
-    crate::test_support::in_test_namespace!();
-
-    let folder = crate::test_support::temporary_directory();
-    let log = folder.path().join("app.log");
-
-    wait_for_ready_command(
-        || counting_probe(folder.path()),
-        std::process::id(),
-        &log,
-        Duration::from_secs(10),
-    )
-    .expect("the probe passes on its third run");
-
-    assert_eq!(
-        fs::read_to_string(folder.path().join("count")).expect("the count"),
-        "3\n"
-    );
-}
-
-#[test]
-fn wait_for_ready_command_reports_a_timeout_when_the_probe_never_passes() {
-    crate::test_support::in_test_namespace!();
-
-    let folder = crate::test_support::temporary_directory();
-    let log = folder.path().join("app.log");
-    let timeout = Duration::from_millis(300);
-
-    let error = wait_for_ready_command(|| Command::new("false"), std::process::id(), &log, timeout)
-        .expect_err("the probe never passes");
-
-    assert!(
-        matches!(
-            error.downcast_ref::<AppStartError>(),
-            Some(AppStartError::ReadyTimeout { timeout: recorded, log: recorded_log })
-                if *recorded == timeout && recorded_log == &log
-        ),
-        "unexpected error: {error:#}"
-    );
-}
-
-fn sleeping_probe(seconds: &str) -> Command {
-    let mut command = Command::new("sleep");
-    command.arg(seconds);
-
-    command
-}
-
-#[test]
-fn wait_for_ready_command_lets_a_slow_probe_finish() {
-    crate::test_support::in_test_namespace!();
-
-    let folder = crate::test_support::temporary_directory();
-    let log = folder.path().join("app.log");
-
-    wait_for_ready_command(
-        || sleeping_probe("0.5"),
-        std::process::id(),
-        &log,
-        Duration::from_secs(10),
-    )
-    .expect("a probe that passes after half a second is ready");
-}
-
-#[test]
-fn wait_for_ready_command_counts_a_hung_probe_as_not_ready() {
-    crate::test_support::in_test_namespace!();
-
-    let folder = crate::test_support::temporary_directory();
-    let log = folder.path().join("app.log");
-    let timeout = Duration::from_millis(300);
-
-    let error = wait_for_ready_command(|| sleeping_probe("30"), std::process::id(), &log, timeout)
-        .expect_err("the probe never finishes");
-
-    assert!(
-        matches!(
-            error.downcast_ref::<AppStartError>(),
-            Some(AppStartError::ReadyTimeout { timeout: recorded, .. }) if *recorded == timeout
-        ),
-        "unexpected error: {error:#}"
-    );
-}
-
-#[test]
-fn wait_for_ready_command_leaves_no_process_of_a_timed_out_probe() {
-    crate::test_support::in_test_namespace!();
-
-    let folder = crate::test_support::temporary_directory();
-    let log = folder.path().join("app.log");
-
-    let error = wait_for_ready_command(
-        || {
-            let mut command = Command::new("sh");
-            command
-                .args(["-c", "sleep 30 & wait"])
-                .env("RUTA_TEST_GROUP", "probe-timeout");
-
-            command
-        },
-        std::process::id(),
-        &log,
-        Duration::from_millis(300),
-    )
-    .expect_err("the probe never finishes");
-
-    assert!(
-        matches!(
-            error.downcast_ref::<AppStartError>(),
-            Some(AppStartError::ReadyTimeout { .. })
-        ),
-        "unexpected error: {error:#}"
-    );
-    assert_eq!(
-        crate::test_support::wait_until_gone(
-            "RUTA_TEST_GROUP=probe-timeout",
-            Duration::from_secs(2)
-        ),
-        Vec::<u32>::new(),
-        "no process of the probe's group is alive"
-    );
-}
-
-#[test]
-fn wait_for_ready_command_reports_an_app_that_exited_before_the_timeout() {
-    crate::test_support::in_test_namespace!();
-
-    let folder = crate::test_support::temporary_directory();
-    let log = folder.path().join("app.log");
-    let mut child = Command::new("true").spawn().expect("spawn the app");
-    let pid = child.id();
-    let zombie = poll_until(Duration::from_secs(3), || {
-        Ok(process_is_zombie(pid).then_some(()))
-    })
-    .expect("the zombie check cannot fail");
-    assert!(zombie.is_some(), "the app became a zombie");
-
-    let started = Instant::now();
-    let error =
-        wait_for_ready_command(|| Command::new("false"), pid, &log, Duration::from_secs(30))
-            .expect_err("the app exited");
-    let elapsed = started.elapsed();
-
-    assert!(
-        matches!(
-            error.downcast_ref::<AppStartError>(),
-            Some(AppStartError::AppExited { log: recorded }) if recorded == &log
-        ),
-        "unexpected error: {error:#}"
-    );
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "the exit was reported after {elapsed:?} instead of before the timeout"
-    );
-
-    crate::test_support::stop_child(&mut child);
-}
-
-#[test]
-fn wait_for_ready_command_reports_a_probe_that_cannot_start() {
-    crate::test_support::in_test_namespace!();
-
-    let folder = crate::test_support::temporary_directory();
-    let log = folder.path().join("app.log");
-
-    let error = wait_for_ready_command(
-        || Command::new("/nonexistent/ruta-probe"),
-        std::process::id(),
-        &log,
-        Duration::from_secs(5),
-    )
-    .expect_err("the probe cannot start");
-
-    assert_eq!(
-        error
-            .downcast_ref::<std::io::Error>()
-            .map(std::io::Error::kind),
-        Some(std::io::ErrorKind::NotFound),
-        "unexpected error: {error:#}"
-    );
-}
-
-#[test]
-fn probe_command_runs_in_the_config_folder_with_the_given_environment() {
-    let folder = crate::test_support::temporary_directory();
-    let probe = CommandLine {
-        program: PathBuf::from("sh"),
-        arguments: vec![
-            "-c".to_string(),
-            r#"[ "$(pwd)" = "$RUTA_TEST_FOLDER" ]"#.to_string(),
-        ],
-    };
-    let environment = vec![
-        (
-            "PATH".to_string(),
-            std::env::var("PATH").unwrap_or_default(),
-        ),
-        (
-            "RUTA_TEST_FOLDER".to_string(),
-            folder.path().to_string_lossy().into_owned(),
-        ),
-    ];
-
-    let status = probe_command(&probe, &environment, folder.path())
-        .status()
-        .expect("run the probe");
-
-    assert!(status.success());
 }
 
 #[test]
@@ -516,4 +310,5 @@ fn the_app_start_errors_render_their_messages() {
     }
 }
 
+mod command;
 mod start;

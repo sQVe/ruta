@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -124,12 +125,13 @@ pub(crate) fn process_is_zombie(pid: u32) -> bool {
 
 pub(crate) fn record_marked_process(
     path: &Path,
-    pid: u32,
+    child: &Child,
     root: &Path,
     timeout: Duration,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ProcessIdentity> {
+    let pid = child.id();
     let recorded = poll_until(timeout, || {
-        let Some(stat) = ProcessStat::read_live(pid) else {
+        let Some(stat) = ProcessStat::read(pid) else {
             return Err(IdentityError::MissingProcess {
                 pid,
                 expected: "app".to_string(),
@@ -137,18 +139,33 @@ pub(crate) fn record_marked_process(
             .into());
         };
 
+        // A zombie's environment cannot be read. ruta has not reaped it, so the PID still names
+        // the process ruta started.
+        if stat.is_zombie() {
+            let identity = ProcessIdentity {
+                pid,
+                started: stat.start,
+            };
+            identity
+                .write(path)
+                .with_context(|| "Could not record the app process")?;
+
+            return Ok(Some(identity));
+        }
+
         if !process_is_ours(pid, root) {
             return Ok(None);
         }
 
-        ProcessIdentity {
+        let identity = ProcessIdentity {
             pid,
             started: stat.start,
-        }
-        .write(path)
-        .with_context(|| "Could not record the app process")?;
+        };
+        identity
+            .write(path)
+            .with_context(|| "Could not record the app process")?;
 
-        Ok(Some(()))
+        Ok(Some(identity))
     })?;
 
     recorded.ok_or_else(|| IdentityError::Unmarked { pid }.into())

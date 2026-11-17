@@ -157,6 +157,10 @@ impl ChildGuard {
         self.child.id()
     }
 
+    pub(crate) fn child(&self) -> &Child {
+        &self.child
+    }
+
     pub(crate) fn is_running(&mut self) -> bool {
         !self.reaped && self.child.try_wait().expect("check the child").is_none()
     }

@@ -114,3 +114,36 @@ fn restart_plan_refuses_an_unsafe_root_even_with_given_arguments() {
         "unexpected error: {error:#}"
     );
 }
+
+#[test]
+fn start_app_leaves_a_marked_process_outside_the_app_group_and_teardown_stops_it() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("start-app-escape");
+    record_root_creation(root.path()).expect("record the root creation");
+    let mut escaped = spawn_with_marker(root.path());
+    let mut config = test_config("test");
+    config.folder = root.path().to_path_buf();
+    config.app.command = CommandLine {
+        program: PathBuf::from("sleep"),
+        arguments: strings(&["30"]),
+    };
+    config.ready = Ready::Command(CommandLine {
+        program: PathBuf::from("true"),
+        arguments: Vec::new(),
+    });
+
+    start_app(root.path(), &config, &[], ":999").expect("the app starts");
+
+    assert!(
+        escaped.is_running(),
+        "a marked process outside the app group must keep running"
+    );
+
+    cleanup(root.path(), stop_target).expect("the sandbox is cleaned up");
+
+    assert!(
+        escaped.wait_for_exit(Duration::from_secs(2)),
+        "teardown stops the marked process"
+    );
+}

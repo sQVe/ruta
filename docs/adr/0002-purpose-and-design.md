@@ -53,7 +53,9 @@ and an input coordinate share one scale.
 ruta identifies a process it started by its PID and start time, plus the `RUTA_ROOT` marker in its
 environment, not by its command line. A launch script may `exec` the app, which replaces the command
 line but keeps the PID, the start time, and the environment. ruta records the app once it holds the
-marker.
+marker. A launcher that exits before ruta reads its marker is recorded anyway, because a zombie's
+environment cannot be read. ruta has not reaped it yet, so its PID still names the process ruta
+started.
 
 The app leads its own process group, and `down` stops that group. It stops the recorded leader by
 its PID and start time alone, because the leader may `exec` into an environment without the marker.

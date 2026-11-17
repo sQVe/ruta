@@ -386,13 +386,39 @@ fn record_marked_process_records_a_marked_child_whatever_its_name() {
     let path = root.path().join("pid");
     let child = spawn_with_marker(root.path());
 
-    record_marked_process(&path, child.id(), root.path(), Duration::from_secs(1))
+    let recorded = record_marked_process(&path, child.child(), root.path(), Duration::from_secs(1))
         .expect("the marked child is recorded");
 
     assert_eq!(
-        ProcessIdentity::read(&path),
-        ProcessIdentity::current(child.id())
+        recorded,
+        ProcessIdentity::current(child.id()).expect("the child is live")
     );
+    assert_eq!(ProcessIdentity::read(&path), Some(recorded));
+}
+
+#[test]
+fn record_marked_process_records_a_launcher_that_exited_before_recording() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("record-zombie");
+    let path = root.path().join("pid");
+    let mut command = Command::new("true");
+    command.env("RUTA_ROOT", root.path().as_os_str());
+    let child = ChildGuard::spawn_group(&mut command);
+    wait_for_zombie(child.id(), Duration::from_secs(3));
+
+    let recorded = record_marked_process(&path, child.child(), root.path(), Duration::from_secs(1))
+        .expect("the launcher is recorded after it exits");
+
+    let stat = ProcessStat::read(child.id()).expect("the zombie has a stat");
+    assert_eq!(
+        recorded,
+        ProcessIdentity {
+            pid: child.id(),
+            started: stat.start,
+        }
+    );
+    assert_eq!(ProcessIdentity::read(&path), Some(recorded));
 }
 
 #[test]
@@ -407,9 +433,13 @@ fn record_marked_process_refuses_a_child_without_the_marker_and_writes_no_file()
         ("no marker", spawn_without_marker()),
         ("another root", spawn_with_marker(other.path())),
     ] {
-        let error =
-            record_marked_process(&path, child.id(), root.path(), Duration::from_millis(200))
-                .expect_err("an unmarked child is refused");
+        let error = record_marked_process(
+            &path,
+            child.child(),
+            root.path(),
+            Duration::from_millis(200),
+        )
+        .expect_err("an unmarked child is refused");
 
         assert!(
             matches!(
@@ -423,32 +453,33 @@ fn record_marked_process_refuses_a_child_without_the_marker_and_writes_no_file()
 }
 
 #[test]
-fn record_marked_process_reports_a_missing_or_exited_process_at_once() {
+fn record_marked_process_reports_a_reaped_process_at_once() {
     crate::test_support::in_test_namespace!();
 
     let root = crate::test_support::temporary_sandbox_root("record-gone");
     let path = root.path().join("pid");
-    let exited = spawn_exiting();
-    wait_for_zombie(exited.id(), Duration::from_secs(3));
+    let mut exited = spawn_exiting();
+    assert!(
+        exited.wait_for_exit(Duration::from_secs(3)),
+        "the process exited"
+    );
 
-    for (case, pid) in [("missing", u32::MAX), ("zombie", exited.id())] {
-        let started = std::time::Instant::now();
+    let started = std::time::Instant::now();
 
-        let error = record_marked_process(&path, pid, root.path(), Duration::from_secs(5))
-            .expect_err("a gone process is refused");
+    let error = record_marked_process(&path, exited.child(), root.path(), Duration::from_secs(5))
+        .expect_err("a reaped process is refused");
 
-        assert!(
-            matches!(
-                error.downcast_ref::<IdentityError>(),
-                Some(IdentityError::MissingProcess { pid: recorded, .. }) if *recorded == pid
-            ),
-            "{case}: unexpected error: {error:#}"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "{case}: reported after {:?}",
-            started.elapsed()
-        );
-        assert!(!path.exists(), "{case}: no record is written");
-    }
+    assert!(
+        matches!(
+            error.downcast_ref::<IdentityError>(),
+            Some(IdentityError::MissingProcess { pid, .. }) if *pid == exited.id()
+        ),
+        "unexpected error: {error:#}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "reported after {:?}",
+        started.elapsed()
+    );
+    assert!(!path.exists(), "no record is written");
 }

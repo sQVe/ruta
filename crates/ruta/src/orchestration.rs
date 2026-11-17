@@ -17,12 +17,18 @@ use crate::identity::{RECORD_TIMEOUT, record_xwayland};
 use crate::input::{focus_window, send, window_exists, window_id};
 use crate::log_tail::last_lines;
 use crate::root::{
-    create_root, install_openers, prepare_root, record_folder, record_root_creation, remove_root,
+    install_openers, prepare_root, record_folder, record_root_creation, remove_root,
     require_trusted_root, root_path,
 };
 use crate::tool::{Tool, require_program};
 
+use one_shot::{refuse_capture_output_in_root, run_one_shot};
+
+mod one_shot;
 mod status;
+
+#[cfg(test)]
+use one_shot::{CaptureOutputInsideRoot, finish_capture};
 
 const DISPLAY_MARGIN: u32 = 200;
 
@@ -95,55 +101,10 @@ fn capture(
     emit: &mut impl FnMut(&str),
 ) -> anyhow::Result<()> {
     let name = format!("{}-capture", config.name);
-    crate::config::check_name("RUTA_NAME", &name)?;
-    refuse_capture_output_in_root(root, out)?;
 
-    match create_root(root) {
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => anyhow::bail!(
-            "The capture root already exists; run 'RUTA_NAME={name} ruta down' first."
-        ),
-        Ok(()) => {}
-        Err(error) => return Err(error).context("Could not create the capture root"),
-    }
-
-    let captured = capture_inner(config, root, out, arguments, emit);
-
-    finish_capture(root, captured, stop_target)
-}
-
-#[derive(Debug, Error, PartialEq, Eq)]
-#[error("The capture output folder {} must not be the capture root {} or inside it.", out.display(), root.display())]
-struct CaptureOutputInsideRoot {
-    out: PathBuf,
-    root: PathBuf,
-}
-
-fn refuse_capture_output_in_root(root: &Path, out: &Path) -> anyhow::Result<()> {
-    let root = lexical_absolute_path(root)?;
-    let out = lexical_absolute_path(out)?;
-
-    if out.starts_with(&root) {
-        return Err(CaptureOutputInsideRoot { out, root }.into());
-    }
-
-    Ok(())
-}
-
-fn lexical_absolute_path(path: &Path) -> anyhow::Result<PathBuf> {
-    let absolute = std::path::absolute(path)
-        .with_context(|| format!("Could not make {} absolute", path.display()))?;
-    let mut normalized = PathBuf::new();
-
-    for component in absolute.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                normalized.pop();
-            }
-            _ => normalized.push(component),
-        }
-    }
-
-    Ok(normalized)
+    run_one_shot(root, &name, out, || {
+        capture_inner(config, root, out, arguments, emit)
+    })
 }
 
 fn capture_inner(
@@ -204,27 +165,6 @@ fn capture_window(name: &str, root: &Path, out: &Path) -> anyhow::Result<()> {
         &environment,
     )?;
     crate::capture::write_capture(out, ready_line.as_deref(), &environment)
-}
-
-#[expect(
-    clippy::print_stderr,
-    reason = "cleanup must not hide the capture error"
-)]
-fn finish_capture<F>(root: &Path, captured: anyhow::Result<()>, stop: F) -> anyhow::Result<()>
-where
-    F: FnMut(&Path, StopTarget) -> anyhow::Result<()>,
-{
-    let cleaned = cleanup(root, stop);
-
-    if let Err(error) = captured {
-        if let Err(cleanup_error) = cleaned {
-            eprintln!("Could not clean up after capture: {cleanup_error:#}");
-        }
-
-        return Err(error);
-    }
-
-    cleaned
 }
 
 #[mutants::skip]
@@ -339,6 +279,7 @@ fn start_sandbox(
 
     prepare_root(root)?;
     record_folder(root, &config.folder)?;
+    stop_window(root)?;
 
     let display = ensure_display(name, root, session, display_size(size))?;
 

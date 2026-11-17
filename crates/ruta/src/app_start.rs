@@ -12,10 +12,9 @@ use thiserror::Error;
 use crate::cleanup;
 use crate::config::{CommandLine, Config, Ready};
 use crate::environment::{app_environment, caller_environment};
-use crate::identity::stop::stop_window;
-use crate::identity::{RECORD_TIMEOUT, record_marked_process};
+use crate::identity::stop::{group_alive, stop_app_group};
+use crate::identity::{ProcessIdentity, RECORD_TIMEOUT, record_marked_process};
 use crate::process::{POLL, ProcessError, TOOL_TIMEOUT, poll_until, run_until};
-use crate::process_stat::ProcessStat;
 use crate::root::write_unlinked;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -40,7 +39,7 @@ pub(crate) fn start_app(
     arguments: &[String],
     display: &str,
 ) -> anyhow::Result<()> {
-    stop_window(root)?;
+    stop_app_group(root)?;
 
     let log_path = root.join(crate::root::record::APP_LOG);
     let ready_path = root.join(crate::root::record::READY);
@@ -64,13 +63,13 @@ pub(crate) fn start_app(
         Ready::Line => start_with_ready_line(command, root, log, &environment)?,
         Ready::Command(probe) => {
             command.stdout(clone_log(&log, &log_path)?);
-            let child = spawn_recorded(command, root, &log)?;
-            let pid = child.id();
+            let (child, leader) = spawn_recorded(command, root, &log)?;
             drop(child);
 
             wait_for_ready_command(
                 || probe_command(probe, &environment, &config.folder),
-                pid,
+                leader,
+                root,
                 &log_path,
                 READY_TIMEOUT,
             )?;
@@ -92,56 +91,66 @@ fn start_with_ready_line(
     environment: &[(String, String)],
 ) -> anyhow::Result<()> {
     command.stdout(Stdio::piped());
-    let mut child = spawn_recorded(command, root, &log)?;
+    let (mut child, leader) = spawn_recorded(command, root, &log)?;
     let stdout = child
         .stdout
         .take()
         .expect("JSON ready mode pipes the app's stdout");
-    let pid = child.id();
     drop(child);
 
     let log_path = root.join(crate::root::record::APP_LOG);
     let reader_log = clone_log(&log, &log_path)?;
-    let (line, rest) = read_ready_line(stdout, reader_log, &log_path, pid, READY_TIMEOUT)?;
+    let (line, rest) = read_ready_line(stdout, reader_log, &log_path, leader, root, READY_TIMEOUT)?;
 
-    copy_rest(rest, log, environment, pid)?;
+    copy_rest(rest, log, environment, leader.pid)?;
     write_unlinked(&root.join(crate::root::record::READY), format!("{line}\n"))
 }
 
-fn spawn_recorded(mut command: Command, root: &Path, log: &File) -> anyhow::Result<Child> {
+fn spawn_recorded(
+    mut command: Command,
+    root: &Path,
+    log: &File,
+) -> anyhow::Result<(Child, ProcessIdentity)> {
     let program = PathBuf::from(command.get_program());
     let mut child = command
         .spawn()
         .with_context(|| format!("Could not start {}", program.display()))?;
 
-    record_spawned_child(&mut child, root, log)?;
+    let identity = record_spawned_child(&mut child, root, log)?;
 
-    Ok(child)
+    Ok((child, identity))
 }
 
-fn record_spawned_child(child: &mut Child, root: &Path, log: &File) -> anyhow::Result<()> {
-    if let Err(error) = record_marked_process(
+fn record_spawned_child(
+    child: &mut Child,
+    root: &Path,
+    log: &File,
+) -> anyhow::Result<ProcessIdentity> {
+    let identity = match record_marked_process(
         &root.join(crate::root::record::PID),
-        child.id(),
+        child,
         root,
         RECORD_TIMEOUT,
     ) {
-        // The app may have printed its last line before it exited, so keep the output that is
-        // already in the pipe. A process outside the group can still hold the pipe open.
-        let stdout = child.stdout.take();
-        cleanup::stop_child_group(child);
+        Ok(identity) => identity,
+        Err(error) => {
+            // The app may have printed its last line before it exited, so keep the output that is
+            // already in the pipe. A process outside the group can still hold the pipe open.
+            let stdout = child.stdout.take();
+            cleanup::stop_child_group(child);
 
-        if let Some(stdout) = stdout {
-            cleanup::warn(
-                "copy the app's output to its log",
-                drain_stdout(stdout, log, DRAIN_LIMIT),
-            );
+            if let Some(stdout) = stdout {
+                cleanup::warn(
+                    "copy the app's output to its log",
+                    drain_stdout(stdout, log, DRAIN_LIMIT),
+                );
+            }
+
+            return Err(error);
         }
+    };
 
-        return Err(error);
-    }
-
-    Ok(())
+    Ok(identity)
 }
 
 fn drain_stdout(stdout: impl Read + AsFd, log: &File, limit: u64) -> std::io::Result<()> {
@@ -171,7 +180,8 @@ fn read_ready_line(
     stdout: ChildStdout,
     log: File,
     log_path: &Path,
-    pid: u32,
+    leader: ProcessIdentity,
+    root: &Path,
     timeout: Duration,
 ) -> anyhow::Result<(String, BufReader<ChildStdout>)> {
     let reader = std::thread::spawn(move || copy_until_ready(BufReader::new(stdout), log));
@@ -183,7 +193,7 @@ fn read_ready_line(
             return Ok(Some(()));
         }
 
-        if app_exited(pid) {
+        if app_gone(leader, root) {
             let exited: Instant = *exited_at.get_or_insert_with(Instant::now);
 
             if exited.elapsed() >= EXIT_GRACE {
@@ -266,7 +276,8 @@ fn probe_command(probe: &CommandLine, environment: &[(String, String)], folder: 
 
 fn wait_for_ready_command(
     mut probe: impl FnMut() -> Command,
-    pid: u32,
+    leader: ProcessIdentity,
+    root: &Path,
     log_path: &Path,
     timeout: Duration,
 ) -> anyhow::Result<()> {
@@ -277,14 +288,14 @@ fn wait_for_ready_command(
             .saturating_duration_since(Instant::now())
             .clamp(POLL, TOOL_TIMEOUT);
 
-        match run_until(probe(), limit, || app_exited(pid)) {
+        match run_until(probe(), limit, || app_gone(leader, root)) {
             Ok(output) if output.status.success() => return Ok(Some(())),
             Ok(_) => {}
             Err(error) if error.downcast_ref::<ProcessError>().is_some() => {}
             Err(error) => return Err(error.context("Could not run the ready command")),
         }
 
-        if app_exited(pid) {
+        if app_gone(leader, root) {
             return Err(app_exited_error(log_path));
         }
 
@@ -294,8 +305,8 @@ fn wait_for_ready_command(
     ready.ok_or_else(|| ready_timeout_error(timeout, log_path))
 }
 
-fn app_exited(pid: u32) -> bool {
-    ProcessStat::read_live(pid).is_none()
+fn app_gone(leader: ProcessIdentity, root: &Path) -> bool {
+    !group_alive(leader, root)
 }
 
 fn ready_timeout_error(timeout: Duration, log_path: &Path) -> anyhow::Error {
