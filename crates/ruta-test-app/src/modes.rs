@@ -231,6 +231,8 @@ mod tests {
 
     #[test]
     fn wait_until_ready_stops_a_child_that_never_writes_the_ready_file() {
+        crate::test_support::in_test_namespace!();
+
         let folder = tempfile::tempdir().expect("create the temp folder");
         let ready = folder.path().join("child-ready");
         let mut child = Command::new("sleep")

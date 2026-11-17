@@ -1,6 +1,10 @@
 mod args;
 mod layout;
 mod modes;
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+use test_support::namespace;
 mod tree;
 
 use std::io::Write as _;

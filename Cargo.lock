@@ -785,6 +785,7 @@ dependencies = [
  "accesskit",
  "accesskit_unix",
  "anyhow",
+ "rustix",
  "serde_json",
  "tempfile",
  "x11rb",
