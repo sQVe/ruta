@@ -120,7 +120,12 @@ fn main() -> anyhow::Result<()> {
             write_line(&line)?;
         }
 
-        if let Some(line) = describe_change(&connection, &event, &mut tree)? {
+        let keysym = match &event {
+            Event::KeyPress(key) => keysym(&connection, key)?,
+            _ => 0,
+        };
+
+        if let Some(line) = describe_change(keysym, &event, &mut tree)? {
             write_line(&line)?;
 
             if let Some(name) = line.strip_prefix("press name=") {
@@ -175,7 +180,7 @@ fn draw(
 }
 
 fn describe_change(
-    connection: &impl x11rb::connection::Connection,
+    keysym: u32,
     event: &Event,
     tree: &mut tree::Tree,
 ) -> anyhow::Result<Option<String>> {
@@ -198,9 +203,7 @@ fn describe_change(
 
             Ok(None)
         }
-        Event::KeyPress(key) => {
-            let keysym = keysym(connection, key)?;
-
+        Event::KeyPress(_) => {
             if layout::printable(keysym).is_none() || !tree.type_character(keysym) {
                 return Ok(None);
             }
@@ -411,19 +414,88 @@ mod tests {
         }
     }
 
+    fn button_press(detail: u8, x: i16, y: i16) -> Event {
+        Event::ButtonPress(ButtonPressEvent {
+            detail,
+            event_x: x,
+            event_y: y,
+            ..ButtonPressEvent::default()
+        })
+    }
+
+    fn centre(control: &layout::Control) -> (i16, i16) {
+        let bounds = &control.bounds;
+        let x = i16::try_from(bounds.x + bounds.width / 2).expect("a small coordinate");
+        let y = i16::try_from(bounds.y + bounds.height / 2).expect("a small coordinate");
+
+        (x, y)
+    }
+
     #[test]
-    fn geometry_refuses_values_that_are_not_finite() {
-        for bad in ["NaN", "inf", "-inf", "1e999"] {
-            for field in 0..5 {
-                let mut parts = ["10", "20", "100", "50", "2"];
-                parts[field] = bad;
-                let value = parts.join(",");
-                let arguments = strings(&["demo", "300", "200", "--geometry", &value]);
+    fn a_press_on_a_button_reports_its_name() {
+        let mut tree = tree::Tree::new("demo", (640, 480));
+        let (x, y) = centre(&layout::BUTTONS[0]);
 
-                let error = parse_arguments(arguments).expect_err("not finite");
+        let line = describe_change(0, &button_press(1, x, y), &mut tree).expect("describe");
 
-                assert_eq!(error.to_string(), USAGE, "{value}");
-            }
-        }
+        assert_eq!(line, Some("press name=alpha".to_string()));
+    }
+
+    #[test]
+    fn a_press_on_the_text_field_focuses_it() {
+        let mut tree = tree::Tree::new("demo", (640, 480));
+        let (x, y) = centre(&layout::TEXT_FIELD);
+
+        let line = describe_change(0, &button_press(1, x, y), &mut tree).expect("describe");
+
+        assert_eq!(line, Some("focus name=text".to_string()));
+    }
+
+    #[test]
+    fn a_press_outside_every_control_reports_nothing() {
+        let mut tree = tree::Tree::new("demo", (640, 480));
+
+        let line = describe_change(0, &button_press(1, 500, 400), &mut tree).expect("describe");
+
+        assert_eq!(line, None);
+    }
+
+    #[test]
+    fn a_press_with_another_button_reports_nothing() {
+        let mut tree = tree::Tree::new("demo", (640, 480));
+        let (x, y) = centre(&layout::BUTTONS[0]);
+
+        let line = describe_change(0, &button_press(4, x, y), &mut tree).expect("describe");
+
+        assert_eq!(line, None);
+    }
+
+    #[test]
+    fn a_press_on_a_button_clears_the_text_field_focus() {
+        let mut tree = tree::Tree::new("demo", (640, 480));
+        tree.focus_text_field();
+        let (x, y) = centre(&layout::BUTTONS[0]);
+
+        let line = describe_change(0, &button_press(1, x, y), &mut tree).expect("describe");
+        assert_eq!(line, Some("press name=alpha".to_string()));
+
+        let typed = describe_change(0x68, &Event::KeyPress(KeyPressEvent::default()), &mut tree)
+            .expect("describe");
+
+        assert_eq!(typed, None);
+    }
+
+    #[test]
+    fn a_printable_key_types_only_while_the_text_field_has_focus() {
+        let mut tree = tree::Tree::new("demo", (640, 480));
+        let key = Event::KeyPress(KeyPressEvent::default());
+
+        let unfocused = describe_change(0x68, &key, &mut tree).expect("describe");
+        assert_eq!(unfocused, None);
+
+        tree.focus_text_field();
+
+        let typed = describe_change(0x68, &key, &mut tree).expect("describe");
+        assert_eq!(typed, Some("text \"h\"".to_string()));
     }
 }

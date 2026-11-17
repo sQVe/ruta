@@ -255,6 +255,56 @@ mod tests {
     }
 
     #[test]
+    fn window_rect_matches_the_window_size() {
+        let rect = window_rect((640, 480));
+
+        assert_eq!(
+            (rect.x0, rect.y0, rect.x1, rect.y1),
+            (0.0, 0.0, 640.0, 480.0)
+        );
+    }
+
+    #[test]
+    fn control_rects_cover_each_control_from_its_origin() {
+        let controls = layout::BUTTONS.iter().chain([&layout::TEXT_FIELD]);
+
+        for control in controls {
+            let bounds = &control.bounds;
+            let rect = control_rect(control);
+            let expected = (
+                f64::from(bounds.x),
+                f64::from(bounds.y),
+                f64::from(bounds.x) + f64::from(bounds.width),
+                f64::from(bounds.y) + f64::from(bounds.height),
+            );
+
+            assert_eq!(
+                (rect.x0, rect.y0, rect.x1, rect.y1),
+                expected,
+                "{}",
+                control.name
+            );
+        }
+    }
+
+    #[test]
+    fn each_button_node_uses_its_layout_index_as_id() {
+        let state = State::default();
+        let update = update(&state, "demo", (640, 480), None);
+
+        for (index, button) in layout::BUTTONS.iter().enumerate() {
+            let id = NodeId(index as u64 + 1);
+            let label = update
+                .nodes
+                .iter()
+                .find(|(node_id, _)| *node_id == id)
+                .and_then(|(_, node)| node.label());
+
+            assert_eq!(label, Some(button.name), "{}", button.name);
+        }
+    }
+
+    #[test]
     fn character_lengths_counts_utf8_bytes() {
         assert_eq!(character_lengths("hi"), [1, 1]);
         assert_eq!(character_lengths("é"), [2]);
