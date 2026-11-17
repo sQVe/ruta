@@ -386,13 +386,14 @@ fn record_marked_process_records_a_marked_child_whatever_its_name() {
     let path = root.path().join("pid");
     let child = spawn_with_marker(root.path());
 
-    record_marked_process(&path, child.id(), root.path(), Duration::from_secs(1))
+    let recorded = record_marked_process(&path, child.id(), root.path(), Duration::from_secs(1))
         .expect("the marked child is recorded");
 
     assert_eq!(
-        ProcessIdentity::read(&path),
-        ProcessIdentity::current(child.id())
+        recorded,
+        ProcessIdentity::current(child.id()).expect("the child is live")
     );
+    assert_eq!(ProcessIdentity::read(&path), Some(recorded));
 }
 
 #[test]

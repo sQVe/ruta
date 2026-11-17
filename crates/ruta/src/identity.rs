@@ -127,7 +127,7 @@ pub(crate) fn record_marked_process(
     pid: u32,
     root: &Path,
     timeout: Duration,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ProcessIdentity> {
     let recorded = poll_until(timeout, || {
         let Some(stat) = ProcessStat::read_live(pid) else {
             return Err(IdentityError::MissingProcess {
@@ -141,14 +141,15 @@ pub(crate) fn record_marked_process(
             return Ok(None);
         }
 
-        ProcessIdentity {
+        let identity = ProcessIdentity {
             pid,
             started: stat.start,
-        }
-        .write(path)
-        .with_context(|| "Could not record the app process")?;
+        };
+        identity
+            .write(path)
+            .with_context(|| "Could not record the app process")?;
 
-        Ok(Some(()))
+        Ok(Some(identity))
     })?;
 
     recorded.ok_or_else(|| IdentityError::Unmarked { pid }.into())

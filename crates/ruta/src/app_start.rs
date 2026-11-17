@@ -63,8 +63,7 @@ pub(crate) fn start_app(
         Ready::Line => start_with_ready_line(command, root, log, &environment)?,
         Ready::Command(probe) => {
             command.stdout(clone_log(&log, &log_path)?);
-            let child = spawn_recorded(command, root, &log)?;
-            let leader = read_app_leader(root)?;
+            let (child, leader) = spawn_recorded(command, root, &log)?;
             drop(child);
 
             wait_for_ready_command(
@@ -92,8 +91,7 @@ fn start_with_ready_line(
     environment: &[(String, String)],
 ) -> anyhow::Result<()> {
     command.stdout(Stdio::piped());
-    let mut child = spawn_recorded(command, root, &log)?;
-    let leader = read_app_leader(root)?;
+    let (mut child, leader) = spawn_recorded(command, root, &log)?;
     let stdout = child
         .stdout
         .take()
@@ -108,40 +106,51 @@ fn start_with_ready_line(
     write_unlinked(&root.join(crate::root::record::READY), format!("{line}\n"))
 }
 
-fn spawn_recorded(mut command: Command, root: &Path, log: &File) -> anyhow::Result<Child> {
+fn spawn_recorded(
+    mut command: Command,
+    root: &Path,
+    log: &File,
+) -> anyhow::Result<(Child, ProcessIdentity)> {
     let program = PathBuf::from(command.get_program());
     let mut child = command
         .spawn()
         .with_context(|| format!("Could not start {}", program.display()))?;
 
-    record_spawned_child(&mut child, root, log)?;
+    let identity = record_spawned_child(&mut child, root, log)?;
 
-    Ok(child)
+    Ok((child, identity))
 }
 
-fn record_spawned_child(child: &mut Child, root: &Path, log: &File) -> anyhow::Result<()> {
-    if let Err(error) = record_marked_process(
+fn record_spawned_child(
+    child: &mut Child,
+    root: &Path,
+    log: &File,
+) -> anyhow::Result<ProcessIdentity> {
+    let identity = match record_marked_process(
         &root.join(crate::root::record::PID),
         child.id(),
         root,
         RECORD_TIMEOUT,
     ) {
-        // The app may have printed its last line before it exited, so keep the output that is
-        // already in the pipe. A process outside the group can still hold the pipe open.
-        let stdout = child.stdout.take();
-        cleanup::stop_child_group(child);
+        Ok(identity) => identity,
+        Err(error) => {
+            // The app may have printed its last line before it exited, so keep the output that is
+            // already in the pipe. A process outside the group can still hold the pipe open.
+            let stdout = child.stdout.take();
+            cleanup::stop_child_group(child);
 
-        if let Some(stdout) = stdout {
-            cleanup::warn(
-                "copy the app's output to its log",
-                drain_stdout(stdout, log, DRAIN_LIMIT),
-            );
+            if let Some(stdout) = stdout {
+                cleanup::warn(
+                    "copy the app's output to its log",
+                    drain_stdout(stdout, log, DRAIN_LIMIT),
+                );
+            }
+
+            return Err(error);
         }
+    };
 
-        return Err(error);
-    }
-
-    Ok(())
+    Ok(identity)
 }
 
 fn drain_stdout(stdout: impl Read + AsFd, log: &File, limit: u64) -> std::io::Result<()> {
@@ -165,11 +174,6 @@ fn drain_stdout(stdout: impl Read + AsFd, log: &File, limit: u64) -> std::io::Re
 fn clone_log(log: &File, path: &Path) -> anyhow::Result<File> {
     log.try_clone()
         .with_context(|| format!("Could not open {} for writing", path.display()))
-}
-
-fn read_app_leader(root: &Path) -> anyhow::Result<ProcessIdentity> {
-    ProcessIdentity::read(&root.join(crate::root::record::PID))
-        .ok_or_else(|| anyhow::anyhow!("Could not read the app record"))
 }
 
 fn read_ready_line(
