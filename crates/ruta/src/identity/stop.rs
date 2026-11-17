@@ -21,6 +21,10 @@ pub(crate) fn stop_recorded(path: &Path) -> anyhow::Result<()> {
     stop_recorded_with(path, open_pidfd)
 }
 
+pub(crate) fn group_alive(leader: ProcessIdentity, root: &Path) -> bool {
+    !group_members(leader, root).is_empty()
+}
+
 fn stop_recorded_with(
     path: &Path,
     open: impl FnOnce(rustix::process::Pid) -> std::io::Result<rustix::fd::OwnedFd>,

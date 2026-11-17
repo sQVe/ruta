@@ -3,7 +3,9 @@ use std::os::unix::net::UnixStream;
 
 use super::*;
 use crate::identity::IdentityError;
+use crate::identity::ProcessIdentity;
 use crate::identity::process_is_zombie;
+use crate::process_stat::ProcessStat;
 use crate::test_support::ChildGuard;
 
 fn start_script(script: &str) -> (ChildGuard, ChildStdout) {
@@ -39,15 +41,25 @@ fn read_ready_after(script: &str, timeout: Duration, before_read: impl FnOnce(u3
     let folder = crate::test_support::temporary_directory();
     let (log, log_path) = log_file(folder.path());
     let (started, stdout) = start_script(script);
+    let identity = identity_of(started.id());
     before_read(started.id());
 
-    let found = read_ready_line(stdout, log, &log_path, started.id(), timeout);
+    let found = read_ready_line(stdout, log, &log_path, identity, folder.path(), timeout);
     let logged = fs::read_to_string(&log_path).expect("read the log");
 
     ReadReady {
         found: found.map(|(line, _)| line),
         logged,
         log_path,
+    }
+}
+
+fn identity_of(pid: u32) -> ProcessIdentity {
+    let stat = ProcessStat::read_live(pid).expect("the app process is live");
+
+    ProcessIdentity {
+        pid,
+        started: stat.start,
     }
 }
 
@@ -252,8 +264,15 @@ fn copy_rest_keeps_copying_output_after_the_ready_line() {
         std::env::var("PATH").unwrap_or_default(),
     )];
 
-    let (line, rest) = read_ready_line(stdout, reader_log, &log_path, pid, Duration::from_secs(5))
-        .expect("a ready line");
+    let (line, rest) = read_ready_line(
+        stdout,
+        reader_log,
+        &log_path,
+        identity_of(pid),
+        folder.path(),
+        Duration::from_secs(5),
+    )
+    .expect("a ready line");
     copy_rest(rest, log, &environment, pid).expect("the copy starts");
 
     let late = poll_until(Duration::from_secs(5), || {
@@ -289,9 +308,12 @@ fn wait_for_ready_command_polls_until_the_probe_exits_0() {
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("app.log");
 
+    let (_app, leader) = live_app();
+
     wait_for_ready_command(
         || counting_probe(folder.path()),
-        std::process::id(),
+        leader,
+        folder.path(),
         &log,
         Duration::from_secs(10),
     )
@@ -311,8 +333,15 @@ fn wait_for_ready_command_reports_a_timeout_when_the_probe_never_passes() {
     let log = folder.path().join("app.log");
     let timeout = Duration::from_millis(300);
 
-    let error = wait_for_ready_command(|| Command::new("false"), std::process::id(), &log, timeout)
-        .expect_err("the probe never passes");
+    let (_app, leader) = live_app();
+    let error = wait_for_ready_command(
+        || Command::new("false"),
+        leader,
+        folder.path(),
+        &log,
+        timeout,
+    )
+    .expect_err("the probe never passes");
 
     assert!(
         matches!(
@@ -331,6 +360,15 @@ fn sleeping_probe(seconds: &str) -> Command {
     command
 }
 
+fn live_app() -> (ChildGuard, ProcessIdentity) {
+    let mut command = Command::new("sleep");
+    command.arg("30");
+    let started = ChildGuard::spawn_group(&mut command);
+    let identity = identity_of(started.id());
+
+    (started, identity)
+}
+
 #[test]
 fn wait_for_ready_command_lets_a_slow_probe_finish() {
     crate::test_support::in_test_namespace!();
@@ -338,9 +376,12 @@ fn wait_for_ready_command_lets_a_slow_probe_finish() {
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("app.log");
 
+    let (_app, leader) = live_app();
+
     wait_for_ready_command(
         || sleeping_probe("0.5"),
-        std::process::id(),
+        leader,
+        folder.path(),
         &log,
         Duration::from_secs(10),
     )
@@ -355,8 +396,15 @@ fn wait_for_ready_command_counts_a_hung_probe_as_not_ready() {
     let log = folder.path().join("app.log");
     let timeout = Duration::from_millis(300);
 
-    let error = wait_for_ready_command(|| sleeping_probe("30"), std::process::id(), &log, timeout)
-        .expect_err("the probe never finishes");
+    let (_app, leader) = live_app();
+    let error = wait_for_ready_command(
+        || sleeping_probe("30"),
+        leader,
+        folder.path(),
+        &log,
+        timeout,
+    )
+    .expect_err("the probe never finishes");
 
     assert!(
         matches!(
@@ -374,6 +422,7 @@ fn wait_for_ready_command_leaves_no_process_of_a_timed_out_probe() {
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("app.log");
 
+    let (_app, leader) = live_app();
     let error = wait_for_ready_command(
         || {
             let mut command = Command::new("sh");
@@ -383,7 +432,8 @@ fn wait_for_ready_command_leaves_no_process_of_a_timed_out_probe() {
 
             command
         },
-        std::process::id(),
+        leader,
+        folder.path(),
         &log,
         Duration::from_millis(300),
     )
@@ -412,8 +462,11 @@ fn wait_for_ready_command_reports_an_app_that_exited_before_the_timeout() {
 
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("app.log");
-    let mut child = Command::new("true").spawn().expect("spawn the app");
+    let mut command = Command::new("sleep");
+    command.arg("0.2").process_group(0);
+    let mut child = command.spawn().expect("spawn the app");
     let pid = child.id();
+    let leader = identity_of(pid);
     let zombie = poll_until(Duration::from_secs(3), || {
         Ok(process_is_zombie(pid).then_some(()))
     })
@@ -421,9 +474,14 @@ fn wait_for_ready_command_reports_an_app_that_exited_before_the_timeout() {
     assert!(zombie.is_some(), "the app became a zombie");
 
     let started = Instant::now();
-    let error =
-        wait_for_ready_command(|| Command::new("false"), pid, &log, Duration::from_secs(30))
-            .expect_err("the app exited");
+    let error = wait_for_ready_command(
+        || Command::new("false"),
+        leader,
+        folder.path(),
+        &log,
+        Duration::from_secs(30),
+    )
+    .expect_err("the app exited");
     let elapsed = started.elapsed();
 
     assert!(
@@ -448,9 +506,11 @@ fn wait_for_ready_command_reports_a_probe_that_cannot_start() {
     let folder = crate::test_support::temporary_directory();
     let log = folder.path().join("app.log");
 
+    let (_app, leader) = live_app();
     let error = wait_for_ready_command(
         || Command::new("/nonexistent/ruta-probe"),
-        std::process::id(),
+        leader,
+        folder.path(),
         &log,
         Duration::from_secs(5),
     )

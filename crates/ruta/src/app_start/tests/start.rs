@@ -221,3 +221,104 @@ fn start_app_fails_at_once_when_the_app_exits_while_a_probe_descendant_holds_its
         "the exit was reported after {elapsed:?}"
     );
 }
+
+#[test]
+fn start_app_accepts_a_ready_line_from_a_child_after_its_launcher_exits() {
+    crate::test_support::in_test_namespace!();
+
+    let root = temporary_sandbox_root("start-orphan-line");
+    let mut config = command_config(
+        root.path(),
+        command_line(
+            "sh",
+            &["-c", r#"(sleep 2; echo "{\"ready\":true}") & exit 0"#],
+        ),
+        command_line("true", &[]),
+        "start-orphan-line",
+    );
+    config.ready = Ready::Line;
+
+    start_app(root.path(), &config, &[], DISPLAY)
+        .expect("the child prints the ready line after its launcher exits");
+
+    assert_eq!(
+        fs::read_to_string(root.path().join("ready.json")).expect("ready record"),
+        "{\"ready\":true}\n"
+    );
+
+    stop_window(root.path()).expect("the app stops");
+    assert_eq!(
+        wait_until_gone("RUTA_TEST_APP=start-orphan-line", Duration::from_secs(2)),
+        Vec::<u32>::new()
+    );
+}
+
+#[test]
+fn start_app_accepts_a_ready_command_after_its_launcher_exits() {
+    crate::test_support::in_test_namespace!();
+
+    let root = temporary_sandbox_root("start-orphan-command");
+    let counting = r#"count=$(cat count 2>/dev/null || echo 0); count=$((count + 1)); echo "$count" > count; [ "$count" -ge "$RUTA_TEST_LIMIT" ]"#;
+    let mut config = command_config(
+        root.path(),
+        command_line("sh", &["-c", "sleep 30 & exit 0"]),
+        command_line("sh", &["-c", counting]),
+        "start-orphan-command",
+    );
+    config
+        .environment
+        .push(("RUTA_TEST_LIMIT".to_string(), "3".to_string()));
+
+    start_app(root.path(), &config, &[], DISPLAY)
+        .expect("the child keeps the app alive while the probe fails twice");
+
+    assert_eq!(
+        fs::read_to_string(root.path().join("count")).expect("the count"),
+        "3\n"
+    );
+
+    stop_window(root.path()).expect("the app stops");
+    assert_eq!(
+        wait_until_gone("RUTA_TEST_APP=start-orphan-command", Duration::from_secs(2)),
+        Vec::<u32>::new()
+    );
+}
+
+#[test]
+fn start_app_fails_when_every_app_process_exits_before_a_ready_line() {
+    crate::test_support::in_test_namespace!();
+
+    let root = temporary_sandbox_root("start-every-process-gone");
+    let mut config = command_config(
+        root.path(),
+        command_line("sh", &["-c", "(sleep 1) & exit 0"]),
+        command_line("true", &[]),
+        "start-every-process-gone",
+    );
+    config.ready = Ready::Line;
+    let started = Instant::now();
+
+    let error = start_app(root.path(), &config, &[], DISPLAY).expect_err("every app process exits");
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(
+            error.downcast_ref::<AppStartError>(),
+            Some(AppStartError::AppExited { log }) if log == &root.path().join("app.log")
+        ),
+        "unexpected error: {error:#}"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(500) && elapsed < Duration::from_secs(5),
+        "the exit was reported after {elapsed:?}"
+    );
+
+    stop_window(root.path()).expect("the app stops");
+    assert_eq!(
+        wait_until_gone(
+            "RUTA_TEST_APP=start-every-process-gone",
+            Duration::from_secs(2)
+        ),
+        Vec::<u32>::new()
+    );
+}
