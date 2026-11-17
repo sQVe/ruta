@@ -90,7 +90,13 @@ pub(crate) fn launch_child(mut arguments: Vec<String>) -> anyhow::Result<()> {
         .context("Could not start the child test app")?;
     let ruta_ready = ruta_root().map(|root| root.join("ready.json"));
 
-    wait_until_ready(&ready, &mut child, READY_TIMEOUT, ruta_ready.as_deref())?;
+    ReadyWait {
+        ready: &ready,
+        ruta_ready: ruta_ready.as_deref(),
+        timeout: READY_TIMEOUT,
+        settle: READY_SETTLE,
+    }
+    .wait(&mut child)?;
 
     fs::remove_file(&ready).with_context(|| format!("Could not remove {}", ready.display()))?;
 
@@ -111,49 +117,58 @@ fn sequence(value: Option<&String>) -> anyhow::Result<Vec<String>> {
         .collect())
 }
 
-fn wait_until_ready(
-    ready: &Path,
-    child: &mut Child,
+struct ReadyWait<'a> {
+    ready: &'a Path,
+    ruta_ready: Option<&'a Path>,
     timeout: Duration,
-    ruta_ready: Option<&Path>,
-) -> anyhow::Result<()> {
-    let deadline = Instant::now() + timeout;
-    let mut settle_deadline = None;
+    settle: Duration,
+}
 
-    loop {
-        if !ready.exists() {
-            if Instant::now() >= deadline {
-                stop_child(child)?;
+impl ReadyWait<'_> {
+    fn wait(&self, child: &mut Child) -> anyhow::Result<()> {
+        let deadline = Instant::now() + self.timeout;
+        let mut settle_deadline = None;
 
-                let mut missing = vec![ready.to_path_buf()];
-                missing.extend(
-                    ruta_ready
-                        .filter(|path| !path.exists())
-                        .map(Path::to_path_buf),
-                );
+        loop {
+            if !self.ready.exists() {
+                if Instant::now() >= deadline {
+                    stop_child(child)?;
 
-                return Err(ReadyError::Timeout { timeout, missing }.into());
+                    let mut missing = vec![self.ready.to_path_buf()];
+                    missing.extend(
+                        self.ruta_ready
+                            .filter(|path| !path.exists())
+                            .map(Path::to_path_buf),
+                    );
+
+                    return Err(ReadyError::Timeout {
+                        timeout: self.timeout,
+                        missing,
+                    }
+                    .into());
+                }
+
+                std::thread::sleep(READY_POLL);
+                continue;
+            }
+
+            let Some(ruta_ready) = self.ruta_ready else {
+                return Ok(());
+            };
+
+            if ruta_ready.exists() {
+                return Ok(());
+            }
+
+            let settle_deadline =
+                *settle_deadline.get_or_insert_with(|| Instant::now() + self.settle);
+
+            if Instant::now() >= settle_deadline {
+                return Ok(());
             }
 
             std::thread::sleep(READY_POLL);
-            continue;
         }
-
-        let Some(ruta_ready) = ruta_ready else {
-            return Ok(());
-        };
-
-        if ruta_ready.exists() {
-            return Ok(());
-        }
-
-        let settle_deadline = *settle_deadline.get_or_insert_with(|| Instant::now() + READY_SETTLE);
-
-        if Instant::now() >= settle_deadline {
-            return Ok(());
-        }
-
-        std::thread::sleep(READY_POLL);
     }
 }
 
@@ -270,8 +285,14 @@ mod tests {
             .expect("start the sleeping child");
         let timeout = Duration::from_millis(100);
 
-        let error = wait_until_ready(&ready, &mut child, timeout, None)
-            .expect_err("the child never writes its ready file");
+        let error = ReadyWait {
+            ready: &ready,
+            ruta_ready: None,
+            timeout,
+            settle: Duration::from_millis(50),
+        }
+        .wait(&mut child)
+        .expect_err("the child never writes its ready file");
         let timeout_error = error
             .downcast_ref::<ReadyError>()
             .expect("the wait reports its typed timeout error");
@@ -300,8 +321,14 @@ mod tests {
             .spawn()
             .expect("start the child that writes the ready file");
 
-        wait_until_ready(&ready, &mut child, Duration::from_secs(5), None)
-            .expect("the child writes its ready file before the timeout");
+        ReadyWait {
+            ready: &ready,
+            ruta_ready: None,
+            timeout: Duration::from_secs(5),
+            settle: Duration::from_millis(50),
+        }
+        .wait(&mut child)
+        .expect("the child writes its ready file before the timeout");
 
         assert!(
             ready.exists(),
@@ -309,6 +336,70 @@ mod tests {
         );
 
         child.wait().expect("reap the child");
+    }
+
+    #[test]
+    fn wait_returns_at_once_when_ruta_recorded_the_ready_line() {
+        crate::test_support::in_test_namespace!();
+
+        let folder = tempfile::tempdir().expect("create the temp folder");
+        let ready = folder.path().join("child-ready");
+        let ruta_ready = folder.path().join("ready.json");
+        fs::write(&ready, []).expect("write the child's ready file");
+        fs::write(&ruta_ready, []).expect("write the ruta ready record");
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("start the sleeping child");
+        let started = Instant::now();
+
+        ReadyWait {
+            ready: &ready,
+            ruta_ready: Some(&ruta_ready),
+            timeout: Duration::from_secs(5),
+            settle: Duration::from_secs(30),
+        }
+        .wait(&mut child)
+        .expect("the recorded ready line ends the wait");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the wait did not run out the settle deadline"
+        );
+
+        stop_child(&mut child).expect("stop the sleeping child");
+    }
+
+    #[test]
+    fn wait_returns_after_the_settle_when_ruta_records_no_ready_line() {
+        crate::test_support::in_test_namespace!();
+
+        let folder = tempfile::tempdir().expect("create the temp folder");
+        let ready = folder.path().join("child-ready");
+        let ruta_ready = folder.path().join("ready.json");
+        fs::write(&ready, []).expect("write the child's ready file");
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("start the sleeping child");
+        let settle = Duration::from_millis(150);
+        let started = Instant::now();
+
+        ReadyWait {
+            ready: &ready,
+            ruta_ready: Some(&ruta_ready),
+            timeout: Duration::from_secs(5),
+            settle,
+        }
+        .wait(&mut child)
+        .expect("a missing ruta record is not an error");
+
+        assert!(
+            started.elapsed() >= settle,
+            "the wait ran out the settle deadline before it returned"
+        );
+
+        stop_child(&mut child).expect("stop the sleeping child");
     }
 
     #[test]
