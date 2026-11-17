@@ -11,6 +11,19 @@ const READY_POLL: Duration = Duration::from_millis(50);
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const READY_SETTLE: Duration = Duration::from_secs(2);
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ReadyError {
+    #[error(
+        "The child test app was not ready within {} seconds; still missing {}",
+        .timeout.as_secs(),
+        display_paths(.missing)
+    )]
+    Timeout {
+        timeout: Duration,
+        missing: Vec<PathBuf>,
+    },
+}
+
 #[derive(Debug)]
 pub(crate) struct Modes {
     pub(crate) panic_after: Vec<String>,
@@ -75,8 +88,9 @@ pub(crate) fn launch_child(mut arguments: Vec<String>) -> anyhow::Result<()> {
         .arg(&ready)
         .spawn()
         .context("Could not start the child test app")?;
+    let ruta_ready = ruta_root().map(|root| root.join("ready.json"));
 
-    wait_until_ready(&ready, &mut child, READY_TIMEOUT)?;
+    wait_until_ready(&ready, &mut child, READY_TIMEOUT, ruta_ready.as_deref())?;
 
     fs::remove_file(&ready).with_context(|| format!("Could not remove {}", ready.display()))?;
 
@@ -97,9 +111,13 @@ fn sequence(value: Option<&String>) -> anyhow::Result<Vec<String>> {
         .collect())
 }
 
-fn wait_until_ready(ready: &Path, child: &mut Child, timeout: Duration) -> anyhow::Result<()> {
+fn wait_until_ready(
+    ready: &Path,
+    child: &mut Child,
+    timeout: Duration,
+    ruta_ready: Option<&Path>,
+) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
-    let ruta_ready = ruta_root().map(|root| root.join("ready.json"));
     let mut settle_deadline = None;
 
     loop {
@@ -107,18 +125,21 @@ fn wait_until_ready(ready: &Path, child: &mut Child, timeout: Duration) -> anyho
             if Instant::now() >= deadline {
                 stop_child(child)?;
 
-                anyhow::bail!(
-                    "The child test app was not ready within {} seconds; still missing {}",
-                    timeout.as_secs(),
-                    ready.display()
+                let mut missing = vec![ready.to_path_buf()];
+                missing.extend(
+                    ruta_ready
+                        .filter(|path| !path.exists())
+                        .map(Path::to_path_buf),
                 );
+
+                return Err(ReadyError::Timeout { timeout, missing }.into());
             }
 
             std::thread::sleep(READY_POLL);
             continue;
         }
 
-        let Some(ruta_ready) = ruta_ready.as_ref() else {
+        let Some(ruta_ready) = ruta_ready else {
             return Ok(());
         };
 
@@ -134,6 +155,14 @@ fn wait_until_ready(ready: &Path, child: &mut Child, timeout: Duration) -> anyho
 
         std::thread::sleep(READY_POLL);
     }
+}
+
+fn display_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn ruta_root() -> Option<PathBuf> {
@@ -239,17 +268,58 @@ mod tests {
             .arg("30")
             .spawn()
             .expect("start the sleeping child");
+        let timeout = Duration::from_millis(100);
 
-        let error = wait_until_ready(&ready, &mut child, Duration::from_millis(100))
+        let error = wait_until_ready(&ready, &mut child, timeout, None)
             .expect_err("the child never writes its ready file");
+        let timeout_error = error
+            .downcast_ref::<ReadyError>()
+            .expect("the wait reports its typed timeout error");
+        let ReadyError::Timeout {
+            timeout: reported_timeout,
+            missing,
+        } = timeout_error;
 
-        assert!(
-            error.to_string().contains(&ready.display().to_string()),
-            "{error:#}"
-        );
+        assert_eq!(*reported_timeout, timeout);
+        assert_eq!(missing, &[ready]);
         assert!(
             matches!(child.try_wait(), Ok(Some(_))),
             "the child was stopped"
         );
+    }
+
+    #[test]
+    fn wait_until_ready_returns_after_the_child_writes_its_ready_file_without_a_ruta_root() {
+        crate::test_support::in_test_namespace!();
+
+        let folder = tempfile::tempdir().expect("create the temp folder");
+        let ready = folder.path().join("child-ready");
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 0.2; : > \"$1\"", "sh"])
+            .arg(&ready)
+            .spawn()
+            .expect("start the child that writes the ready file");
+
+        wait_until_ready(&ready, &mut child, Duration::from_secs(5), None)
+            .expect("the child writes its ready file before the timeout");
+
+        assert!(
+            ready.exists(),
+            "the wait returned only after the child wrote its ready file"
+        );
+
+        child.wait().expect("reap the child");
+    }
+
+    #[test]
+    fn stop_child_returns_no_error_for_a_child_that_already_exited() {
+        crate::test_support::in_test_namespace!();
+
+        let mut child = Command::new("true")
+            .spawn()
+            .expect("start the child that exits at once");
+
+        child.wait().expect("wait for the child to exit");
+        stop_child(&mut child).expect("stopping an exited child is not an error");
     }
 }

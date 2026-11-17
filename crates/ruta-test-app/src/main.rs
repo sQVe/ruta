@@ -88,8 +88,12 @@ fn main() -> anyhow::Result<()> {
         0,
         &attributes,
     )?;
-    let gc = connection.generate_id()?;
-    connection.create_gc(gc, id, &CreateGCAux::new().foreground(screen.black_pixel))?;
+    let graphics_context = connection.generate_id()?;
+    connection.create_gc(
+        graphics_context,
+        id,
+        &CreateGCAux::new().foreground(screen.black_pixel),
+    )?;
     connection.change_property8(
         PropMode::REPLACE,
         id,
@@ -108,7 +112,7 @@ fn main() -> anyhow::Result<()> {
     connection.flush()?;
 
     wait_for_expose(&connection)?;
-    draw(&connection, id, gc)?;
+    draw(&connection, id, graphics_context)?;
     print_ready(&window)?;
 
     if let Some(path) = &modes.child_ready {
@@ -142,7 +146,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         if let Event::Expose(_) = event {
-            draw(&connection, id, gc)?;
+            draw(&connection, id, graphics_context)?;
         }
     }
 }
@@ -173,9 +177,9 @@ fn write_line(line: &str) -> anyhow::Result<()> {
 fn draw(
     connection: &impl x11rb::connection::Connection,
     window: u32,
-    gc: u32,
+    graphics_context: u32,
 ) -> anyhow::Result<()> {
-    connection.poly_fill_rectangle(window, gc, &layout::drawn_rectangles())?;
+    connection.poly_fill_rectangle(window, graphics_context, &layout::drawn_rectangles())?;
     connection.flush()?;
 
     Ok(())

@@ -788,6 +788,7 @@ dependencies = [
  "rustix",
  "serde_json",
  "tempfile",
+ "thiserror",
  "x11rb",
 ]
 

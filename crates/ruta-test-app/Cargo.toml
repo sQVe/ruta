@@ -12,6 +12,7 @@ accesskit = "0.25"
 accesskit_unix = "0.24"
 anyhow.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 x11rb = "0.14"
 
 [dev-dependencies]
