@@ -139,7 +139,8 @@ pub(crate) fn record_marked_process(
             .into());
         };
 
-        // A zombie's environment cannot be read, and ruta spawned it with the marker.
+        // A zombie's environment cannot be read. ruta has not reaped it, so the PID still names
+        // the process ruta started.
         if stat.is_zombie() {
             let identity = ProcessIdentity {
                 pid,
