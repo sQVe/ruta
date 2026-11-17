@@ -7,7 +7,9 @@ Run every command as `cd $PROJECT && RUTA_NAME=$NAME $RUTA <command>`.
 
 ## Entry points
 
-The test app logs one line per event, `ruta-test-app: <event>`. Each row lists the fields to find
+The test app logs one line per event, `ruta-test-app: <event>`. A button 1 press inside a button
+also logs `press name=<name>`, a press inside the text field logs `focus name=text`, and a
+printable key while the text field is focused logs `text <json>`. Each row lists the fields to find
 in the new lines. Every command except `hold` and `release` first logs `motion x=0 y=0`, as the
 gotchas describe. A line holds more fields than a row names: a key line also has `keycode`, and
 every line has `state`.

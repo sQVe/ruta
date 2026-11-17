@@ -77,6 +77,7 @@ jobs:
       - name: Install the build tools and the sandbox stack
         run: |
           pacman -Syu --noconfirm --needed \
+            at-spi2-core \
             base-devel \
             git \
             imagemagick \

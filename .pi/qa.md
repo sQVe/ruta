@@ -153,8 +153,8 @@ Needs a sandbox that the parent started in `$PROJECT` under `$NAME`, and a secon
 - `status` on a sandbox with no folder record: only an older release, from before the `status`
   command existed, makes such a sandbox.
 - Whether the app can open a link: the test app never opens a link itself.
-- Whether a shot pixel is the pixel that input reaches: the test app draws nothing, so a shot
-  shows no target.
+- Whether a shot pixel is the pixel that input reaches: a shot shows the four control boxes but
+  not their names.
 - Whether no link opens on the real desktop: a worker cannot watch the user's desktop.
 
 Report each of these as not verified.
