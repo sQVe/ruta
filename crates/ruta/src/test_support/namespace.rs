@@ -12,7 +12,8 @@
 // network namespace is new too, because X clients connect first to an abstract socket, which
 // belongs to the network namespace and not to `/tmp`.
 //
-// Both test crates expose this module as `crate::namespace` for the shared guard macro.
+// Every crate that includes this module mounts it at `crate::test_support::namespace` for the
+// shared guard macro.
 
 use std::path::Path;
 use std::process::Command;
@@ -24,7 +25,7 @@ const PRIVATE_TMP: &str = "/tmp";
 // runs the test in a test namespace instead.
 macro_rules! in_test_namespace {
     () => {
-        if crate::namespace::rerun_outside_test_namespace() {
+        if crate::test_support::namespace::rerun_outside_test_namespace() {
             return;
         }
     };

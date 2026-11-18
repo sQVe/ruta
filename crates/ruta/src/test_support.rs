@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command};
 use std::time::Duration;
 
+use crate::identity::ProcessIdentity;
 use crate::process::poll_until;
 
 use proptest::test_runner::{Config, RngSeed};
@@ -35,6 +36,12 @@ pub(crate) fn temporary_directory() -> TempDir {
         .prefix("unit-test-ruta-")
         .tempdir()
         .expect("create a temporary directory")
+}
+
+pub(crate) fn record_changed_start(path: &Path, pid: u32) {
+    let mut identity = ProcessIdentity::current(pid).expect("the process has a start time");
+    identity.started += 1;
+    identity.write(path).expect("write the changed record");
 }
 
 pub(crate) fn temporary_sandbox_root(label: &str) -> TempDir {

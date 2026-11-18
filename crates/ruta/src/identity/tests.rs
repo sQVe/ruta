@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use super::*;
-use crate::test_support::ChildGuard;
+use crate::test_support::{ChildGuard, record_changed_start};
 
 fn spawn_sleep() -> ChildGuard {
     ChildGuard::spawn(&mut sleep_command())
@@ -93,12 +93,6 @@ pub(crate) fn record_child(path: &Path, child: &ChildGuard) -> ProcessIdentity {
     identity.write(path).expect("write the record");
 
     identity
-}
-
-pub(crate) fn record_changed_start(path: &Path, pid: u32) {
-    let mut identity = ProcessIdentity::current(pid).expect("the process has a start time");
-    identity.started += 1;
-    identity.write(path).expect("write the changed record");
 }
 
 pub(super) fn wait_for_zombie(pid: u32, timeout: Duration) {
