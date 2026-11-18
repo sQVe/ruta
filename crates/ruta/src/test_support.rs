@@ -237,9 +237,7 @@ mod tests {
     // namespace that PID is 1, so any other value means the body ran on the host.
     #[test]
     fn a_guarded_test_runs_its_body_only_inside_the_namespace() {
-        if namespace::rerun_outside_test_namespace() {
-            return;
-        }
+        in_test_namespace!();
 
         assert!(namespace::inside_test_namespace());
 
