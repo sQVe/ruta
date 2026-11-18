@@ -11,9 +11,6 @@
 // judge by a PID that another namespace cannot see, then never cross tests or reach the host. The
 // network namespace is new too, because X clients connect first to an abstract socket, which
 // belongs to the network namespace and not to `/tmp`.
-//
-// Every crate that includes this module mounts it at `crate::test_support::namespace` for the
-// shared guard macro.
 
 use std::path::Path;
 use std::process::Command;
