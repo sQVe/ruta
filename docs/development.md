@@ -10,7 +10,9 @@
    cargo install --locked cargo-nextest cargo-deny cargo-shear cargo-mutants typos-cli taplo-cli prek
    ```
 
-3. Install the Git hooks:
+3. Install [mise](https://mise.jdx.dev), then run `mise trust` and `mise install`. `mise.toml` pins
+   the `stomme` binary that the check runs.
+4. Install the Git hooks:
 
    ```sh
    prek install
@@ -31,9 +33,11 @@ Run every check before you open a pull request:
 cargo xtask check
 ```
 
-It changes no files. It runs rustfmt, typos, taplo, cargo-deny, cargo-shear, clippy, nextest, and
-rustdoc, and reports every failed check at the end. Warnings fail clippy, the tests, and rustdoc.
-Every Cargo build runs with `--locked`, so a stale `Cargo.lock` fails too.
+It changes no files. It runs rustfmt, stomme, typos, taplo, cargo-deny, cargo-shear, clippy,
+nextest, and rustdoc, and reports every failed check at the end. Warnings fail clippy, the tests,
+and rustdoc. Every Cargo build runs with `--locked`, so a stale `Cargo.lock` fails too.
+
+After you change the version, language, or layers in `stomme.toml`, run `mise exec -- stomme sync`.
 
 `cargo xtask check tidy` runs only the checks that do not compile code. `cargo xtask check build`
 runs only the ones that do.
@@ -90,7 +94,8 @@ to `target/mutants/mutants.out`.
 `.github/workflows/ci.yml` runs on pull requests, on pushes to `main`, and weekly, so new security
 advisories fail cargo-deny without a code change.
 
-- `Check` runs `cargo xtask check tidy` on Linux.
+- `Check` runs `cargo xtask check tidy` on Linux. It installs the `mise.toml` pin and fetches the
+  full history.
 - `Test (Linux)` runs `cargo xtask check build`. ruta supports Linux only; see
   [ADR 0005](adr/0005-linux-only.md).
 - `End to end (Linux)` runs the end-to-end tests in an Arch Linux container on pull requests and

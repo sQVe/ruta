@@ -1,4 +1,3 @@
-mod adr_index;
 mod check;
 mod mutation;
 mod release;

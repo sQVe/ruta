@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-pub(crate) use crate::namespace::in_test_namespace;
+pub(crate) use crate::test_support::namespace::in_test_namespace;
 
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 pub(crate) const WINDOW_SIZE: (u32, u32) = (640, 480);

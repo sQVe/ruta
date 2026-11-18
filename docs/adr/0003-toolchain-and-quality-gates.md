@@ -58,6 +58,13 @@ PID namespace.
   before a commit.
 - `cargo xtask check` is the one entry point for the full set of checks.
 
+### Shared checks and lint policy
+
+- `cargo xtask check` also runs `stomme check` through the `mise.toml` pin. It checks
+  `stomme.toml`, the synced tree, the module table, and the shared lint policy.
+- `[workspace.lints]` keeps stomme's shared Rust levels, and ruta adds single lints beside them.
+- Stomme's Rust policy has no required clippy bans, so ruta keeps no `clippy.toml`.
+
 ### Mutation testing
 
 - cargo-mutants mutates every workspace crate. `.cargo/mutants.toml` leaves out only test code and

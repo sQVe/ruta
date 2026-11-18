@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::identity::ProcessIdentity;
-use crate::identity::tests::record_changed_start;
+use crate::test_support::record_changed_start;
 
 pub(crate) fn record_live_display(root: &Path, display: &str) {
     let identity =

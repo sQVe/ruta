@@ -1,7 +1,8 @@
 # Documentation
 
 - [Development](./development.md): local setup, verification, and releases.
-- [Rust coding guide](./coding.md): the Rust rules that change or add to Tau's coding instructions.
+- [Shared foundation](./stomme/shared/coding.md): the guides and decisions that stomme syncs.
 - [Architecture decisions](./adr/README.md): technical choices and their benefits and costs.
 
-[ADR 0001](./adr/0001-documentation-scope.md) states what belongs in this directory.
+[Shared ADR 0001](./stomme/shared/adr/0001-documentation-scope.md) states what belongs in this
+directory.

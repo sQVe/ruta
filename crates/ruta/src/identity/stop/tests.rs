@@ -3,12 +3,12 @@ use std::process::Command;
 
 use super::*;
 use crate::identity::tests::{
-    record_changed_start, record_child, spawn_exiting, spawn_ready_sleep, spawn_term_ignorer,
-    spawn_with_marker, spawn_without_marker, wait_for_child_named, wait_for_zombie,
+    record_child, spawn_exiting, spawn_ready_sleep, spawn_term_ignorer, spawn_with_marker,
+    spawn_without_marker, wait_for_child_named, wait_for_zombie,
 };
 use crate::identity::{child_pids, environment_holds_marker};
 use crate::process_stat::command_line;
-use crate::test_support::{ChildGuard, stop_process_group};
+use crate::test_support::{ChildGuard, record_changed_start, stop_process_group};
 
 mod sweep;
 
