@@ -1,0 +1,157 @@
+schema = 1
+version = "0.2.0"
+language = "rust"
+layers = []
+
+[roles]
+cli = "crates/ruta"
+
+[modules.app_start]
+entry = "crates/ruta/src/app_start.rs"
+imports = [
+  "cleanup",
+  "config",
+  "environment",
+  "identity",
+  "process",
+  "process_stat",
+  "root",
+  "test_support",
+  "tool",
+]
+
+[modules.capture]
+entry = "crates/ruta/src/capture.rs"
+imports = ["process", "root", "test_support", "tool"]
+
+[modules.cleanup]
+entry = "crates/ruta/src/cleanup.rs"
+
+[modules.command]
+entry = "crates/ruta/src/command.rs"
+imports = ["test_support"]
+
+[modules.config]
+entry = "crates/ruta/src/config.rs"
+imports = ["command", "environment", "test_support"]
+
+[modules.display]
+entry = "crates/ruta/src/display.rs"
+imports = ["cleanup", "environment", "process", "process_stat", "test_support", "tool"]
+
+[modules.display_start]
+entry = "crates/ruta/src/display_start.rs"
+imports = ["cleanup", "display", "environment", "identity", "root", "test_support"]
+
+[modules.environment]
+entry = "crates/ruta/src/environment.rs"
+imports = ["root"]
+
+[modules.identity]
+entry = "crates/ruta/src/identity.rs"
+public = ["crates/ruta/src/identity/stop.rs"]
+imports = ["cleanup", "environment", "process", "process_stat", "root", "test_support"]
+
+[modules.input]
+entry = "crates/ruta/src/input.rs"
+public = ["crates/ruta/src/input/send.rs"]
+imports = ["display", "environment", "process", "root", "test_support", "tool"]
+
+[modules.log_tail]
+entry = "crates/ruta/src/log_tail.rs"
+imports = ["test_support"]
+
+[modules.orchestration]
+entry = "crates/ruta/src/orchestration.rs"
+imports = [
+  "app_start",
+  "capture",
+  "command",
+  "config",
+  "display",
+  "display_start",
+  "environment",
+  "identity",
+  "input",
+  "log_tail",
+  "process",
+  "process_stat",
+  "root",
+  "test_support",
+  "tool",
+]
+
+[modules.process]
+entry = "crates/ruta/src/process.rs"
+imports = ["cleanup", "test_support"]
+
+[modules.process_stat]
+entry = "crates/ruta/src/process_stat.rs"
+imports = ["process", "test_support"]
+
+[modules.root]
+entry = "crates/ruta/src/root.rs"
+imports = ["process_stat", "test_support"]
+
+[modules.test_support]
+entry = "crates/ruta/src/test_support.rs"
+imports = ["cleanup", "identity", "process", "process_stat", "tool"]
+
+[modules.tool]
+entry = "crates/ruta/src/tool.rs"
+imports = ["test_support"]
+
+[[violations]]
+path = "crates/ruta"
+rule = "role-folder"
+key = "cli:ruta"
+
+[[violations]]
+path = "crates/ruta/src/display.rs"
+rule = "rust-owner-folder"
+key = "display_start.rs"
+
+[[violations]]
+path = "crates/ruta/src/app_start/tests/command.rs"
+rule = "rust-test-placement"
+key = "command.rs"
+
+[[violations]]
+path = "crates/ruta/src/app_start/tests/start.rs"
+rule = "rust-test-placement"
+key = "start.rs"
+
+[[violations]]
+path = "crates/ruta/src/capture/tests/properties.rs"
+rule = "rust-test-placement"
+key = "properties.rs"
+
+[[violations]]
+path = "crates/ruta/src/identity/stop/tests/sweep.rs"
+rule = "rust-test-placement"
+key = "sweep.rs"
+
+[[violations]]
+path = "crates/ruta/src/orchestration/tests/capture.rs"
+rule = "rust-test-placement"
+key = "capture.rs"
+
+[[violations]]
+path = "crates/ruta/src/orchestration/tests/down.rs"
+rule = "rust-test-placement"
+key = "down.rs"
+
+[[violations]]
+path = "crates/ruta/src/orchestration/tests/failed_start.rs"
+rule = "rust-test-placement"
+key = "failed_start.rs"
+
+[[violations]]
+path = "crates/ruta/src/orchestration/tests/restart.rs"
+rule = "rust-test-placement"
+key = "restart.rs"
+
+[[violations]]
+path = "crates/ruta/src/orchestration/tests/status.rs"
+rule = "rust-test-placement"
+key = "status.rs"
