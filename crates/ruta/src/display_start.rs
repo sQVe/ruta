@@ -236,7 +236,10 @@ mod tests {
         write_fake_weston(root.path());
         let lock = Path::new("/tmp/.X42-lock");
         let socket = Path::new("/tmp/.X11-unix/X42");
-        fs::write(lock, format!("{}\n", u32::MAX)).expect("write the old lock");
+        let mut dead = Command::new("true").spawn().expect("true");
+        let pid = dead.id();
+        dead.wait().expect("reap the process");
+        fs::write(lock, format!("{pid}\n")).expect("write the old lock");
         fs::write(socket, "").expect("write the old socket");
 
         let display = ensure_display("test", root.path(), &Session::Headless, (840, 680))

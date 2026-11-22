@@ -90,6 +90,7 @@ fn prepare_root_refuses_a_linked_control_folder_and_leaves_its_target() {
     fs::write(target.path().join("marker"), "keep").expect("write the marker");
     let link = root.path().join("run");
     std::os::unix::fs::symlink(target.path(), &link).expect("link the control path");
+    let before = root_entries(root.path());
 
     let error = prepare_root(root.path()).expect_err("the linked path is refused");
 
@@ -100,6 +101,7 @@ fn prepare_root_refuses_a_linked_control_folder_and_leaves_its_target() {
         ),
         "unexpected error: {error}"
     );
+    assert_eq!(root_entries(root.path()), before, "the root changed");
 
     let entries: Vec<_> = fs::read_dir(target.path())
         .expect("read the target")
@@ -145,6 +147,7 @@ fn prepare_root_refuses_a_private_folder_that_is_not_private() {
     let home = root.path().join("home");
     fs::create_dir(&home).expect("create the folder");
     fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).expect("open the folder");
+    let before = root_entries(root.path());
 
     let error = prepare_root(root.path()).expect_err("the open folder is refused");
 
@@ -156,6 +159,7 @@ fn prepare_root_refuses_a_private_folder_that_is_not_private() {
         ),
         "unexpected error: {error}"
     );
+    assert_eq!(root_entries(root.path()), before, "the root changed");
 }
 
 #[test]

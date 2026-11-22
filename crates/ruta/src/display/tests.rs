@@ -168,6 +168,20 @@ fn clean_display_files_decides_each_initial_lock_state() {
             kept: true,
         },
         LockCase {
+            name: "out-of-range lock owner",
+            prepare: |lock| {
+                fs::write(lock, format!("{}\n", u32::MAX)).expect("lock");
+            },
+            kept: true,
+        },
+        LockCase {
+            name: "non-utf8 lock",
+            prepare: |lock| {
+                fs::write(lock, [0xff, 0xfe]).expect("lock");
+            },
+            kept: true,
+        },
+        LockCase {
             name: "fifo lock",
             prepare: |lock| {
                 rustix::fs::mknodat(
@@ -210,7 +224,7 @@ fn clean_display_files_keeps_the_files_when_the_lock_cannot_be_reached() {
     }
 
     let folder = crate::test_support::temporary_directory();
-    let (lock, socket) = display_files(folder.path(), u32::MAX);
+    let (lock, socket) = display_files(folder.path(), std::process::id());
     fs::set_permissions(folder.path(), fs::Permissions::from_mode(0o600))
         .expect("close the folder");
     let mut warnings = Vec::new();
@@ -232,7 +246,10 @@ fn clean_display_files_keeps_the_files_when_the_lock_cannot_be_reached() {
 #[test]
 fn clean_display_files_removes_the_files_of_a_dead_owner() {
     let folder = crate::test_support::temporary_directory();
-    let (lock, socket) = display_files(folder.path(), u32::MAX);
+    let mut dead = Command::new("true").spawn().expect("true");
+    let pid = dead.id();
+    dead.wait().expect("reap the process");
+    let (lock, socket) = display_files(folder.path(), pid);
 
     clean_display_files_in(
         folder.path(),

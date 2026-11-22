@@ -1,8 +1,10 @@
 use std::fs;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use rustix::fs::OFlags;
 use thiserror::Error;
 
 use crate::cleanup;
@@ -188,24 +190,32 @@ enum LockOwner {
 }
 
 fn lock_owner(lock: &Path) -> LockOwner {
-    let metadata = match fs::symlink_metadata(lock) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return LockOwner::Absent,
+    // Open without following a link or blocking on a FIFO, then check the opened handle, so the
+    // type check and the read use the same object.
+    let fd = match rustix::fs::open(
+        lock,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(error) if error == rustix::io::Errno::NOENT => return LockOwner::Absent,
         Err(_) => return LockOwner::Unknown,
     };
 
-    // A FIFO would block the read forever, and a symlink's target is not the lock ruta wrote.
-    if !metadata.file_type().is_file() {
+    let is_file = rustix::fs::fstat(&fd)
+        .is_ok_and(|stat| rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file());
+
+    if !is_file {
         return LockOwner::Unknown;
     }
 
-    let contents = match fs::read_to_string(lock) {
-        Ok(contents) => contents,
-        Err(_) => return LockOwner::Unknown,
-    };
+    let mut contents = String::new();
+    if fs::File::from(fd).read_to_string(&mut contents).is_err() {
+        return LockOwner::Unknown;
+    }
 
-    match contents.trim().parse::<u32>() {
-        Ok(owner) if owner != 0 => LockOwner::Owner(owner),
+    match contents.trim().parse::<i32>() {
+        Ok(owner) if owner > 0 => LockOwner::Owner(owner.unsigned_abs()),
         _ => LockOwner::Unknown,
     }
 }

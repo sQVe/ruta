@@ -222,11 +222,11 @@ pub(crate) fn prepare_root(root: &Path) -> anyhow::Result<()> {
         }
     }
 
+    refuse_linked_paths(root)?;
+
     for path in missing {
         create_private_folder(path)?;
     }
-
-    refuse_linked_paths(root)?;
 
     Ok(())
 }
