@@ -131,8 +131,6 @@ fn run_until_with(
         Ok(())
     };
 
-    // A descendant that outlives the command can hold a pipe open. The readers stop here, so
-    // they and their buffers never outlive the operation.
     stop.store(true, Ordering::Relaxed);
     let stdout = collect(stdout_reader, &program);
     let stderr = collect(stderr_reader, &program);

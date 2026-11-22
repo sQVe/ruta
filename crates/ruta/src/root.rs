@@ -216,7 +216,6 @@ pub(crate) fn prepare_root(root: &Path) -> anyhow::Result<()> {
     let folders = PrivateFolders::under(root);
     let mut missing = Vec::new();
 
-    // Every path is checked before any is created, so a refusal leaves the root as it was.
     for path in folders.in_creation_order() {
         if private_folder_missing(path)? {
             missing.push(path);
@@ -232,8 +231,6 @@ pub(crate) fn prepare_root(root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-// A symlink is left for `refuse_linked_paths` to name, so this only refuses a path that is
-// neither a folder nor a link. It returns true when the folder is absent.
 fn private_folder_missing(path: &Path) -> anyhow::Result<bool> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -386,8 +383,6 @@ pub(crate) fn root_created(root: &Path) -> Option<u64> {
         .ok()
 }
 
-// Writes the folder record beside its final name before a start, so a blocked record fails before
-// the running app is stopped. `publish_folder` moves it into place after the new app is up.
 pub(crate) fn stage_folder(root: &Path, folder: &Path) -> anyhow::Result<PathBuf> {
     let path = root.join(record::FOLDER);
     let blocked = fs::symlink_metadata(&path)

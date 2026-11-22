@@ -113,8 +113,6 @@ fn replacement_config(folder: PathBuf) -> Config {
     config
 }
 
-// Records a display that needs no Weston or Xwayland: the fake Weston keeps a child named after
-// the display, and the fake xdotool answers the window query.
 fn record_fake_display(root: &Path) -> ChildGuard {
     let mut command = std::process::Command::new("bash");
     command.args([

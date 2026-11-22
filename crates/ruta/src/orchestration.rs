@@ -244,8 +244,6 @@ fn start_window(
     })
 }
 
-// Stages the folder record before the start, so a blocked record cannot cost the running app,
-// and publishes it only after the new app is up.
 fn start_window_with(
     root: &Path,
     folder: &Path,

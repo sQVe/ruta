@@ -30,8 +30,6 @@ pub(crate) fn warn_to(
     warn_with(&mut |warning| report_to(writer, warning), context, result)
 }
 
-// Reports an unexpected cleanup failure through `report`, which returns the failure to write the
-// warning. A caller that cannot reach stderr passes that failure on instead of panicking.
 pub(crate) fn warn_with(
     report: &mut impl FnMut(&str) -> std::io::Result<()>,
     context: &str,
@@ -55,7 +53,6 @@ fn report_to(writer: &mut impl std::io::Write, warning: &str) -> std::io::Result
     writeln!(writer, "{warning}")
 }
 
-// Keeps the error that the caller must see and adds a warning that could not be written.
 pub(crate) fn with_report_failure(
     error: anyhow::Error,
     report: std::io::Result<()>,
@@ -66,7 +63,6 @@ pub(crate) fn with_report_failure(
     }
 }
 
-// Runs every step and returns the first failure, so one failed warning write skips no step.
 pub(crate) fn first_failure(
     results: impl IntoIterator<Item = std::io::Result<()>>,
 ) -> std::io::Result<()> {

@@ -16,8 +16,6 @@ pub(crate) fn stop_window(root: &Path) -> anyhow::Result<()> {
     stop_window_with(root, stop_app_group)
 }
 
-// The group stop and the marker sweep both run: a process that left the group with `setsid` still
-// holds the root's marker. The first failure wins.
 fn stop_window_with(
     root: &Path,
     stop_group: impl FnOnce(&Path) -> anyhow::Result<()>,
@@ -107,8 +105,6 @@ fn stop_all(
     stop_all_with(members, timeout, signal_members)
 }
 
-// A failed warning write is reported after the escalation, so a broken stderr never leaves a
-// process alive when KILL would have stopped it.
 fn stop_all_with(
     members: impl Fn() -> Vec<ProcessIdentity>,
     timeout: Duration,

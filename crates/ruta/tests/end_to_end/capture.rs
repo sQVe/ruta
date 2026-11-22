@@ -93,8 +93,6 @@ fn capture_without_geometry_writes_no_crop_and_tears_down() {
     assert_gone(&sandbox.capture_root());
 }
 
-// The startup line is emitted after the app is up. A stdout write that fails must still reach
-// finish_capture, which stops the app, the fake display, and removes the capture root.
 #[test]
 fn a_failed_capture_output_still_stops_the_sandbox_and_removes_its_root() {
     in_test_namespace!();
