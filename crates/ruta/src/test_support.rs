@@ -114,15 +114,17 @@ pub(crate) fn wait_for_invalid_utf8_name(child: &ChildGuard) {
 }
 
 pub(crate) fn stop_child(child: &mut Child) {
-    crate::cleanup::stop_child_with(child, require_cleanup);
+    crate::cleanup::stop_child_with(child, require_cleanup).expect("stop and reap the child");
 }
 
-fn require_cleanup(context: &str, result: std::io::Result<()>) {
+fn require_cleanup(context: &str, result: std::io::Result<()>) -> std::io::Result<()> {
     if let Err(error) = result
         && let Some(warning) = crate::cleanup::cleanup_warning(context, &error)
     {
         panic!("{warning}");
     }
+
+    Ok(())
 }
 
 pub(crate) struct ChildGuard {
@@ -218,7 +220,20 @@ pub(crate) fn stop_process_group(child_id: u32) {
     require_cleanup(
         "stop the process group",
         crate::cleanup::stop_process_group(child_id),
-    );
+    )
+    .expect("report the process group stop");
+}
+
+pub(crate) struct FailingWriter;
+
+impl std::io::Write for FailingWriter {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    }
 }
 
 impl Drop for ChildGuard {

@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write as _;
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::os::unix::fs::{DirBuilderExt as _, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -29,8 +30,9 @@ pub(crate) mod record {
     pub(crate) const SHOT: &str = "shot.png";
     pub(crate) const CREATED: &str = "created";
     pub(crate) const FOLDER: &str = "folder";
+    pub(crate) const FOLDER_STAGED: &str = "folder.staged";
 
-    pub(crate) const ALL: [&str; 15] = [
+    pub(crate) const ALL: [&str; 16] = [
         DISPLAY,
         WESTON_PID,
         XWAYLAND_PID,
@@ -46,6 +48,7 @@ pub(crate) mod record {
         SHOT,
         CREATED,
         FOLDER,
+        FOLDER_STAGED,
     ];
 }
 
@@ -130,6 +133,11 @@ pub(crate) enum RootError {
     NotSandboxFolder { path: PathBuf },
     #[error("refusing the symlinked opener {}", path.display())]
     LinkedOpener { path: PathBuf },
+    #[error(
+        "The folder record {} is not a file; remove it and run 'ruta up' again.",
+        path.display()
+    )]
+    FolderRecordBlocked { path: PathBuf },
 }
 
 pub(crate) fn root_metadata_problem(
@@ -314,10 +322,70 @@ pub(crate) fn root_created(root: &Path) -> Option<u64> {
         .ok()
 }
 
-// The record holds the path's own bytes and nothing else, so a folder with any name reads back
-// as the same path.
-pub(crate) fn record_folder(root: &Path, folder: &Path) -> anyhow::Result<()> {
-    write_unlinked(&root.join(record::FOLDER), folder.as_os_str().as_bytes())
+// Writes the folder record beside its final name before a start, so a blocked record fails before
+// the running app is stopped. `publish_folder` moves it into place after the new app is up.
+pub(crate) fn stage_folder(root: &Path, folder: &Path) -> anyhow::Result<PathBuf> {
+    let path = root.join(record::FOLDER);
+    let blocked = fs::symlink_metadata(&path)
+        .is_ok_and(|metadata| metadata.is_dir() || metadata.file_type().is_symlink());
+
+    if blocked {
+        return Err(RootError::FolderRecordBlocked { path }.into());
+    }
+
+    let staged = root.join(record::FOLDER_STAGED);
+    write_staged(&staged, folder.as_os_str().as_bytes())?;
+
+    Ok(staged)
+}
+
+// A FIFO or another non-regular entry at the staged path must never be opened: the write would
+// wait for a reader. A fresh exclusive create keeps a file that appears after the check from
+// being followed either.
+fn write_staged(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    let blocked = fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_file());
+
+    if blocked {
+        return Err(RootError::FolderRecordBlocked {
+            path: path.to_path_buf(),
+        }
+        .into());
+    }
+
+    remove_record(path).with_context(|| format!("Could not remove {}", path.display()))?;
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("Could not write {}", path.display()))?;
+
+    file.write_all(contents)
+        .with_context(|| format!("Could not write {}", path.display()))
+}
+
+// A failed publish drops the previous record, so `status` never names the previous project for
+// the new app.
+pub(crate) fn publish_folder(root: &Path, staged: &Path) -> anyhow::Result<()> {
+    let path = root.join(record::FOLDER);
+
+    if let Err(error) = fs::rename(staged, &path) {
+        remove_record(&path)?;
+        remove_record(staged)?;
+
+        return Err(error)
+            .with_context(|| format!("Could not record the project folder in {}", path.display()));
+    }
+
+    Ok(())
+}
+
+fn remove_record(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn recorded_folder(root: &Path) -> anyhow::Result<Option<PathBuf>> {

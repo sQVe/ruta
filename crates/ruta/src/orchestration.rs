@@ -5,6 +5,7 @@ use anyhow::Context as _;
 use thiserror::Error;
 
 use crate::app_start::start_app;
+use crate::cleanup;
 use crate::command::Sandbox;
 use crate::config::Config;
 use crate::display::{Session, display_session};
@@ -13,12 +14,12 @@ use crate::display_start::{
 };
 use crate::environment::{caller_environment, sandbox_environment};
 use crate::identity::stop::{stop_recorded, stop_window};
-use crate::identity::{RECORD_TIMEOUT, record_xwayland};
+use crate::identity::{IdentityError, RECORD_TIMEOUT, record_matches, record_xwayland};
 use crate::input::{focus_window, send, window_exists, window_id};
 use crate::log_tail::last_lines;
 use crate::root::{
-    install_openers, prepare_root, record_folder, record_root_creation, remove_root,
-    require_trusted_root, root_path,
+    install_openers, prepare_root, record, record_root_creation, remove_root, require_trusted_root,
+    root_path,
 };
 use crate::tool::{Tool, require_program};
 
@@ -35,7 +36,7 @@ const DISPLAY_MARGIN: u32 = 200;
 pub(crate) fn execute(
     config: &Config,
     command: Sandbox,
-    emit: &mut impl FnMut(&str),
+    emit: &mut impl FnMut(&str) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let name = &config.name;
     let root = root_path(name);
@@ -87,7 +88,7 @@ pub(crate) fn execute(
     }?;
 
     if !output.is_empty() {
-        emit(&output);
+        emit(&output)?;
     }
 
     Ok(())
@@ -98,7 +99,7 @@ fn capture(
     root: &Path,
     out: &Path,
     arguments: &[String],
-    emit: &mut impl FnMut(&str),
+    emit: &mut impl FnMut(&str) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let name = format!("{}-capture", config.name);
 
@@ -112,7 +113,7 @@ fn capture_inner(
     root: &Path,
     out: &Path,
     arguments: &[String],
-    emit: &mut impl FnMut(&str),
+    emit: &mut impl FnMut(&str) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     record_root_creation(root)?;
     prepare_capture_folder(out)?;
@@ -126,7 +127,7 @@ fn capture_inner(
 
     let output = start_window(config, root, arguments, &Session::Headless)?;
 
-    emit(&output);
+    emit(&output)?;
 
     capture_window(&config.name, root, out)
 }
@@ -238,14 +239,27 @@ fn start_window(
     arguments: &[String],
     session: &Session,
 ) -> anyhow::Result<String> {
-    start_sandbox(config, root, arguments, session)
-        .map_err(|error| failed_start(root, error, stop_target))
+    start_window_with(root, &config.folder, || {
+        start_sandbox(config, root, arguments, session)
+    })
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "a cleanup failure after a failed start must not hide the start error"
-)]
+// Stages the folder record before the start, so a blocked record cannot cost the running app,
+// and publishes it only after the new app is up.
+fn start_window_with(
+    root: &Path,
+    folder: &Path,
+    start: impl FnOnce() -> anyhow::Result<String>,
+) -> anyhow::Result<String> {
+    prepare_root(root)?;
+    let staged = crate::root::stage_folder(root, folder)?;
+    let output = start().map_err(|error| failed_start(root, error, stop_target))?;
+
+    crate::root::publish_folder(root, &staged)?;
+
+    Ok(output)
+}
+
 fn failed_start<F>(root: &Path, error: anyhow::Error, stop: F) -> anyhow::Error
 where
     F: FnMut(&Path, StopTarget) -> anyhow::Result<()>,
@@ -257,8 +271,12 @@ where
         Err(_) => Vec::new(),
     };
 
-    if let Err(cleanup_error) = cleanup(root, stop) {
-        eprintln!("Could not clean up after the failed start: {cleanup_error:#}");
+    if let Err(cleanup_error) = cleanup(root, stop, cleanup::report) {
+        let warning = format!("Could not clean up after the failed start: {cleanup_error:#}");
+
+        if let Err(report_error) = cleanup::report(&warning) {
+            return cleanup::with_report_failure(error, Err(report_error));
+        }
     }
 
     if log_tail.is_empty() {
@@ -278,7 +296,6 @@ fn start_sandbox(
     let size = (config.app.width, config.app.height);
 
     prepare_root(root)?;
-    record_folder(root, &config.folder)?;
     stop_window(root)?;
 
     let display = ensure_display(name, root, session, display_size(size))?;
@@ -408,7 +425,7 @@ fn down(name: &str, root: &Path) -> anyhow::Result<String> {
         return Ok(format!("ruta {name} is not up\n"));
     }
 
-    cleanup(root, stop_target)?;
+    cleanup(root, stop_target, cleanup::report)?;
 
     Ok(format!("ruta {name} is gone\n"))
 }
@@ -428,22 +445,60 @@ fn stop_target(root: &Path, target: StopTarget) -> anyhow::Result<()> {
     }
 }
 
-fn cleanup<F>(root: &Path, mut stop: F) -> anyhow::Result<()>
+fn cleanup<F, R>(root: &Path, mut stop: F, mut report: R) -> anyhow::Result<()>
 where
     F: FnMut(&Path, StopTarget) -> anyhow::Result<()>,
+    R: FnMut(&str) -> std::io::Result<()>,
 {
     require_trusted_root(root)?;
 
+    let mut failure: Option<anyhow::Error> = None;
+
     for target in [StopTarget::Window, StopTarget::Xwayland, StopTarget::Weston] {
-        stop(root, target)?;
-    }
-    clean_recorded_display_files(root);
-
-    if root.exists() {
-        remove_root(root)?;
+        if let Err(error) = stop(root, target) {
+            failure.get_or_insert(error);
+        }
     }
 
-    Ok(())
+    // A report failure and a failed record unlink leave no process alive, so only a survivor or a
+    // live record keeps the root and its display files.
+    let xwayland_alive = record_matches(&root.join(crate::root::record::XWAYLAND_PID));
+    let all_stopped = !survivor(&failure) && !recorded_process_alive(root);
+
+    if !xwayland_alive && let Err(error) = clean_recorded_display_files(root, &mut report) {
+        failure.get_or_insert(error.into());
+    }
+
+    let removed = if all_stopped && root.exists() {
+        remove_root(root)
+    } else {
+        Ok(())
+    };
+
+    match (failure, removed) {
+        (Some(error), Err(remove_error)) => {
+            Err(error.context(format!("Could not remove the root: {remove_error:#}")))
+        }
+        (Some(error), Ok(())) => Err(error),
+        (None, removed) => removed,
+    }
+}
+
+fn survivor(failure: &Option<anyhow::Error>) -> bool {
+    failure.as_ref().is_some_and(|error| {
+        error.chain().any(|cause| {
+            matches!(
+                cause.downcast_ref::<IdentityError>(),
+                Some(IdentityError::DidNotStop { .. })
+            )
+        })
+    })
+}
+
+fn recorded_process_alive(root: &Path) -> bool {
+    [record::PID, record::XWAYLAND_PID, record::WESTON_PID]
+        .into_iter()
+        .any(|name| record_matches(&root.join(name)))
 }
 
 #[cfg(test)]

@@ -25,7 +25,7 @@ where
 
     let result = body();
 
-    finish_capture(root, result, stop_target)
+    finish_capture(root, result, stop_target, cleanup::report)
 }
 
 pub(super) fn refuse_capture_output_in_root(root: &Path, out: &Path) -> anyhow::Result<()> {
@@ -63,23 +63,25 @@ fn lexical_absolute_path(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(normalized)
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "cleanup must not hide the capture error"
-)]
-pub(super) fn finish_capture<F>(
+pub(super) fn finish_capture<F, R>(
     root: &Path,
     captured: anyhow::Result<()>,
     stop: F,
+    mut report: R,
 ) -> anyhow::Result<()>
 where
     F: FnMut(&Path, StopTarget) -> anyhow::Result<()>,
+    R: FnMut(&str) -> std::io::Result<()>,
 {
-    let cleaned = cleanup(root, stop);
+    let cleaned = cleanup(root, stop, &mut report);
 
     if let Err(error) = captured {
         if let Err(cleanup_error) = cleaned {
-            eprintln!("Could not clean up after capture: {cleanup_error:#}");
+            let warning = format!("Could not clean up after capture: {cleanup_error:#}");
+
+            if let Err(report_error) = report(&warning) {
+                return Err(cleanup::with_report_failure(error, Err(report_error)));
+            }
         }
 
         return Err(error);

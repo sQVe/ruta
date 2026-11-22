@@ -125,21 +125,33 @@ pub(crate) fn weston_command(
     command
 }
 
-pub(crate) fn clean_display_files(display: &str) {
-    clean_display_files_in(Path::new("/tmp"), display, DISPLAY_CLEANUP_TIMEOUT);
+pub(crate) fn clean_display_files(display: &str) -> std::io::Result<()> {
+    clean_display_files_with(display, &mut cleanup::report)
+}
+
+pub(crate) fn clean_display_files_with(
+    display: &str,
+    report: &mut impl FnMut(&str) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    clean_display_files_in(Path::new("/tmp"), display, DISPLAY_CLEANUP_TIMEOUT, report)
 }
 
 pub(crate) fn is_decimal(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
 }
 
-fn clean_display_files_in(folder: &Path, display: &str, timeout: Duration) {
+fn clean_display_files_in(
+    folder: &Path,
+    display: &str,
+    timeout: Duration,
+    report: &mut impl FnMut(&str) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let Some(number) = display.strip_prefix(':') else {
-        return;
+        return Ok(());
     };
 
     if !is_decimal(number) {
-        return;
+        return Ok(());
     }
 
     let lock = folder.join(format!(".X{number}-lock"));
@@ -151,16 +163,15 @@ fn clean_display_files_in(folder: &Path, display: &str, timeout: Duration) {
             .expect("the wait for the lock owner cannot fail");
 
         if stopped.is_none() {
-            return;
+            return Ok(());
         }
     }
 
     if lock_owner(&lock) != owner {
-        return;
+        return Ok(());
     }
 
-    cleanup::remove_file(&lock);
-    cleanup::remove_file(&socket);
+    cleanup::remove_file_with(report, &lock).and(cleanup::remove_file_with(report, &socket))
 }
 
 fn lock_owner(lock: &Path) -> Option<u32> {

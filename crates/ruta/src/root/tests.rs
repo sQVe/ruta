@@ -369,6 +369,7 @@ fn linked_paths_lists_control_files() {
         "shot.png",
         "created",
         "folder",
+        "folder.staged",
         "run",
         "config",
         "state",
@@ -446,7 +447,8 @@ fn recorded_folder_returns_the_exact_folder_that_was_recorded() {
     let root = crate::test_support::temporary_directory();
 
     for folder in ["/home/user/project", "/odd/ name \n", "/trailing/newline\n"] {
-        record_folder(root.path(), Path::new(folder)).expect("the folder is recorded");
+        let staged = stage_folder(root.path(), Path::new(folder)).expect("the folder is staged");
+        publish_folder(root.path(), &staged).expect("the folder is published");
 
         assert_eq!(
             recorded_folder(root.path()).expect("the record is read"),
@@ -454,6 +456,32 @@ fn recorded_folder_returns_the_exact_folder_that_was_recorded() {
             "{folder:?}"
         );
     }
+}
+
+#[test]
+fn stage_folder_refuses_a_fifo_at_the_staged_path() {
+    let root = crate::test_support::temporary_directory();
+    let staged = root.path().join("folder.staged");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &staged,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .expect("make the fifo");
+
+    let error =
+        stage_folder(root.path(), Path::new("/project")).expect_err("the fifo is not opened");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<RootError>(),
+            Some(RootError::FolderRecordBlocked { path }) if path == &staged
+        ),
+        "unexpected error: {error}"
+    );
+    assert!(staged.exists(), "the fifo is left for the user to remove");
 }
 
 #[test]
@@ -476,7 +504,7 @@ fn recorded_folder_is_none_without_a_record_and_fails_on_an_unreadable_one() {
 }
 
 #[test]
-fn record_folder_refuses_a_symlink_and_leaves_its_target() {
+fn stage_folder_refuses_a_symlink_and_leaves_its_target() {
     let root = crate::test_support::temporary_directory();
     let target = crate::test_support::temporary_directory();
     let marker = target.path().join("marker");
@@ -484,16 +512,17 @@ fn record_folder_refuses_a_symlink_and_leaves_its_target() {
     let link = root.path().join("folder");
     std::os::unix::fs::symlink(&marker, &link).expect("link the record");
 
-    let error = record_folder(root.path(), Path::new("/project")).expect_err("the link is refused");
+    let error = stage_folder(root.path(), Path::new("/project")).expect_err("the link is refused");
 
     assert!(
         matches!(
             error.downcast_ref::<RootError>(),
-            Some(RootError::LinkedPath { path }) if path == &link
+            Some(RootError::FolderRecordBlocked { path }) if path == &link
         ),
         "unexpected error: {error}"
     );
     assert_eq!(fs::read_to_string(&marker).expect("the marker"), "keep");
+    assert!(!root.path().join("folder.staged").exists());
 }
 
 #[test]

@@ -21,23 +21,26 @@ use std::process::ExitCode;
 
 use anyhow::Context as _;
 
-#[expect(
-    clippy::print_stderr,
-    reason = "usage and failure messages are the command's output"
-)]
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("{error:#}");
-            ExitCode::FAILURE
-        }
+        Err(error) => failure(&error),
+    }
+}
+
+fn failure(error: &anyhow::Error) -> ExitCode {
+    let warning = format!("{error:#}");
+
+    match cleanup::report(&warning) {
+        Ok(()) => ExitCode::FAILURE,
+        // A broken stderr has no stream left to report the write on; the exit status still fails.
+        Err(_) => ExitCode::FAILURE,
     }
 }
 
 #[expect(
     clippy::print_stdout,
-    reason = "main owns command output, including capture startup progress"
+    reason = "the guide and version lines are the command's output"
 )]
 fn run() -> anyhow::Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -55,9 +58,18 @@ fn run() -> anyhow::Result<()> {
         command::Command::Sandbox(command) => command,
     };
     let config = load_config()?;
+    let mut stdout = std::io::stdout().lock();
 
-    // Capture's startup line needs its newline so stdout flushes before capture continues.
-    orchestration::execute(&config, command, &mut |text| print!("{text}"))
+    orchestration::execute(&config, command, &mut |text| {
+        write_output(&mut stdout, text)
+    })
+}
+
+fn write_output(writer: &mut impl std::io::Write, text: &str) -> anyhow::Result<()> {
+    writer
+        .write_all(text.as_bytes())
+        .and_then(|()| writer.flush())
+        .context("Could not write the output")
 }
 
 fn load_config() -> anyhow::Result<config::Config> {
@@ -70,6 +82,14 @@ fn load_config() -> anyhow::Result<config::Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_output_write_is_an_error() {
+        let error = write_output(&mut crate::test_support::FailingWriter, "ruta test is up\n")
+            .expect_err("the output cannot be written");
+
+        assert_eq!(error.to_string(), "Could not write the output");
+    }
 
     #[test]
     fn alternate_error_format_keeps_every_parse_error_text() {

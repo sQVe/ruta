@@ -43,8 +43,10 @@ pub(crate) fn start_app(
 
     let log_path = root.join(crate::root::record::APP_LOG);
     let ready_path = root.join(crate::root::record::READY);
-    cleanup::remove_file(&log_path);
-    cleanup::remove_file(&ready_path);
+    cleanup::first_failure([
+        cleanup::remove_file(&log_path),
+        cleanup::remove_file(&ready_path),
+    ])?;
     let log = File::create(&log_path)
         .with_context(|| format!("Could not create {}", log_path.display()))?;
     let environment = app_environment(&caller_environment(), root, display, &config.environment);
@@ -137,16 +139,16 @@ fn record_spawned_child(
             // The app may have printed its last line before it exited, so keep the output that is
             // already in the pipe. A process outside the group can still hold the pipe open.
             let stdout = child.stdout.take();
-            cleanup::stop_child_group(child);
-
-            if let Some(stdout) = stdout {
-                cleanup::warn(
+            let stopped = cleanup::stop_child_group(child);
+            let copied = match stdout {
+                Some(stdout) => cleanup::warn(
                     "copy the app's output to its log",
                     drain_stdout(stdout, log, DRAIN_LIMIT),
-                );
-            }
+                ),
+                None => Ok(()),
+            };
 
-            return Err(error);
+            return Err(cleanup::with_report_failure(error, stopped.and(copied)));
         }
     };
 

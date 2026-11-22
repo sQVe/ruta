@@ -20,22 +20,23 @@ pub(crate) fn ensure_display(
 ) -> anyhow::Result<String> {
     let mode = session.mode();
 
-    if let Some(display) = display_up(root) {
-        if records_match(root, mode, size) {
-            return Ok(display);
-        }
-
-        stop_recorded(&root.join(record::WESTON_PID))?;
-        display::clean_display_files(&display);
+    if let Some(display) = display_up(root)
+        && records_match(root, mode, size)
+    {
+        return Ok(display);
     }
+
+    stop_unusable_display(root)?;
 
     prepare_root(root)?;
 
     let log = root.join(record::WESTON_LOG);
-    cleanup::remove_file(&log);
-    cleanup::remove_file(&root.join(record::DISPLAY));
-    cleanup::remove_file(&root.join(record::SIZE));
-    cleanup::remove_file(&root.join(record::XWAYLAND_PID));
+    cleanup::first_failure([
+        cleanup::remove_file(&log),
+        cleanup::remove_file(&root.join(record::DISPLAY)),
+        cleanup::remove_file(&root.join(record::SIZE)),
+        cleanup::remove_file(&root.join(record::XWAYLAND_PID)),
+    ])?;
 
     let environment = session.environment(&caller_environment(), root);
     let command = display::weston_command(session, &socket_name(name), size, &log, &environment);
@@ -45,6 +46,20 @@ pub(crate) fn ensure_display(
     write_display_records(root, &display, mode, size)?;
 
     Ok(display)
+}
+
+// A recorded Weston is stopped even when no usable display record names it: the new Weston would
+// overwrite its PID record and leave it running.
+fn stop_unusable_display(root: &Path) -> anyhow::Result<()> {
+    let display = display_up(root);
+
+    stop_recorded(&root.join(record::WESTON_PID))?;
+
+    if let Some(display) = display {
+        display::clean_display_files(&display)?;
+    }
+
+    Ok(())
 }
 
 #[mutants::skip]
@@ -64,8 +79,9 @@ fn spawn_weston(mut command: Command, root: &Path) -> anyhow::Result<()> {
         "weston",
         RECORD_TIMEOUT,
     ) {
-        cleanup::stop_child_group(&mut child);
-        return Err(error);
+        let stopped = cleanup::stop_child_group(&mut child);
+
+        return Err(cleanup::with_report_failure(error, stopped));
     }
 
     drop(child);
@@ -131,16 +147,152 @@ fn recorded_display(root: &Path) -> Option<String> {
         .map(|display| display.trim().to_string())
 }
 
-pub(crate) fn clean_recorded_display_files(root: &Path) {
-    if let Some(display) = recorded_display(root) {
-        display::clean_display_files(&display);
+pub(crate) fn clean_recorded_display_files(
+    root: &Path,
+    report: &mut impl FnMut(&str) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match recorded_display(root) {
+        Some(display) => display::clean_display_files_with(&display, report),
+        None => Ok(()),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::time::Duration;
+
     use super::*;
-    use crate::test_support::display::{record_live_display, stale_display_cases};
+    use crate::identity::tests::{record_child, spawn_ready_sleep};
+    use crate::test_support::display::{
+        record_display_settings, record_live_display, stale_display_cases,
+    };
+
+    #[test]
+    fn ensure_display_stops_a_recorded_weston_without_a_display_record() {
+        crate::test_support::in_test_namespace!();
+
+        let root = crate::test_support::temporary_sandbox_root("display-orphan");
+        let mut recorded = spawn_ready_sleep();
+        record_child(&root.path().join("weston.pid"), &recorded);
+        remember_old_process(root.path(), recorded.id());
+        write_fake_weston(root.path());
+
+        let display = ensure_display("test", root.path(), &Session::Headless, (840, 680))
+            .expect("the display starts");
+
+        assert_eq!(display, ":9");
+        assert_eq!(
+            fs::read_to_string(root.path().join("old.state"))
+                .expect("the fake Weston saw the old process"),
+            "stopped\n",
+            "the recorded Weston is stopped before the new one starts"
+        );
+        assert!(
+            recorded.wait_for_exit(Duration::from_secs(2)),
+            "the recorded Weston is stopped"
+        );
+        assert!(
+            record_matches(&root.path().join("weston.pid")),
+            "the new Weston is recorded"
+        );
+
+        stop_recorded(&root.path().join("weston.pid")).expect("stop the fake Weston");
+    }
+
+    #[test]
+    fn ensure_display_reuses_a_matching_display() {
+        crate::test_support::in_test_namespace!();
+
+        let root = crate::test_support::temporary_sandbox_root("display-reuse");
+        let mut recorded = spawn_ready_sleep();
+        record_child(&root.path().join("weston.pid"), &recorded);
+        fs::write(root.path().join("display"), ":7\n").expect("write the display");
+        record_display_settings(root.path(), "headless", (840, 680));
+        remember_old_process(root.path(), recorded.id());
+        write_fake_weston(root.path());
+
+        let display = ensure_display("test", root.path(), &Session::Headless, (840, 680))
+            .expect("the display is reused");
+
+        assert_eq!(display, ":7");
+        assert!(recorded.is_running(), "the recorded Weston is reused");
+        assert!(
+            !root.path().join("old.state").exists(),
+            "no new Weston is started"
+        );
+    }
+
+    #[test]
+    fn ensure_display_replaces_a_display_with_another_size() {
+        crate::test_support::in_test_namespace!();
+
+        let root = crate::test_support::temporary_sandbox_root("display-changed");
+        let mut recorded = spawn_ready_sleep();
+        record_child(&root.path().join("weston.pid"), &recorded);
+        fs::write(root.path().join("display"), ":42\n").expect("write the display");
+        record_display_settings(root.path(), "headless", (640, 680));
+        remember_old_process(root.path(), recorded.id());
+        write_fake_weston(root.path());
+        let lock = Path::new("/tmp/.X42-lock");
+        let socket = Path::new("/tmp/.X11-unix/X42");
+        fs::write(lock, format!("{}\n", u32::MAX)).expect("write the old lock");
+        fs::write(socket, "").expect("write the old socket");
+
+        let display = ensure_display("test", root.path(), &Session::Headless, (840, 680))
+            .expect("the display is replaced");
+
+        assert_eq!(display, ":9");
+        assert_eq!(
+            fs::read_to_string(root.path().join("old.state"))
+                .expect("the fake Weston saw the old process"),
+            "stopped\n",
+            "the recorded Weston is stopped before the new one starts"
+        );
+        assert!(!lock.exists(), "the old lock is removed");
+        assert!(!socket.exists(), "the old socket is removed");
+        assert!(
+            recorded.wait_for_exit(Duration::from_secs(2)),
+            "the recorded Weston is stopped"
+        );
+
+        stop_recorded(&root.path().join("weston.pid")).expect("stop the fake Weston");
+    }
+
+    fn remember_old_process(root: &Path, pid: u32) {
+        fs::write(root.join("old.pid"), pid.to_string()).expect("write the old PID");
+    }
+
+    fn write_fake_weston(root: &Path) {
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).expect("create the bin folder");
+        let weston = bin.join("weston");
+        fs::write(
+            &weston,
+            r#"#!/bin/bash
+for argument in "$@"; do
+  case "$argument" in
+    --log=*) log="${argument#--log=}" ;;
+  esac
+done
+root="$(dirname "$log")"
+if [ -f "$root/old.pid" ]; then
+  pid="$(cat "$root/old.pid")"
+  state="$(cut -d' ' -f3 "/proc/$pid/stat" 2>/dev/null)"
+  if [ -n "$state" ] && [ "$state" != "Z" ]; then
+    printf 'alive\n' > "$root/old.state"
+  else
+    printf 'stopped\n' > "$root/old.state"
+  fi
+fi
+printf 'xserver listening on display :9\n' > "$log"
+exec -a ruta-fake-weston sleep 30
+"#,
+        )
+        .expect("write the fake weston");
+        fs::set_permissions(&weston, fs::Permissions::from_mode(0o755))
+            .expect("make the fake weston runnable");
+    }
 
     #[test]
     fn display_up_returns_the_display_of_a_live_record() {

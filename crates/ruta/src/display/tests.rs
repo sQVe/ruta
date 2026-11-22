@@ -116,7 +116,13 @@ fn clean_display_files_removes_the_files_of_a_dead_owner() {
     let folder = crate::test_support::temporary_directory();
     let (lock, socket) = display_files(folder.path(), u32::MAX);
 
-    clean_display_files_in(folder.path(), ":7", Duration::from_secs(1));
+    clean_display_files_in(
+        folder.path(),
+        ":7",
+        Duration::from_secs(1),
+        &mut cleanup::report,
+    )
+    .expect("clean the display files");
 
     assert!(!lock.exists());
     assert!(!socket.exists());
@@ -127,7 +133,8 @@ fn clean_display_files_keeps_the_files_of_a_live_owner() {
     let folder = crate::test_support::temporary_directory();
     let (lock, socket) = display_files(folder.path(), std::process::id());
 
-    clean_display_files_in(folder.path(), ":7", Duration::ZERO);
+    clean_display_files_in(folder.path(), ":7", Duration::ZERO, &mut cleanup::report)
+        .expect("clean the display files");
 
     assert!(lock.exists());
     assert!(socket.exists());
@@ -147,7 +154,13 @@ fn clean_display_files_keeps_the_files_of_a_new_owner() {
         crate::test_support::stop_child(&mut dying);
     });
 
-    clean_display_files_in(folder.path(), ":7", Duration::from_secs(10));
+    clean_display_files_in(
+        folder.path(),
+        ":7",
+        Duration::from_secs(10),
+        &mut cleanup::report,
+    )
+    .expect("clean the display files");
     new_owner.join().expect("new owner thread");
 
     assert!(lock.exists());
@@ -159,7 +172,8 @@ fn clean_display_files_ignores_a_display_that_is_not_a_number() {
     let folder = crate::test_support::temporary_directory();
     let (lock, socket) = display_files(folder.path(), u32::MAX);
 
-    clean_display_files_in(folder.path(), ":7x", Duration::ZERO);
+    clean_display_files_in(folder.path(), ":7x", Duration::ZERO, &mut cleanup::report)
+        .expect("clean the display files");
 
     assert!(lock.exists());
     assert!(socket.exists());
@@ -170,7 +184,8 @@ fn clean_display_files_ignores_a_display_without_a_number() {
     let folder = crate::test_support::temporary_directory();
     let (lock, socket) = display_files_for(folder.path(), "", u32::MAX);
 
-    clean_display_files_in(folder.path(), ":", Duration::ZERO);
+    clean_display_files_in(folder.path(), ":", Duration::ZERO, &mut cleanup::report)
+        .expect("clean the display files");
 
     assert!(lock.exists());
     assert!(socket.exists());
@@ -188,7 +203,13 @@ fn clean_display_files_waits_for_an_owner_that_exits_later() {
         crate::test_support::stop_child(&mut owner);
     });
 
-    clean_display_files_in(folder.path(), ":7", Duration::from_secs(10));
+    clean_display_files_in(
+        folder.path(),
+        ":7",
+        Duration::from_secs(10),
+        &mut cleanup::report,
+    )
+    .expect("clean the display files");
     exit.join().expect("owner thread");
 
     assert!(!lock.exists());

@@ -1,3 +1,4 @@
+use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ use crate::identity::tests::{
     record_child, spawn_ready_sleep, spawn_with_marker, spawn_without_marker,
 };
 use crate::root::{RootError, RootReason};
+use crate::test_support::ChildGuard;
 use crate::test_support::display::{
     record_display_settings, record_live_display, stale_display_cases,
 };
@@ -20,9 +22,13 @@ mod failed_start;
 mod restart;
 mod status;
 
-#[derive(Debug, Error)]
-#[error("the process will not stop")]
-struct WillNotStop;
+fn will_not_stop(root: &Path) -> anyhow::Error {
+    crate::identity::IdentityError::DidNotStop {
+        pid: 42,
+        path: root.to_path_buf(),
+    }
+    .into()
+}
 
 fn test_config(name: &str) -> Config {
     Config {
@@ -43,6 +49,124 @@ fn test_config(name: &str) -> Config {
 }
 
 #[test]
+fn a_blocked_folder_record_keeps_the_running_app() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("folder-blocked");
+    let _weston = record_fake_display(root.path());
+    let mut app = spawn_with_marker(root.path());
+    record_child(&root.path().join("pid"), &app);
+    fs::create_dir(root.path().join("folder")).expect("block the folder record");
+    let project = crate::test_support::temporary_directory();
+    let config = replacement_config(project.path().to_path_buf());
+
+    let error = start_window(&config, root.path(), &[], &Session::Headless)
+        .expect_err("the folder record is blocked");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::root::RootError>(),
+            Some(crate::root::RootError::FolderRecordBlocked { path })
+                if path == &root.path().join("folder")
+        ),
+        "unexpected error: {error:#}"
+    );
+    assert!(app.is_running(), "the running app keeps running");
+    assert!(root.path().is_dir(), "the sandbox root stays");
+    assert!(
+        root.path().join("folder").is_dir(),
+        "the blocked record stays a folder"
+    );
+}
+
+#[test]
+fn a_successful_start_records_the_folder_for_status() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("start-folder-status");
+    let _weston = record_fake_display(root.path());
+    let folder = root.path().join("project of\nthe sandbox");
+    fs::create_dir(&folder).expect("create the project folder");
+    let config = replacement_config(folder.clone());
+
+    start_window(&config, root.path(), &[], &Session::Headless).expect("the start succeeds");
+
+    assert_eq!(
+        crate::orchestration::status::status(&config, root.path(), window_exists)
+            .expect("the sandbox is up"),
+        format!("ruta test is up and serves {}\n", folder.display())
+    );
+}
+
+fn replacement_config(folder: PathBuf) -> Config {
+    let mut config = test_config("test");
+    config.folder = folder;
+    config.app.command = CommandLine {
+        program: PathBuf::from("/bin/sh"),
+        arguments: strings(&["-c", "sleep 30"]),
+    };
+    config.ready = Ready::Command(CommandLine {
+        program: PathBuf::from("true"),
+        arguments: Vec::new(),
+    });
+
+    config
+}
+
+// Records a display that needs no Weston or Xwayland: the fake Weston keeps a child named after
+// the display, and the fake xdotool answers the window query.
+fn record_fake_display(root: &Path) -> ChildGuard {
+    let mut command = std::process::Command::new("bash");
+    command.args([
+        "-c",
+        "bash -c 'exec -a \"Xwayland :7\" sleep 30' & exec -a ruta-fake-weston sleep 30",
+    ]);
+    let weston = ChildGuard::spawn_group(&mut command);
+    record_child(&root.join("weston.pid"), &weston);
+    fs::write(root.join("display"), ":7\n").expect("write the display");
+    record_display_settings(root, "headless", display_size((640, 480)));
+    write_fake_xdotool(root);
+
+    weston
+}
+
+fn write_fake_xdotool(root: &Path) {
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).expect("create the bin folder");
+    let xdotool = bin.join("xdotool");
+    fs::write(
+        &xdotool,
+        "#!/bin/sh\ncase \"$1\" in\n  search) printf '12345\\n' ;;\n  getwindowgeometry) printf 'WINDOW=12345\\nX=0\\nY=0\\nWIDTH=640\\nHEIGHT=480\\nSCREEN=0\\n' ;;\nesac\nexit 0\n",
+    )
+    .expect("write the fake xdotool");
+    fs::set_permissions(&xdotool, fs::Permissions::from_mode(0o755))
+        .expect("make the fake xdotool runnable");
+}
+
+#[test]
+fn a_failed_capture_output_still_removes_the_capture_root() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("capture-output-write");
+    fs::remove_dir(root.path()).expect("capture creates its own root");
+    let out = crate::test_support::temporary_directory();
+    let mut stdout = crate::test_support::FailingWriter;
+
+    let error = run_one_shot(root.path(), "test", out.path(), || {
+        stdout
+            .write_all(b"ruta test is up on :9\n")
+            .context("Could not write the output")
+    })
+    .expect_err("the output cannot be written");
+
+    assert_eq!(error.to_string(), "Could not write the output");
+    assert!(
+        !root.path().exists(),
+        "finish_capture removes the capture root"
+    );
+}
+
+#[test]
 fn failed_capture_stops_every_target_and_returns_capture_error() {
     let root = crate::test_support::temporary_sandbox_root("capture-failed");
     let mut visited = Vec::new();
@@ -56,6 +180,7 @@ fn failed_capture_stops_every_target_and_returns_capture_error() {
             visited.push((root.to_path_buf(), target));
             Ok(())
         },
+        |_| Ok(()),
     )
     .expect_err("capture fails");
 
@@ -83,7 +208,7 @@ fn capture_refuses_an_existing_root_before_starting() {
         root.path(),
         out.path(),
         &[],
-        &mut |_| {},
+        &mut |_| Ok(()),
     )
     .expect_err("existing capture root is refused");
 
@@ -101,33 +226,176 @@ fn capture_refuses_an_existing_root_before_starting() {
 }
 
 #[test]
-fn cleanup_keeps_the_root_when_a_recorded_process_will_not_stop() {
+fn cleanup_attempts_every_stop_and_keeps_the_root_when_one_fails() {
     for failing in 0..3 {
         let root = crate::test_support::temporary_sandbox_root("will-not-stop");
         let mut visited = Vec::new();
 
-        let error = cleanup(root.path(), |_, target| {
-            visited.push(target);
+        let error = cleanup(
+            root.path(),
+            |root, target| {
+                visited.push(target);
 
-            if visited.len() == failing + 1 {
-                return Err(WillNotStop.into());
-            }
+                if visited.len() == failing + 1 {
+                    return Err(will_not_stop(root));
+                }
 
-            Ok(())
-        })
+                Ok(())
+            },
+            |_| Ok(()),
+        )
         .expect_err("a failed stop fails the cleanup");
 
         assert!(
-            error.downcast_ref::<WillNotStop>().is_some(),
+            matches!(
+                error.downcast_ref::<crate::identity::IdentityError>(),
+                Some(crate::identity::IdentityError::DidNotStop { .. })
+            ),
             "{failing}: {error:#}"
         );
         assert_eq!(
-            visited.as_slice(),
-            &[StopTarget::Window, StopTarget::Xwayland, StopTarget::Weston][..=failing],
-            "{failing}"
+            visited,
+            [StopTarget::Window, StopTarget::Xwayland, StopTarget::Weston],
+            "{failing}: every stop ran"
         );
         assert!(root.path().is_dir(), "{failing}: the root must stay");
     }
+}
+
+#[test]
+fn a_failed_first_stop_still_stops_the_recorded_display() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("later-stops");
+    let mut xwayland = spawn_ready_sleep();
+    record_child(&root.path().join("xwayland.pid"), &xwayland);
+    let mut weston = spawn_ready_sleep();
+    record_child(&root.path().join("weston.pid"), &weston);
+
+    let error = cleanup(
+        root.path(),
+        |root, target| match target {
+            StopTarget::Window => Err(crate::identity::IdentityError::DidNotStop {
+                pid: 42,
+                path: root.to_path_buf(),
+            }
+            .into()),
+            other => stop_target(root, other),
+        },
+        cleanup::report,
+    )
+    .expect_err("the first stop fails");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::identity::IdentityError>(),
+            Some(crate::identity::IdentityError::DidNotStop { .. })
+        ),
+        "unexpected error: {error:#}"
+    );
+    assert!(
+        xwayland.wait_for_exit(Duration::from_secs(2)),
+        "Xwayland is stopped after the failed first stop"
+    );
+    assert!(
+        weston.wait_for_exit(Duration::from_secs(2)),
+        "Weston is stopped after the failed first stop"
+    );
+    assert!(root.path().is_dir(), "the failed stop keeps the root");
+}
+
+#[test]
+fn a_failed_record_unlink_does_not_keep_a_stopped_root() {
+    let root = crate::test_support::temporary_sandbox_root("unlink-warning");
+
+    let error = cleanup(
+        root.path(),
+        |_, _| Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe).into()),
+        |_| Ok(()),
+    )
+    .expect_err("the failed unlink is reported");
+
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::BrokenPipe)
+    );
+    assert!(
+        !root.path().exists(),
+        "every process stopped, so the root goes"
+    );
+}
+
+#[test]
+fn a_failed_xwayland_stop_keeps_the_display_socket() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("xwayland-alive");
+    fs::write(root.path().join("display"), ":42\n").expect("write the display");
+    let socket = Path::new("/tmp/.X11-unix/X42");
+    fs::write(socket, "").expect("write the socket");
+    let mut xwayland = spawn_ready_sleep();
+    record_child(&root.path().join("xwayland.pid"), &xwayland);
+
+    let error = cleanup(
+        root.path(),
+        |root, target| match target {
+            StopTarget::Xwayland => Err(crate::identity::IdentityError::DidNotStop {
+                pid: xwayland.id(),
+                path: root.to_path_buf(),
+            }
+            .into()),
+            other => stop_target(root, other),
+        },
+        cleanup::report,
+    )
+    .expect_err("the live Xwayland keeps the root");
+
+    assert!(
+        error.chain().any(|cause| matches!(
+            cause.downcast_ref::<crate::identity::IdentityError>(),
+            Some(crate::identity::IdentityError::DidNotStop { .. })
+        )),
+        "unexpected error: {error:#}"
+    );
+    assert!(socket.exists(), "the live display keeps its socket");
+    assert!(xwayland.is_running(), "the Xwayland keeps running");
+    assert!(root.path().is_dir(), "the failed stop keeps the root");
+}
+
+#[test]
+fn a_display_cleanup_report_failure_still_removes_the_root() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("display-report");
+    fs::write(root.path().join("display"), ":42\n").expect("write the display");
+    let socket = Path::new("/tmp/.X11-unix/X42");
+    fs::create_dir_all(socket).expect("block the socket removal");
+    let mut reports = 0;
+
+    let error = cleanup(
+        root.path(),
+        |_, _| Ok(()),
+        |_| {
+            reports += 1;
+
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        },
+    )
+    .expect_err("the warning cannot be written");
+
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::BrokenPipe)
+    );
+    assert_eq!(reports, 1, "the failed socket removal is reported");
+    assert!(
+        !root.path().exists(),
+        "all processes stopped, so the root goes"
+    );
 }
 
 #[test]
@@ -135,10 +403,14 @@ fn cleanup_stops_every_record_in_order_and_removes_the_root() {
     let root = crate::test_support::temporary_sandbox_root("all-stopped");
     let mut visited = Vec::new();
 
-    cleanup(root.path(), |_, target| {
-        visited.push(target);
-        Ok(())
-    })
+    cleanup(
+        root.path(),
+        |_, target| {
+            visited.push(target);
+            Ok(())
+        },
+        |_| Ok(()),
+    )
     .expect("the cleanup succeeds");
 
     assert_eq!(
@@ -159,7 +431,7 @@ fn cleanup_refuses_a_symlinked_root_and_leaves_its_target() {
     let root = folder.path().join("root");
     std::os::unix::fs::symlink(target.path(), &root).expect("link the root");
 
-    let error = cleanup(&root, stop_target).expect_err("the symlink is refused");
+    let error = cleanup(&root, stop_target, cleanup::report).expect_err("the symlink is refused");
     let root_error = error
         .downcast_ref::<RootError>()
         .expect("the refusal is a root error");
@@ -190,7 +462,8 @@ fn cleanup_refuses_a_root_that_is_not_private() {
     let root = crate::test_support::temporary_sandbox_root("mode");
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).expect("set the mode");
 
-    let error = cleanup(root.path(), stop_target).expect_err("the mode is refused");
+    let error =
+        cleanup(root.path(), stop_target, cleanup::report).expect_err("the mode is refused");
     let root_error = error
         .downcast_ref::<RootError>()
         .expect("the refusal is a root error");
@@ -262,9 +535,9 @@ fn a_failed_start_keeps_its_error_when_cleanup_fails() {
 
     let error =
         start_sandbox(&config, root.path(), &[], &Session::Headless).expect_err("the start fails");
-    let error = failed_start(root.path(), error, |_, target| {
+    let error = failed_start(root.path(), error, |root, target| {
         visited.push(target);
-        Err(WillNotStop.into())
+        Err(will_not_stop(root))
     });
 
     assert!(
@@ -274,7 +547,10 @@ fn a_failed_start_keeps_its_error_when_cleanup_fails() {
         ),
         "unexpected error: {error:#}"
     );
-    assert_eq!(visited, [StopTarget::Window]);
+    assert_eq!(
+        visited,
+        [StopTarget::Window, StopTarget::Xwayland, StopTarget::Weston]
+    );
     assert!(
         root.path().join("weston.pid").is_file(),
         "the root must stay"
@@ -515,7 +791,9 @@ fn execute_returns_a_command_failure() {
 
     let mut output = String::new();
     let error = execute(&test_config(name), Sandbox::Log, &mut |text| {
-        output.push_str(text)
+        output.push_str(text);
+
+        Ok(())
     })
     .expect_err("a missing app log fails");
 
