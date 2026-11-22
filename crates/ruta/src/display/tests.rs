@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::os::unix::fs::PermissionsExt as _;
 
 use super::*;
 use crate::process::POLL;
@@ -109,6 +110,123 @@ fn display_files_for(folder: &Path, number: &str, owner: u32) -> (PathBuf, PathB
     fs::write(&socket, "").expect("socket");
 
     (lock, socket)
+}
+
+fn display_socket(folder: &Path, number: &str) -> PathBuf {
+    let socket = folder.join(format!(".X11-unix/X{number}"));
+    fs::create_dir_all(folder.join(".X11-unix")).expect("socket folder");
+    fs::write(&socket, "").expect("socket");
+
+    socket
+}
+
+fn entry_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+struct LockCase {
+    name: &'static str,
+    prepare: fn(&Path),
+    kept: bool,
+}
+
+#[test]
+fn clean_display_files_decides_each_initial_lock_state() {
+    let cases = [
+        LockCase {
+            name: "absent lock",
+            prepare: |_| {},
+            kept: false,
+        },
+        LockCase {
+            name: "unreadable lock",
+            prepare: |lock| {
+                fs::create_dir(lock).expect("put a folder in the lock's place");
+            },
+            kept: true,
+        },
+        LockCase {
+            name: "malformed lock",
+            prepare: |lock| {
+                fs::write(lock, "not a pid\n").expect("lock");
+            },
+            kept: true,
+        },
+        LockCase {
+            name: "dangling lock link",
+            prepare: |lock| {
+                std::os::unix::fs::symlink(lock.with_file_name("absent-lock"), lock)
+                    .expect("link the lock");
+            },
+            kept: true,
+        },
+        LockCase {
+            name: "zero lock owner",
+            prepare: |lock| {
+                fs::write(lock, "0\n").expect("lock");
+            },
+            kept: true,
+        },
+        LockCase {
+            name: "fifo lock",
+            prepare: |lock| {
+                rustix::fs::mknodat(
+                    rustix::fs::CWD,
+                    lock,
+                    rustix::fs::FileType::Fifo,
+                    rustix::fs::Mode::from_raw_mode(0o600),
+                    0,
+                )
+                .expect("make the fifo");
+            },
+            kept: true,
+        },
+    ];
+
+    for LockCase {
+        name,
+        prepare,
+        kept,
+    } in cases
+    {
+        let folder = crate::test_support::temporary_directory();
+        let socket = display_socket(folder.path(), "7");
+        let lock = folder.path().join(".X7-lock");
+        prepare(&lock);
+
+        clean_display_files_in(folder.path(), ":7", Duration::ZERO, &mut cleanup::report)
+            .expect("clean the display files");
+
+        assert_eq!(entry_exists(&lock), kept, "{name}: the lock");
+        assert_eq!(entry_exists(&socket), kept, "{name}: the socket");
+    }
+}
+
+#[test]
+fn clean_display_files_keeps_the_files_when_the_lock_cannot_be_reached() {
+    // Root reads through a folder without search permission, so this case applies to other users.
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+
+    let folder = crate::test_support::temporary_directory();
+    let (lock, socket) = display_files(folder.path(), u32::MAX);
+    fs::set_permissions(folder.path(), fs::Permissions::from_mode(0o600))
+        .expect("close the folder");
+    let mut warnings = Vec::new();
+
+    let result = clean_display_files_in(folder.path(), ":7", Duration::ZERO, &mut |warning| {
+        warnings.push(warning.to_string());
+        Ok(())
+    });
+
+    fs::set_permissions(folder.path(), fs::Permissions::from_mode(0o700))
+        .expect("reopen the folder for cleanup");
+    result.expect("clean the display files");
+
+    assert!(lock.exists());
+    assert!(socket.exists());
+    assert!(warnings.is_empty(), "{warnings:?}");
 }
 
 #[test]

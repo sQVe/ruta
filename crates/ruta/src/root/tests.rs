@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -110,6 +111,80 @@ fn prepare_root_refuses_a_linked_control_folder_and_leaves_its_target() {
         fs::read_to_string(target.path().join("marker")).expect("the marker"),
         "keep"
     );
+}
+
+#[test]
+fn prepare_root_refuses_a_file_at_a_private_folder_path() {
+    for folder in ["run", "config", "state", "data", "cache", "home", "bin"] {
+        let root = crate::test_support::temporary_sandbox_root("prepare-file");
+        let file = root.path().join(folder);
+        fs::write(&file, "keep").expect("write the file");
+        let before = root_entries(root.path());
+
+        let error = prepare_root(root.path()).expect_err("the file is refused");
+
+        assert!(
+            matches!(
+                error.downcast_ref::<RootError>(),
+                Some(RootError::Unsafe { path, reason: RootReason::NotDirectory }) if path == &file
+            ),
+            "{folder}: unexpected error: {error}"
+        );
+        assert_eq!(fs::read_to_string(&file).expect("the file"), "keep");
+        assert_eq!(
+            root_entries(root.path()),
+            before,
+            "{folder}: the root changed"
+        );
+    }
+}
+
+#[test]
+fn prepare_root_refuses_a_private_folder_that_is_not_private() {
+    let root = crate::test_support::temporary_sandbox_root("prepare-mode");
+    let home = root.path().join("home");
+    fs::create_dir(&home).expect("create the folder");
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).expect("open the folder");
+
+    let error = prepare_root(root.path()).expect_err("the open folder is refused");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<RootError>(),
+            Some(RootError::Unsafe { path, reason: RootReason::WrongMode { mode: 0o755 } })
+                if path == &home
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn private_folder_missing_reports_a_path_it_cannot_read() {
+    let folder = crate::test_support::temporary_directory();
+    let file = folder.path().join("file");
+    fs::write(&file, "").expect("write the file");
+    let path = file.join("run");
+
+    let error = private_folder_missing(&path).expect_err("the path is refused");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<RootError>(),
+            Some(RootError::UnreadablePath { path: recorded, source })
+                if recorded == &path && source.kind() == std::io::ErrorKind::NotADirectory
+        ),
+        "unexpected error: {error:#}"
+    );
+}
+
+fn root_entries(root: &Path) -> Vec<OsString> {
+    let mut entries: Vec<_> = fs::read_dir(root)
+        .expect("read the root")
+        .map(|entry| entry.expect("an entry").file_name())
+        .collect();
+    entries.sort();
+
+    entries
 }
 
 #[test]

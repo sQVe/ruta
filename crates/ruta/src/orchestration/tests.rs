@@ -133,6 +133,8 @@ fn record_fake_display(root: &Path) -> ChildGuard {
 fn write_fake_xdotool(root: &Path) {
     let bin = root.join("bin");
     fs::create_dir_all(&bin).expect("create the bin folder");
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o700))
+        .expect("make the bin folder private");
     let xdotool = bin.join("xdotool");
     fs::write(
         &xdotool,

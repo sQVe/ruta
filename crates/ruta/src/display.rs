@@ -158,7 +158,13 @@ fn clean_display_files_in(
     let socket = folder.join(format!(".X11-unix/X{number}"));
     let owner = lock_owner(&lock);
 
-    if let Some(pid) = owner {
+    // A lock that is there but cannot be read may still name a live owner, so only an absent lock
+    // lets the cleanup go on.
+    if owner == LockOwner::Unknown {
+        return Ok(());
+    }
+
+    if let LockOwner::Owner(pid) = owner {
         let stopped = poll_until(timeout, || Ok((!lock_owner_is_alive(pid)).then_some(())))
             .expect("the wait for the lock owner cannot fail");
 
@@ -174,8 +180,34 @@ fn clean_display_files_in(
     cleanup::remove_file_with(report, &lock).and(cleanup::remove_file_with(report, &socket))
 }
 
-fn lock_owner(lock: &Path) -> Option<u32> {
-    fs::read_to_string(lock).ok()?.trim().parse().ok()
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LockOwner {
+    Absent,
+    Unknown,
+    Owner(u32),
+}
+
+fn lock_owner(lock: &Path) -> LockOwner {
+    let metadata = match fs::symlink_metadata(lock) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return LockOwner::Absent,
+        Err(_) => return LockOwner::Unknown,
+    };
+
+    // A FIFO would block the read forever, and a symlink's target is not the lock ruta wrote.
+    if !metadata.file_type().is_file() {
+        return LockOwner::Unknown;
+    }
+
+    let contents = match fs::read_to_string(lock) {
+        Ok(contents) => contents,
+        Err(_) => return LockOwner::Unknown,
+    };
+
+    match contents.trim().parse::<u32>() {
+        Ok(owner) if owner != 0 => LockOwner::Owner(owner),
+        _ => LockOwner::Unknown,
+    }
 }
 
 fn lock_owner_is_alive(pid: u32) -> bool {

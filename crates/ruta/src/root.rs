@@ -127,6 +127,12 @@ impl std::fmt::Display for RootReason {
 pub(crate) enum RootError {
     #[error("refusing {}: {reason}", path.display())]
     Unsafe { path: PathBuf, reason: RootReason },
+    #[error("Could not read {}", path.display())]
+    UnreadablePath {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("refusing the symlinked sandbox path {}", path.display())]
     LinkedPath { path: PathBuf },
     #[error("refusing to remove {}: it is not a sandbox folder", path.display())]
@@ -207,15 +213,73 @@ pub(crate) fn prepare_root(root: &Path) -> anyhow::Result<()> {
 
     refuse_unsafe_root(root)?;
 
-    for path in PrivateFolders::under(root).in_creation_order() {
-        if !path.exists() {
-            fs::create_dir(path).with_context(|| format!("Could not create {}", path.display()))?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                .with_context(|| format!("Could not secure {}", path.display()))?;
+    let folders = PrivateFolders::under(root);
+    let mut missing = Vec::new();
+
+    // Every path is checked before any is created, so a refusal leaves the root as it was.
+    for path in folders.in_creation_order() {
+        if private_folder_missing(path)? {
+            missing.push(path);
         }
     }
 
+    for path in missing {
+        create_private_folder(path)?;
+    }
+
     refuse_linked_paths(root)?;
+
+    Ok(())
+}
+
+// A symlink is left for `refuse_linked_paths` to name, so this only refuses a path that is
+// neither a folder nor a link. It returns true when the folder is absent.
+fn private_folder_missing(path: &Path) -> anyhow::Result<bool> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => {
+            return Err(RootError::UnreadablePath {
+                path: path.to_path_buf(),
+                source: error,
+            }
+            .into());
+        }
+    };
+
+    if metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+
+    if !metadata.is_dir() {
+        return Err(RootError::Unsafe {
+            path: path.to_path_buf(),
+            reason: RootReason::NotDirectory,
+        }
+        .into());
+    }
+
+    let described = RootMetadata {
+        is_symlink: false,
+        is_dir: true,
+        owner: metadata.uid(),
+        mode: metadata.permissions().mode(),
+    };
+
+    match root_metadata_problem(&described, current_uid()?) {
+        Some(reason) => Err(RootError::Unsafe {
+            path: path.to_path_buf(),
+            reason,
+        }
+        .into()),
+        None => Ok(false),
+    }
+}
+
+fn create_private_folder(path: &Path) -> anyhow::Result<()> {
+    fs::create_dir(path).with_context(|| format!("Could not create {}", path.display()))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("Could not secure {}", path.display()))?;
 
     Ok(())
 }
