@@ -5,8 +5,9 @@ on:
     tags: ["v*"]
 
 concurrency:
-  # A newer run queues behind the running one, so a delayed older event cannot cancel it.
-  group: release-${{ github.ref }}
+  # Runs are grouped by ref and commit, so a delayed event for another commit cannot cancel or
+  # replace this commit's run.
+  group: release-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 permissions:
