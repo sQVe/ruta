@@ -429,11 +429,18 @@ pub(crate) fn publish_folder(root: &Path, staged: &Path) -> anyhow::Result<()> {
     let path = root.join(record::FOLDER);
 
     if let Err(error) = fs::rename(staged, &path) {
-        remove_record(&path)?;
-        remove_record(staged)?;
+        let removal = remove_record(&path).and(remove_record(staged));
+        let error = anyhow::Error::new(error).context(format!(
+            "Could not record the project folder in {}",
+            path.display()
+        ));
 
-        return Err(error)
-            .with_context(|| format!("Could not record the project folder in {}", path.display()));
+        return match removal {
+            Ok(()) => Err(error),
+            Err(removal_error) => Err(error.context(format!(
+                "Could not remove the failed folder record: {removal_error}"
+            ))),
+        };
     }
 
     Ok(())

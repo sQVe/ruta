@@ -314,6 +314,10 @@ mod tests {
             format!("{error:#}"),
             "Could not report the cleanup: broken pipe: sleep timed out after 0 seconds."
         );
+        assert!(
+            error.downcast_ref::<cleanup::ReportFailure>().is_some(),
+            "the combined failure is typed"
+        );
     }
 
     #[test]

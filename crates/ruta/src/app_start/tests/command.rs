@@ -40,6 +40,43 @@ fn wait_for_ready_command_polls_until_the_probe_exits_0() {
 }
 
 #[test]
+fn a_probe_timeout_with_a_failed_report_is_not_retried() {
+    crate::test_support::in_test_namespace!();
+
+    let folder = crate::test_support::temporary_directory();
+    let log = folder.path().join("app.log");
+    let (_app, leader) = live_app();
+    let mut runs = 0;
+
+    let error = wait_for_ready_command_with(
+        || Command::new("false"),
+        leader,
+        folder.path(),
+        &log,
+        Duration::from_secs(5),
+        |_, _, _| {
+            runs += 1;
+
+            Err(cleanup::with_report_failure(
+                ProcessError::Timeout {
+                    program: "probe".to_string(),
+                    duration: Duration::from_secs(1),
+                }
+                .into(),
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe)),
+            ))
+        },
+    )
+    .expect_err("the report failure is returned");
+
+    assert_eq!(runs, 1, "the probe is not retried");
+    assert!(
+        format!("{error:#}").contains("Could not report the cleanup"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
 fn wait_for_ready_command_reports_a_timeout_when_the_probe_never_passes() {
     crate::test_support::in_test_namespace!();
 

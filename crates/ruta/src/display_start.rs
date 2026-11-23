@@ -19,23 +19,25 @@ pub(crate) fn ensure_display(
     size: (u32, u32),
 ) -> anyhow::Result<String> {
     let mode = session.mode();
+    let display = display_up(root);
 
-    if let Some(display) = display_up(root)
+    if let Some(display) = &display
         && records_match(root, mode, size)
     {
-        return Ok(display);
+        return Ok(display.clone());
     }
 
-    stop_unusable_display(root)?;
+    stop_unusable_display(root, display.as_deref())?;
 
     prepare_root(root)?;
+
+    stop_recorded(&root.join(record::XWAYLAND_PID))?;
 
     let log = root.join(record::WESTON_LOG);
     cleanup::first_failure([
         cleanup::remove_file(&log),
         cleanup::remove_file(&root.join(record::DISPLAY)),
         cleanup::remove_file(&root.join(record::SIZE)),
-        cleanup::remove_file(&root.join(record::XWAYLAND_PID)),
     ])?;
 
     let environment = session.environment(&caller_environment(), root);
@@ -50,13 +52,11 @@ pub(crate) fn ensure_display(
 
 // A recorded Weston is stopped even when no usable display record names it: the new Weston would
 // overwrite its PID record and leave it running.
-fn stop_unusable_display(root: &Path) -> anyhow::Result<()> {
-    let display = display_up(root);
-
+fn stop_unusable_display(root: &Path, display: Option<&str>) -> anyhow::Result<()> {
     stop_recorded(&root.join(record::WESTON_PID))?;
 
     if let Some(display) = display {
-        display::clean_display_files(&display)?;
+        display::clean_display_files(display)?;
     }
 
     Ok(())
@@ -257,6 +257,59 @@ mod tests {
         assert!(
             recorded.wait_for_exit(Duration::from_secs(2)),
             "the recorded Weston is stopped"
+        );
+
+        stop_recorded(&root.path().join("weston.pid")).expect("stop the fake Weston");
+    }
+
+    #[test]
+    fn a_display_reaped_between_lookups_still_has_its_files_cleaned() {
+        crate::test_support::in_test_namespace!();
+
+        let root = crate::test_support::temporary_sandbox_root("display-reaped");
+        let lock = Path::new("/tmp/.X42-lock");
+        let socket = Path::new("/tmp/.X11-unix/X42");
+        let mut dead = Command::new("true").spawn().expect("true");
+        let owner = dead.id();
+        dead.wait().expect("reap the process");
+        fs::write(lock, format!("{owner}\n")).expect("write the old lock");
+        fs::write(socket, "").expect("write the old socket");
+        // The record names a process that is already gone, as after a reap between the two
+        // lookups.
+        fs::write(root.path().join("weston.pid"), format!("{owner} 1\n"))
+            .expect("write the stale record");
+
+        stop_unusable_display(root.path(), Some(":42")).expect("the recorded display is stopped");
+
+        assert!(!lock.exists(), "the old lock is removed");
+        assert!(!socket.exists(), "the old socket is removed");
+    }
+
+    #[test]
+    fn ensure_display_stops_a_recorded_xwayland_before_removing_its_record() {
+        crate::test_support::in_test_namespace!();
+
+        let root = crate::test_support::temporary_sandbox_root("display-xwayland");
+        let recorded = spawn_ready_sleep();
+        record_child(&root.path().join("weston.pid"), &recorded);
+        fs::write(root.path().join("display"), ":42\n").expect("write the display");
+        record_display_settings(root.path(), "headless", (640, 680));
+        let mut xwayland = spawn_ready_sleep();
+        record_child(&root.path().join("xwayland.pid"), &xwayland);
+        remember_old_process(root.path(), recorded.id());
+        write_fake_weston(root.path());
+
+        let display = ensure_display("test", root.path(), &Session::Headless, (840, 680))
+            .expect("the display is replaced");
+
+        assert_eq!(display, ":9");
+        assert!(
+            xwayland.wait_for_exit(Duration::from_secs(2)),
+            "the recorded Xwayland is stopped"
+        );
+        assert!(
+            !root.path().join("xwayland.pid").exists(),
+            "the Xwayland record is removed"
         );
 
         stop_recorded(&root.path().join("weston.pid")).expect("stop the fake Weston");

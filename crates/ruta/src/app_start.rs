@@ -3,7 +3,7 @@ use std::io::{BufRead as _, BufReader, Read, Write as _};
 use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
@@ -277,23 +277,45 @@ fn probe_command(probe: &CommandLine, environment: &[(String, String)], folder: 
 }
 
 fn wait_for_ready_command(
-    mut probe: impl FnMut() -> Command,
+    probe: impl FnMut() -> Command,
     leader: ProcessIdentity,
     root: &Path,
     log_path: &Path,
     timeout: Duration,
 ) -> anyhow::Result<()> {
+    wait_for_ready_command_with(
+        probe,
+        leader,
+        root,
+        log_path,
+        timeout,
+        |command, limit, stopped| run_until(command, limit, stopped),
+    )
+}
+
+fn wait_for_ready_command_with<F>(
+    mut probe: impl FnMut() -> Command,
+    leader: ProcessIdentity,
+    root: &Path,
+    log_path: &Path,
+    timeout: Duration,
+    mut run: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(Command, Duration, &mut dyn FnMut() -> bool) -> anyhow::Result<Output>,
+{
     let deadline = Instant::now() + timeout;
 
     let ready = poll_until(timeout, || {
         let limit = deadline
             .saturating_duration_since(Instant::now())
             .clamp(POLL, TOOL_TIMEOUT);
+        let mut stopped = || app_gone(leader, root);
 
-        match run_until(probe(), limit, || app_gone(leader, root)) {
+        match run(probe(), limit, &mut stopped) {
             Ok(output) if output.status.success() => return Ok(Some(())),
             Ok(_) => {}
-            Err(error) if error.downcast_ref::<ProcessError>().is_some() => {}
+            Err(error) if is_retryable_probe_error(&error) => {}
             Err(error) => return Err(error.context("Could not run the ready command")),
         }
 
@@ -305,6 +327,13 @@ fn wait_for_ready_command(
     })?;
 
     ready.ok_or_else(|| ready_timeout_error(timeout, log_path))
+}
+
+// A timeout or an early stop is retried, but a failed cleanup report is a real failure that the
+// loop must return instead of hiding behind another attempt.
+fn is_retryable_probe_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ProcessError>().is_some()
+        && error.downcast_ref::<cleanup::ReportFailure>().is_none()
 }
 
 fn app_gone(leader: ProcessIdentity, root: &Path) -> bool {

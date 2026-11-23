@@ -482,6 +482,10 @@ fn stop_all_escalates_when_the_term_report_fails() {
     let error = stop_all_with(
         || alive.borrow().clone(),
         Duration::from_millis(150),
+        |pid| IdentityError::DidNotStop {
+            pid,
+            path: std::path::PathBuf::from("/tmp/x"),
+        },
         |_, signal| {
             signals.borrow_mut().push(signal);
 
@@ -507,5 +511,97 @@ fn stop_all_escalates_when_the_term_report_fails() {
             .downcast_ref::<std::io::Error>()
             .map(std::io::Error::kind),
         Some(ErrorKind::BrokenPipe)
+    );
+}
+
+#[test]
+fn the_final_scan_keeps_a_report_error_when_no_process_remains() {
+    use std::cell::RefCell;
+    use std::io::ErrorKind;
+
+    let scans = RefCell::new(0);
+
+    let error = stop_all_with(
+        || {
+            let mut scans = scans.borrow_mut();
+            *scans += 1;
+
+            if *scans <= 3 {
+                vec![ProcessIdentity {
+                    pid: 4242,
+                    started: 1,
+                }]
+            } else {
+                Vec::new()
+            }
+        },
+        Duration::ZERO,
+        |pid| IdentityError::DidNotStop {
+            pid,
+            path: std::path::PathBuf::from("/tmp/x"),
+        },
+        |_, _| Err(std::io::Error::from(ErrorKind::BrokenPipe)),
+    )
+    .expect_err("the failed warning write is kept");
+
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(ErrorKind::BrokenPipe)
+    );
+}
+
+#[test]
+fn a_surviving_process_keeps_the_report_error_as_context() {
+    use std::io::ErrorKind;
+
+    let error = stop_all_with(
+        || {
+            vec![ProcessIdentity {
+                pid: 4242,
+                started: 1,
+            }]
+        },
+        Duration::ZERO,
+        |pid| IdentityError::DidNotStop {
+            pid,
+            path: std::path::PathBuf::from("/tmp/x"),
+        },
+        |_, _| Err(std::io::Error::from(ErrorKind::BrokenPipe)),
+    )
+    .expect_err("the process survives the KILL");
+
+    assert!(
+        error.chain().any(|cause| matches!(
+            cause.downcast_ref::<IdentityError>(),
+            Some(IdentityError::DidNotStop { pid: 4242, .. })
+        )),
+        "unexpected error: {error:#}"
+    );
+    assert!(
+        format!("{error:#}").contains("Could not report the cleanup"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn a_failed_group_report_does_not_hide_a_surviving_marked_process() {
+    let error = combine_stop_results(
+        Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe).into()),
+        Err(IdentityError::DidNotStop {
+            pid: 42,
+            path: std::path::PathBuf::from("/var/tmp/ruta-survivor"),
+        }
+        .into()),
+    )
+    .expect_err("the failed report and the survivor are returned");
+
+    assert!(
+        error.chain().any(|cause| matches!(
+            cause.downcast_ref::<IdentityError>(),
+            Some(IdentityError::DidNotStop { pid: 42, .. })
+        )),
+        "unexpected error: {error:#}"
     );
 }

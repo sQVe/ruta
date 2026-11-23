@@ -73,6 +73,15 @@ pub(crate) enum IdentityError {
     XwaylandNotRecorded { display: String, timeout: Duration },
 }
 
+pub(crate) fn error_is_survivor(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<IdentityError>(),
+            Some(IdentityError::DidNotStop { .. })
+        )
+    })
+}
+
 pub(crate) fn record_xwayland(root: &Path, display: &str, timeout: Duration) -> anyhow::Result<()> {
     let Some(weston) = ProcessIdentity::read(&root.join(crate::root::record::WESTON_PID)) else {
         return Ok(());

@@ -98,6 +98,37 @@ fn a_successful_start_records_the_folder_for_status() {
     );
 }
 
+#[test]
+fn a_failed_publish_stops_the_new_sandbox() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("publish-failed");
+    let mut app = spawn_with_marker(root.path());
+    record_child(&root.path().join("pid"), &app);
+    let project = crate::test_support::temporary_directory();
+    let blocked = root.path().join("folder");
+
+    let error = start_window_with(root.path(), project.path(), || {
+        fs::create_dir(&blocked).expect("block the folder record");
+
+        Ok("started\n".to_string())
+    })
+    .expect_err("the publish fails");
+
+    assert!(
+        format!("{error:#}").contains("Could not record the project folder"),
+        "unexpected error: {error:#}"
+    );
+    assert!(
+        app.wait_for_exit(Duration::from_secs(2)),
+        "the new sandbox is stopped"
+    );
+    assert!(
+        !root.path().exists(),
+        "the root and its folder record are gone"
+    );
+}
+
 fn replacement_config(folder: PathBuf) -> Config {
     let mut config = test_config("test");
     config.folder = folder;
@@ -302,6 +333,24 @@ fn a_failed_first_stop_still_stops_the_recorded_display() {
         "Weston is stopped after the failed first stop"
     );
     assert!(root.path().is_dir(), "the failed stop keeps the root");
+}
+
+#[test]
+fn a_later_survivor_keeps_the_root_after_an_earlier_failure() {
+    let root = crate::test_support::temporary_sandbox_root("later-survivor");
+
+    cleanup(
+        root.path(),
+        |root, target| match target {
+            StopTarget::Window => Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe).into()),
+            StopTarget::Xwayland => Err(will_not_stop(root)),
+            StopTarget::Weston => Ok(()),
+        },
+        |_| Ok(()),
+    )
+    .expect_err("the failed report and the survivor are returned");
+
+    assert!(root.path().is_dir(), "the surviving process keeps the root");
 }
 
 #[test]

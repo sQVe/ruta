@@ -564,6 +564,31 @@ fn stage_folder_refuses_a_fifo_at_the_staged_path() {
 }
 
 #[test]
+fn a_failed_publish_attempts_both_removals_and_keeps_the_rename_error() {
+    let root = crate::test_support::temporary_directory();
+    let folder = root.path().join("folder");
+    fs::create_dir(&folder).expect("block the rename destination");
+    let staged = root.path().join("folder.staged");
+    fs::write(&staged, "/project").expect("write the staged folder");
+
+    let error = publish_folder(root.path(), &staged).expect_err("the rename fails");
+    let rendered = format!("{error:#}");
+
+    assert!(
+        rendered.contains(&format!(
+            "Could not record the project folder in {}",
+            folder.display()
+        )),
+        "unexpected error: {rendered}"
+    );
+    assert!(
+        !staged.exists(),
+        "the staged record is removed even when the destination removal fails"
+    );
+    assert!(folder.is_dir(), "the blocked destination stays");
+}
+
+#[test]
 fn recorded_folder_is_none_without_a_record_and_fails_on_an_unreadable_one() {
     let root = crate::test_support::temporary_directory();
 

@@ -14,7 +14,7 @@ use crate::display_start::{
 };
 use crate::environment::{caller_environment, sandbox_environment};
 use crate::identity::stop::{stop_recorded, stop_window};
-use crate::identity::{IdentityError, RECORD_TIMEOUT, record_matches, record_xwayland};
+use crate::identity::{RECORD_TIMEOUT, error_is_survivor, record_matches, record_xwayland};
 use crate::input::{focus_window, send, window_exists, window_id};
 use crate::log_tail::last_lines;
 use crate::root::{
@@ -253,7 +253,8 @@ fn start_window_with(
     let staged = crate::root::stage_folder(root, folder)?;
     let output = start().map_err(|error| failed_start(root, error, stop_target))?;
 
-    crate::root::publish_folder(root, &staged)?;
+    crate::root::publish_folder(root, &staged)
+        .map_err(|error| failed_start(root, error, stop_target))?;
 
     Ok(output)
 }
@@ -262,26 +263,38 @@ fn failed_start<F>(root: &Path, error: anyhow::Error, stop: F) -> anyhow::Error
 where
     F: FnMut(&Path, StopTarget) -> anyhow::Result<()>,
 {
+    failed_start_with(root, error, stop, cleanup::report)
+}
+
+fn failed_start_with<F, R>(
+    root: &Path,
+    error: anyhow::Error,
+    stop: F,
+    mut report: R,
+) -> anyhow::Error
+where
+    F: FnMut(&Path, StopTarget) -> anyhow::Result<()>,
+    R: FnMut(&str) -> std::io::Result<()>,
+{
     // The cleanup removes the app log, so its end goes into the error first. A refused root is not
     // read, since its log may be anything, such as a FIFO.
     let log_tail = match require_trusted_root(root) {
         Ok(()) => last_lines(&root.join(crate::root::record::APP_LOG), LOG_TAIL_LINES),
         Err(_) => Vec::new(),
     };
+    let error = if log_tail.is_empty() {
+        error
+    } else {
+        FailedStart { error, log_tail }.into()
+    };
 
-    if let Err(cleanup_error) = cleanup(root, stop, cleanup::report) {
+    if let Err(cleanup_error) = cleanup(root, stop, &mut report) {
         let warning = format!("Could not clean up after the failed start: {cleanup_error:#}");
 
-        if let Err(report_error) = cleanup::report(&warning) {
-            return cleanup::with_report_failure(error, Err(report_error));
-        }
+        return cleanup::with_report_failure(error, report(&warning));
     }
 
-    if log_tail.is_empty() {
-        return error;
-    }
-
-    FailedStart { error, log_tail }.into()
+    error
 }
 
 fn start_sandbox(
@@ -451,17 +464,22 @@ where
     require_trusted_root(root)?;
 
     let mut failure: Option<anyhow::Error> = None;
+    let mut survivor = false;
 
     for target in [StopTarget::Window, StopTarget::Xwayland, StopTarget::Weston] {
-        if let Err(error) = stop(root, target) {
-            failure.get_or_insert(error);
+        match stop(root, target) {
+            Ok(()) => {}
+            Err(error) => {
+                survivor |= error_is_survivor(&error);
+                failure.get_or_insert(error);
+            }
         }
     }
 
     // A report failure and a failed record unlink leave no process alive, so only a survivor or a
     // live record keeps the root and its display files.
     let xwayland_alive = record_matches(&root.join(crate::root::record::XWAYLAND_PID));
-    let all_stopped = !survivor(&failure) && !recorded_process_alive(root);
+    let all_stopped = !survivor && !recorded_process_alive(root);
 
     if !xwayland_alive && let Err(error) = clean_recorded_display_files(root, &mut report) {
         failure.get_or_insert(error.into());
@@ -480,17 +498,6 @@ where
         (Some(error), Ok(())) => Err(error),
         (None, removed) => removed,
     }
-}
-
-fn survivor(failure: &Option<anyhow::Error>) -> bool {
-    failure.as_ref().is_some_and(|error| {
-        error.chain().any(|cause| {
-            matches!(
-                cause.downcast_ref::<IdentityError>(),
-                Some(IdentityError::DidNotStop { .. })
-            )
-        })
-    })
 }
 
 fn recorded_process_alive(root: &Path) -> bool {

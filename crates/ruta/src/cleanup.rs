@@ -53,13 +53,19 @@ fn report_to(writer: &mut impl std::io::Write, warning: &str) -> std::io::Result
     writeln!(writer, "{warning}")
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Could not report the cleanup: {report_error}")]
+pub(crate) struct ReportFailure {
+    report_error: std::io::Error,
+}
+
 pub(crate) fn with_report_failure(
     error: anyhow::Error,
     report: std::io::Result<()>,
 ) -> anyhow::Error {
     match report {
         Ok(()) => error,
-        Err(report_error) => error.context(format!("Could not report the cleanup: {report_error}")),
+        Err(report_error) => error.context(ReportFailure { report_error }),
     }
 }
 
@@ -206,14 +212,17 @@ mod tests {
         let pid = child.id();
 
         stop_child_with(&mut child, |context, result| {
+            if context == "stop the process" {
+                assert_eq!(
+                    wait_without_reaping(pid).expect_err("the child is already reaped"),
+                    rustix::io::Errno::CHILD,
+                    "the child is reaped before reporting begins"
+                );
+            }
+
             warn_to(&mut FailingWriter, context, result)
         })
         .expect("the stop and the reap succeed");
-
-        assert_eq!(
-            wait_without_reaping(pid).expect_err("the child is already reaped"),
-            rustix::io::Errno::CHILD
-        );
     }
 
     #[test]

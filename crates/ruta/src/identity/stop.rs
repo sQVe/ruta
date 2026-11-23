@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 
-use super::{IdentityError, ProcessIdentity, process_is_ours};
+use super::{IdentityError, ProcessIdentity, error_is_survivor, process_is_ours};
 use crate::cleanup;
 use crate::process::poll_until;
 use crate::process_stat::ProcessStat;
@@ -23,7 +23,29 @@ fn stop_window_with(
     let group = stop_group(root);
     let marked = stop_marked(root, std::process::id(), STOP_TIMEOUT);
 
-    group.and(marked)
+    combine_stop_results(group, marked)
+}
+
+// A survivor keeps the root, so its `DidNotStop` stays primary even when the other step also
+// failed.
+fn combine_stop_results(
+    group: anyhow::Result<()>,
+    marked: anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    match (group, marked) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(group_error), Err(marked_error)) => {
+            let (primary, secondary) = if error_is_survivor(&marked_error) {
+                (marked_error, group_error)
+            } else {
+                (group_error, marked_error)
+            };
+
+            Err(primary.context(format!("{secondary:#}")))
+        }
+    }
 }
 
 pub(crate) fn stop_app_group(root: &Path) -> anyhow::Result<()> {
@@ -65,13 +87,14 @@ fn stop_group(root: &Path, timeout: Duration) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    if stop_all(|| group_members(leader, root), timeout)?.is_some() {
-        return Err(IdentityError::DidNotStop {
-            pid: leader.pid,
-            path,
-        }
-        .into());
-    }
+    stop_all(
+        || group_members(leader, root),
+        timeout,
+        |pid| IdentityError::DidNotStop {
+            pid,
+            path: path.clone(),
+        },
+    )?;
 
     cleanup::remove_file(&path)?;
 
@@ -86,39 +109,43 @@ fn stop_marked(root: &Path, ruta: u32, timeout: Duration) -> anyhow::Result<()> 
     };
     let spared = self_and_ancestors(ruta);
 
-    match stop_all(|| marked_processes(root, created, &spared), timeout)? {
-        Some(pid) => Err(IdentityError::DidNotStop {
+    stop_all(
+        || marked_processes(root, created, &spared),
+        timeout,
+        |pid| IdentityError::DidNotStop {
             pid,
             path: root.to_path_buf(),
-        }
-        .into()),
-        None => Ok(()),
-    }
+        },
+    )?;
+
+    Ok(())
 }
 
-// Sends TERM, then KILL after `timeout`, until `members` finds no process. Returns a process that
-// is still alive after both waits.
+// Sends TERM, then KILL after `timeout`, until `members` finds no process. A process that is still
+// alive after both waits becomes `survivor`.
 fn stop_all(
     members: impl Fn() -> Vec<ProcessIdentity>,
     timeout: Duration,
-) -> anyhow::Result<Option<u32>> {
-    stop_all_with(members, timeout, signal_members)
+    survivor: impl FnOnce(u32) -> IdentityError,
+) -> anyhow::Result<()> {
+    stop_all_with(members, timeout, survivor, signal_members)
 }
 
 fn stop_all_with(
     members: impl Fn() -> Vec<ProcessIdentity>,
     timeout: Duration,
+    survivor: impl FnOnce(u32) -> IdentityError,
     mut signal: impl FnMut(&[ProcessIdentity], rustix::process::Signal) -> std::io::Result<()>,
-) -> anyhow::Result<Option<u32>> {
+) -> anyhow::Result<()> {
     let alive = members();
     if alive.is_empty() {
-        return Ok(None);
+        return Ok(());
     }
 
     let mut report = signal(&alive, rustix::process::Signal::TERM);
 
     if poll_until(timeout, || Ok(members().is_empty().then_some(())))?.is_some() {
-        return report.map(|()| None).map_err(Into::into);
+        return report.map_err(Into::into);
     }
 
     let killed = poll_until(timeout, || {
@@ -133,10 +160,16 @@ fn stop_all_with(
     })?;
 
     if killed.is_some() {
-        return report.map(|()| None).map_err(Into::into);
+        return report.map_err(Into::into);
     }
 
-    Ok(members().first().map(|identity| identity.pid))
+    match members().first() {
+        Some(identity) => Err(cleanup::with_report_failure(
+            survivor(identity.pid).into(),
+            report,
+        )),
+        None => report.map_err(Into::into),
+    }
 }
 
 // The live processes of the current user that hold this root's marker and started after the root
