@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -89,6 +90,7 @@ fn prepare_root_refuses_a_linked_control_folder_and_leaves_its_target() {
     fs::write(target.path().join("marker"), "keep").expect("write the marker");
     let link = root.path().join("run");
     std::os::unix::fs::symlink(target.path(), &link).expect("link the control path");
+    let before = root_entries(root.path());
 
     let error = prepare_root(root.path()).expect_err("the linked path is refused");
 
@@ -99,6 +101,7 @@ fn prepare_root_refuses_a_linked_control_folder_and_leaves_its_target() {
         ),
         "unexpected error: {error}"
     );
+    assert_eq!(root_entries(root.path()), before, "the root changed");
 
     let entries: Vec<_> = fs::read_dir(target.path())
         .expect("read the target")
@@ -110,6 +113,82 @@ fn prepare_root_refuses_a_linked_control_folder_and_leaves_its_target() {
         fs::read_to_string(target.path().join("marker")).expect("the marker"),
         "keep"
     );
+}
+
+#[test]
+fn prepare_root_refuses_a_file_at_a_private_folder_path() {
+    for folder in ["run", "config", "state", "data", "cache", "home", "bin"] {
+        let root = crate::test_support::temporary_sandbox_root("prepare-file");
+        let file = root.path().join(folder);
+        fs::write(&file, "keep").expect("write the file");
+        let before = root_entries(root.path());
+
+        let error = prepare_root(root.path()).expect_err("the file is refused");
+
+        assert!(
+            matches!(
+                error.downcast_ref::<RootError>(),
+                Some(RootError::Unsafe { path, reason: RootReason::NotDirectory }) if path == &file
+            ),
+            "{folder}: unexpected error: {error}"
+        );
+        assert_eq!(fs::read_to_string(&file).expect("the file"), "keep");
+        assert_eq!(
+            root_entries(root.path()),
+            before,
+            "{folder}: the root changed"
+        );
+    }
+}
+
+#[test]
+fn prepare_root_refuses_a_private_folder_that_is_not_private() {
+    let root = crate::test_support::temporary_sandbox_root("prepare-mode");
+    let home = root.path().join("home");
+    fs::create_dir(&home).expect("create the folder");
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).expect("open the folder");
+    let before = root_entries(root.path());
+
+    let error = prepare_root(root.path()).expect_err("the open folder is refused");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<RootError>(),
+            Some(RootError::Unsafe { path, reason: RootReason::WrongMode { mode: 0o755 } })
+                if path == &home
+        ),
+        "unexpected error: {error}"
+    );
+    assert_eq!(root_entries(root.path()), before, "the root changed");
+}
+
+#[test]
+fn private_folder_missing_reports_a_path_it_cannot_read() {
+    let folder = crate::test_support::temporary_directory();
+    let file = folder.path().join("file");
+    fs::write(&file, "").expect("write the file");
+    let path = file.join("run");
+
+    let error = private_folder_missing(&path).expect_err("the path is refused");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<RootError>(),
+            Some(RootError::UnreadablePath { path: recorded, source })
+                if recorded == &path && source.kind() == std::io::ErrorKind::NotADirectory
+        ),
+        "unexpected error: {error:#}"
+    );
+}
+
+fn root_entries(root: &Path) -> Vec<OsString> {
+    let mut entries: Vec<_> = fs::read_dir(root)
+        .expect("read the root")
+        .map(|entry| entry.expect("an entry").file_name())
+        .collect();
+    entries.sort();
+
+    entries
 }
 
 #[test]
@@ -369,6 +448,7 @@ fn linked_paths_lists_control_files() {
         "shot.png",
         "created",
         "folder",
+        "folder.staged",
         "run",
         "config",
         "state",
@@ -446,7 +526,8 @@ fn recorded_folder_returns_the_exact_folder_that_was_recorded() {
     let root = crate::test_support::temporary_directory();
 
     for folder in ["/home/user/project", "/odd/ name \n", "/trailing/newline\n"] {
-        record_folder(root.path(), Path::new(folder)).expect("the folder is recorded");
+        let staged = stage_folder(root.path(), Path::new(folder)).expect("the folder is staged");
+        publish_folder(root.path(), &staged).expect("the folder is published");
 
         assert_eq!(
             recorded_folder(root.path()).expect("the record is read"),
@@ -454,6 +535,57 @@ fn recorded_folder_returns_the_exact_folder_that_was_recorded() {
             "{folder:?}"
         );
     }
+}
+
+#[test]
+fn stage_folder_refuses_a_fifo_at_the_staged_path() {
+    let root = crate::test_support::temporary_directory();
+    let staged = root.path().join("folder.staged");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &staged,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .expect("make the fifo");
+
+    let error =
+        stage_folder(root.path(), Path::new("/project")).expect_err("the fifo is not opened");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<RootError>(),
+            Some(RootError::FolderRecordBlocked { path }) if path == &staged
+        ),
+        "unexpected error: {error}"
+    );
+    assert!(staged.exists(), "the fifo is left for the user to remove");
+}
+
+#[test]
+fn a_failed_publish_attempts_both_removals_and_keeps_the_rename_error() {
+    let root = crate::test_support::temporary_directory();
+    let folder = root.path().join("folder");
+    fs::create_dir(&folder).expect("block the rename destination");
+    let staged = root.path().join("folder.staged");
+    fs::write(&staged, "/project").expect("write the staged folder");
+
+    let error = publish_folder(root.path(), &staged).expect_err("the rename fails");
+    let rendered = format!("{error:#}");
+
+    assert!(
+        rendered.contains(&format!(
+            "Could not record the project folder in {}",
+            folder.display()
+        )),
+        "unexpected error: {rendered}"
+    );
+    assert!(
+        !staged.exists(),
+        "the staged record is removed even when the destination removal fails"
+    );
+    assert!(folder.is_dir(), "the blocked destination stays");
 }
 
 #[test]
@@ -476,7 +608,7 @@ fn recorded_folder_is_none_without_a_record_and_fails_on_an_unreadable_one() {
 }
 
 #[test]
-fn record_folder_refuses_a_symlink_and_leaves_its_target() {
+fn stage_folder_refuses_a_symlink_and_leaves_its_target() {
     let root = crate::test_support::temporary_directory();
     let target = crate::test_support::temporary_directory();
     let marker = target.path().join("marker");
@@ -484,16 +616,17 @@ fn record_folder_refuses_a_symlink_and_leaves_its_target() {
     let link = root.path().join("folder");
     std::os::unix::fs::symlink(&marker, &link).expect("link the record");
 
-    let error = record_folder(root.path(), Path::new("/project")).expect_err("the link is refused");
+    let error = stage_folder(root.path(), Path::new("/project")).expect_err("the link is refused");
 
     assert!(
         matches!(
             error.downcast_ref::<RootError>(),
-            Some(RootError::LinkedPath { path }) if path == &link
+            Some(RootError::FolderRecordBlocked { path }) if path == &link
         ),
         "unexpected error: {error}"
     );
     assert_eq!(fs::read_to_string(&marker).expect("the marker"), "keep");
+    assert!(!root.path().join("folder.staged").exists());
 }
 
 #[test]

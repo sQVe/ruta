@@ -199,6 +199,27 @@ fn command_errors_keep_stderr_exit_codes_and_empty_stdout() {
 }
 
 #[test]
+fn a_broken_stderr_still_fails_the_command() {
+    in_test_namespace!();
+
+    let project = Project::new(&Config::default());
+    let sandbox = project.sandbox("broken-stderr");
+    let full = fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("open /dev/full");
+
+    let status = sandbox
+        .command(&["not-a-command"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(full))
+        .status()
+        .expect("run ruta");
+
+    assert_eq!(status.code(), Some(1), "a broken stderr must not panic");
+}
+
+#[test]
 #[ignore = "needs Weston, Xwayland, and xdotool"]
 fn capture_emits_startup_before_screenshot_and_cleanup_warnings() {
     in_test_namespace!();

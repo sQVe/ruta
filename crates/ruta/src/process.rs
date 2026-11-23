@@ -1,7 +1,10 @@
 use std::ffi::OsStr;
 use std::io::Read;
+use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
@@ -12,6 +15,8 @@ use crate::cleanup;
 
 pub(crate) const POLL: Duration = Duration::from_millis(100);
 pub(crate) const TOOL_TIMEOUT: Duration = Duration::from_secs(20);
+
+const READER_POLL: Duration = Duration::from_millis(10);
 
 pub(crate) fn poll_until<T>(
     timeout: Duration,
@@ -68,9 +73,18 @@ pub(crate) fn run_with_timeout(command: Command, timeout: Duration) -> anyhow::R
 }
 
 pub(crate) fn run_until(
+    command: Command,
+    timeout: Duration,
+    stop_early: impl FnMut() -> bool,
+) -> anyhow::Result<Output> {
+    run_until_with(command, timeout, stop_early, cleanup::stop_child_group)
+}
+
+fn run_until_with(
     mut command: Command,
     timeout: Duration,
     mut stop_early: impl FnMut() -> bool,
+    mut stop_command: impl FnMut(&mut Child) -> std::io::Result<()>,
 ) -> anyhow::Result<Output> {
     let program = command.get_program().to_string_lossy().into_owned();
 
@@ -83,10 +97,9 @@ pub(crate) fn run_until(
     let mut child = command
         .spawn()
         .with_context(|| format!("Could not start {program}"))?;
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let stdout_reader = std::thread::spawn(move || read_all(stdout));
-    let stderr_reader = std::thread::spawn(move || read_all(stderr));
+    let stop = Arc::new(AtomicBool::new(false));
+    let stdout_reader = spawn_reader(child.stdout.take(), Arc::clone(&stop));
+    let stderr_reader = spawn_reader(child.stderr.take(), Arc::clone(&stop));
     let deadline = Instant::now() + timeout;
 
     let exited = wait_for(&program, timeout, deadline, || {
@@ -98,25 +111,39 @@ pub(crate) fn run_until(
         Ok(None)
     });
 
-    if let Err(error) = exited {
-        cleanup::stop_child_group(&mut child);
-        return Err(error);
-    }
+    let stopped = match &exited {
+        Ok(()) => cleanup::stop_group(&child),
+        Err(_) => stop_command(&mut child),
+    };
 
     // The leader is a zombie until it is reaped, so its group ID still names this group.
-    cleanup::stop_group(&child);
-    let status = child
+    let waited = child
         .wait()
-        .with_context(|| format!("Could not wait for {program}"))?;
+        .with_context(|| format!("Could not wait for {program}"));
 
-    wait_for(&program, timeout, deadline, || {
-        check_stopped(&program, &mut stop_early)?;
+    let readers = if exited.is_ok() {
+        wait_for(&program, timeout, deadline, || {
+            check_stopped(&program, &mut stop_early)?;
 
-        Ok((stdout_reader.is_finished() && stderr_reader.is_finished()).then_some(()))
-    })?;
+            Ok((stdout_reader.is_finished() && stderr_reader.is_finished()).then_some(()))
+        })
+    } else {
+        Ok(())
+    };
 
-    let stdout = collect(stdout_reader, &program)?;
-    let stderr = collect(stderr_reader, &program)?;
+    stop.store(true, Ordering::Relaxed);
+    let stdout = collect(stdout_reader, &program);
+    let stderr = collect(stderr_reader, &program);
+
+    if let Err(error) = exited {
+        return Err(cleanup::with_report_failure(error, stopped));
+    }
+
+    stopped?;
+    let status = waited?;
+    readers?;
+    let stdout = stdout?;
+    let stderr = stderr?;
 
     Ok(Output {
         status,
@@ -170,18 +197,44 @@ fn collect(
     output.with_context(|| format!("Could not read the output of {program}"))
 }
 
-fn read_all(reader: Option<impl Read>) -> std::io::Result<Vec<u8>> {
+fn spawn_reader(
+    reader: Option<impl Read + AsFd + Send + 'static>,
+    stop: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>> {
+    std::thread::spawn(move || read_all(reader, &stop))
+}
+
+fn read_all(reader: Option<impl Read + AsFd>, stop: &AtomicBool) -> std::io::Result<Vec<u8>> {
     let Some(mut reader) = reader else {
         return Ok(Vec::new());
     };
+    let flags = rustix::fs::fcntl_getfl(&reader).map_err(std::io::Error::from)?;
+    rustix::fs::fcntl_setfl(&reader, flags | rustix::fs::OFlags::NONBLOCK)
+        .map_err(std::io::Error::from)?;
     let mut buffer = Vec::new();
-    reader.read_to_end(&mut buffer)?;
+    let mut chunk = [0_u8; 8192];
 
-    Ok(buffer)
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(buffer);
+        }
+
+        match reader.read(&mut chunk) {
+            Ok(0) => return Ok(buffer),
+            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(READER_POLL);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[test]
@@ -235,6 +288,35 @@ mod tests {
 
         assert!(
             matches!(error.downcast_ref::<ProcessError>(), Some(ProcessError::Timeout { program, duration }) if program == "sleep" && *duration == Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn a_timeout_keeps_a_failed_stop_report() {
+        crate::test_support::in_test_namespace!();
+
+        let mut command = Command::new("sleep");
+        command.arg("30");
+
+        let error = run_until_with(
+            command,
+            Duration::from_millis(100),
+            || false,
+            |child| {
+                child.kill().expect("kill the child");
+
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            },
+        )
+        .expect_err("the timeout is reported");
+
+        assert_eq!(
+            format!("{error:#}"),
+            "Could not report the cleanup: broken pipe: sleep timed out after 0 seconds."
+        );
+        assert!(
+            error.downcast_ref::<cleanup::ReportFailure>().is_some(),
+            "the combined failure is typed"
         );
     }
 
@@ -307,6 +389,34 @@ mod tests {
                 "{held}: the timeout came after {elapsed:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_timeout_closes_the_pipe_a_descendant_outside_the_group_holds() {
+        crate::test_support::in_test_namespace!();
+
+        let folder = crate::test_support::temporary_directory();
+        let marker = folder.path().join("write");
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                r#"setsid sh -c 'trap "" PIPE; sleep 1; if echo late; then echo kept > "$RUTA_TEST_MARKER"; else echo closed > "$RUTA_TEST_MARKER"; fi' & sleep 30"#,
+            ])
+            .env("RUTA_TEST_MARKER", &marker);
+
+        run_with_timeout(command, Duration::from_millis(300)).expect_err("the output stays open");
+
+        let written = poll_until(Duration::from_secs(3), || {
+            Ok(fs::read_to_string(&marker).ok())
+        })
+        .expect("the marker check cannot fail");
+
+        assert_eq!(
+            written.as_deref(),
+            Some("closed\n"),
+            "the reader must close the pipe when the operation ends"
+        );
     }
 
     #[test]

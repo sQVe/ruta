@@ -4,12 +4,19 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  # Runs are grouped by ref and commit, so a delayed event for another commit cannot cancel or
+  # replace this commit's run.
+  group: release-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
   release-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

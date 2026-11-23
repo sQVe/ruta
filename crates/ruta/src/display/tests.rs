@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::os::unix::fs::PermissionsExt as _;
 
 use super::*;
 use crate::process::POLL;
@@ -111,12 +112,152 @@ fn display_files_for(folder: &Path, number: &str, owner: u32) -> (PathBuf, PathB
     (lock, socket)
 }
 
+fn display_socket(folder: &Path, number: &str) -> PathBuf {
+    let socket = folder.join(format!(".X11-unix/X{number}"));
+    fs::create_dir_all(folder.join(".X11-unix")).expect("socket folder");
+    fs::write(&socket, "").expect("socket");
+
+    socket
+}
+
+fn entry_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+struct LockCase {
+    name: &'static str,
+    prepare: fn(&Path),
+    kept: bool,
+}
+
+#[test]
+fn clean_display_files_decides_each_initial_lock_state() {
+    let cases = [
+        LockCase {
+            name: "absent lock",
+            prepare: |_| {},
+            kept: false,
+        },
+        LockCase {
+            name: "unreadable lock",
+            prepare: |lock| {
+                fs::create_dir(lock).expect("put a folder in the lock's place");
+            },
+            kept: true,
+        },
+        LockCase {
+            name: "malformed lock",
+            prepare: |lock| {
+                fs::write(lock, "not a pid\n").expect("lock");
+            },
+            kept: true,
+        },
+        LockCase {
+            name: "dangling lock link",
+            prepare: |lock| {
+                std::os::unix::fs::symlink(lock.with_file_name("absent-lock"), lock)
+                    .expect("link the lock");
+            },
+            kept: true,
+        },
+        LockCase {
+            name: "zero lock owner",
+            prepare: |lock| {
+                fs::write(lock, "0\n").expect("lock");
+            },
+            kept: true,
+        },
+        LockCase {
+            name: "out-of-range lock owner",
+            prepare: |lock| {
+                fs::write(lock, format!("{}\n", u32::MAX)).expect("lock");
+            },
+            kept: true,
+        },
+        LockCase {
+            name: "non-utf8 lock",
+            prepare: |lock| {
+                fs::write(lock, [0xff, 0xfe]).expect("lock");
+            },
+            kept: true,
+        },
+        LockCase {
+            name: "fifo lock",
+            prepare: |lock| {
+                rustix::fs::mknodat(
+                    rustix::fs::CWD,
+                    lock,
+                    rustix::fs::FileType::Fifo,
+                    rustix::fs::Mode::from_raw_mode(0o600),
+                    0,
+                )
+                .expect("make the fifo");
+            },
+            kept: true,
+        },
+    ];
+
+    for LockCase {
+        name,
+        prepare,
+        kept,
+    } in cases
+    {
+        let folder = crate::test_support::temporary_directory();
+        let socket = display_socket(folder.path(), "7");
+        let lock = folder.path().join(".X7-lock");
+        prepare(&lock);
+
+        clean_display_files_in(folder.path(), ":7", Duration::ZERO, &mut cleanup::report)
+            .expect("clean the display files");
+
+        assert_eq!(entry_exists(&lock), kept, "{name}: the lock");
+        assert_eq!(entry_exists(&socket), kept, "{name}: the socket");
+    }
+}
+
+#[test]
+fn clean_display_files_keeps_the_files_when_the_lock_cannot_be_reached() {
+    // Root reads through a folder without search permission, so this case applies to other users.
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+
+    let folder = crate::test_support::temporary_directory();
+    let (lock, socket) = display_files(folder.path(), std::process::id());
+    fs::set_permissions(folder.path(), fs::Permissions::from_mode(0o600))
+        .expect("close the folder");
+    let mut warnings = Vec::new();
+
+    let result = clean_display_files_in(folder.path(), ":7", Duration::ZERO, &mut |warning| {
+        warnings.push(warning.to_string());
+        Ok(())
+    });
+
+    fs::set_permissions(folder.path(), fs::Permissions::from_mode(0o700))
+        .expect("reopen the folder for cleanup");
+    result.expect("clean the display files");
+
+    assert!(lock.exists());
+    assert!(socket.exists());
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
 #[test]
 fn clean_display_files_removes_the_files_of_a_dead_owner() {
     let folder = crate::test_support::temporary_directory();
-    let (lock, socket) = display_files(folder.path(), u32::MAX);
+    let mut dead = Command::new("true").spawn().expect("true");
+    let pid = dead.id();
+    dead.wait().expect("reap the process");
+    let (lock, socket) = display_files(folder.path(), pid);
 
-    clean_display_files_in(folder.path(), ":7", Duration::from_secs(1));
+    clean_display_files_in(
+        folder.path(),
+        ":7",
+        Duration::from_secs(1),
+        &mut cleanup::report,
+    )
+    .expect("clean the display files");
 
     assert!(!lock.exists());
     assert!(!socket.exists());
@@ -127,7 +268,8 @@ fn clean_display_files_keeps_the_files_of_a_live_owner() {
     let folder = crate::test_support::temporary_directory();
     let (lock, socket) = display_files(folder.path(), std::process::id());
 
-    clean_display_files_in(folder.path(), ":7", Duration::ZERO);
+    clean_display_files_in(folder.path(), ":7", Duration::ZERO, &mut cleanup::report)
+        .expect("clean the display files");
 
     assert!(lock.exists());
     assert!(socket.exists());
@@ -147,7 +289,13 @@ fn clean_display_files_keeps_the_files_of_a_new_owner() {
         crate::test_support::stop_child(&mut dying);
     });
 
-    clean_display_files_in(folder.path(), ":7", Duration::from_secs(10));
+    clean_display_files_in(
+        folder.path(),
+        ":7",
+        Duration::from_secs(10),
+        &mut cleanup::report,
+    )
+    .expect("clean the display files");
     new_owner.join().expect("new owner thread");
 
     assert!(lock.exists());
@@ -159,7 +307,8 @@ fn clean_display_files_ignores_a_display_that_is_not_a_number() {
     let folder = crate::test_support::temporary_directory();
     let (lock, socket) = display_files(folder.path(), u32::MAX);
 
-    clean_display_files_in(folder.path(), ":7x", Duration::ZERO);
+    clean_display_files_in(folder.path(), ":7x", Duration::ZERO, &mut cleanup::report)
+        .expect("clean the display files");
 
     assert!(lock.exists());
     assert!(socket.exists());
@@ -170,7 +319,8 @@ fn clean_display_files_ignores_a_display_without_a_number() {
     let folder = crate::test_support::temporary_directory();
     let (lock, socket) = display_files_for(folder.path(), "", u32::MAX);
 
-    clean_display_files_in(folder.path(), ":", Duration::ZERO);
+    clean_display_files_in(folder.path(), ":", Duration::ZERO, &mut cleanup::report)
+        .expect("clean the display files");
 
     assert!(lock.exists());
     assert!(socket.exists());
@@ -188,7 +338,13 @@ fn clean_display_files_waits_for_an_owner_that_exits_later() {
         crate::test_support::stop_child(&mut owner);
     });
 
-    clean_display_files_in(folder.path(), ":7", Duration::from_secs(10));
+    clean_display_files_in(
+        folder.path(),
+        ":7",
+        Duration::from_secs(10),
+        &mut cleanup::report,
+    )
+    .expect("clean the display files");
     exit.join().expect("owner thread");
 
     assert!(!lock.exists());

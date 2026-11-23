@@ -33,9 +33,9 @@ The `public` lists name the extra files another module already uses, as shared A
 
 ### Test support
 
-`test_support` is test-only. It has mutual edges with `identity`, `process`, `process_stat`, and
-`tool`. It builds fixtures from their types, and their tests use it. One direction alone would move
-the fixtures into production modules or copy them into each test.
+`test_support` is test-only. It has mutual edges with `cleanup`, `identity`, `process`,
+`process_stat`, and `tool`. It builds fixtures from their types, and their tests use it. One
+direction alone would move the fixtures into production modules or copy them into each test.
 
 ### Outside the table
 

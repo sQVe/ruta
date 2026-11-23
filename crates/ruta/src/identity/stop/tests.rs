@@ -396,6 +396,28 @@ fn marker(root: &Path) -> String {
     format!("RUTA_ROOT={}", root.display())
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("the group stop failed")]
+struct GroupStopFailed;
+
+#[test]
+fn a_failed_group_stop_still_sweeps_the_marker() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("stop-window-sweep");
+    crate::root::record_root_creation(root.path()).expect("record the root creation");
+    let mut child = spawn_with_marker(root.path());
+
+    let error = stop_window_with(root.path(), |_| Err(GroupStopFailed.into()))
+        .expect_err("the group stop fails");
+
+    assert!(error.downcast_ref::<GroupStopFailed>().is_some());
+    assert!(
+        child.wait_for_exit(Duration::from_secs(2)),
+        "the marked process is stopped by the sweep"
+    );
+}
+
 #[test]
 fn stop_window_kills_a_group_member_that_ignores_term() {
     crate::test_support::in_test_namespace!();
@@ -444,4 +466,142 @@ fn stop_window_stops_the_members_of_a_leader_that_already_exited() {
         "the members of an exited leader are stopped"
     );
     assert!(!path.exists(), "the record is removed");
+}
+
+#[test]
+fn stop_all_escalates_when_the_term_report_fails() {
+    use std::cell::RefCell;
+    use std::io::ErrorKind;
+
+    let alive = RefCell::new(vec![ProcessIdentity {
+        pid: 4242,
+        started: 1,
+    }]);
+    let signals = RefCell::new(Vec::new());
+
+    let error = stop_all_with(
+        || alive.borrow().clone(),
+        Duration::from_millis(150),
+        |pid| IdentityError::DidNotStop {
+            pid,
+            path: std::path::PathBuf::from("/tmp/x"),
+        },
+        |_, signal| {
+            signals.borrow_mut().push(signal);
+
+            if matches!(signal, rustix::process::Signal::TERM) {
+                return Err(std::io::Error::from(ErrorKind::BrokenPipe));
+            }
+
+            alive.borrow_mut().clear();
+
+            Ok(())
+        },
+    )
+    .expect_err("the failed warning write is reported");
+
+    assert!(
+        signals.borrow().len() >= 2,
+        "KILL follows the failed TERM report"
+    );
+    assert!(matches!(signals.borrow()[0], rustix::process::Signal::TERM));
+    assert!(matches!(signals.borrow()[1], rustix::process::Signal::KILL));
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(ErrorKind::BrokenPipe)
+    );
+}
+
+#[test]
+fn the_final_scan_keeps_a_report_error_when_no_process_remains() {
+    use std::cell::RefCell;
+    use std::io::ErrorKind;
+
+    let scans = RefCell::new(0);
+
+    let error = stop_all_with(
+        || {
+            let mut scans = scans.borrow_mut();
+            *scans += 1;
+
+            if *scans <= 3 {
+                vec![ProcessIdentity {
+                    pid: 4242,
+                    started: 1,
+                }]
+            } else {
+                Vec::new()
+            }
+        },
+        Duration::ZERO,
+        |pid| IdentityError::DidNotStop {
+            pid,
+            path: std::path::PathBuf::from("/tmp/x"),
+        },
+        |_, _| Err(std::io::Error::from(ErrorKind::BrokenPipe)),
+    )
+    .expect_err("the failed warning write is kept");
+
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(ErrorKind::BrokenPipe)
+    );
+}
+
+#[test]
+fn a_surviving_process_keeps_the_report_error_as_context() {
+    use std::io::ErrorKind;
+
+    let error = stop_all_with(
+        || {
+            vec![ProcessIdentity {
+                pid: 4242,
+                started: 1,
+            }]
+        },
+        Duration::ZERO,
+        |pid| IdentityError::DidNotStop {
+            pid,
+            path: std::path::PathBuf::from("/tmp/x"),
+        },
+        |_, _| Err(std::io::Error::from(ErrorKind::BrokenPipe)),
+    )
+    .expect_err("the process survives the KILL");
+
+    assert!(
+        error.chain().any(|cause| matches!(
+            cause.downcast_ref::<IdentityError>(),
+            Some(IdentityError::DidNotStop { pid: 4242, .. })
+        )),
+        "unexpected error: {error:#}"
+    );
+    assert!(
+        format!("{error:#}").contains("Could not report the cleanup"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn a_failed_group_report_does_not_hide_a_surviving_marked_process() {
+    let error = combine_stop_results(
+        Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe).into()),
+        Err(IdentityError::DidNotStop {
+            pid: 42,
+            path: std::path::PathBuf::from("/var/tmp/ruta-survivor"),
+        }
+        .into()),
+    )
+    .expect_err("the failed report and the survivor are returned");
+
+    assert!(
+        error.chain().any(|cause| matches!(
+            cause.downcast_ref::<IdentityError>(),
+            Some(IdentityError::DidNotStop { pid: 42, .. })
+        )),
+        "unexpected error: {error:#}"
+    );
 }

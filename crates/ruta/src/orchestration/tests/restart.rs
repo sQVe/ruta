@@ -140,7 +140,7 @@ fn start_app_leaves_a_marked_process_outside_the_app_group_and_teardown_stops_it
         "a marked process outside the app group must keep running"
     );
 
-    cleanup(root.path(), stop_target).expect("the sandbox is cleaned up");
+    cleanup(root.path(), stop_target, cleanup::report).expect("the sandbox is cleaned up");
 
     assert!(
         escaped.wait_for_exit(Duration::from_secs(2)),

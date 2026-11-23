@@ -37,13 +37,14 @@ impl ProcessStat {
     fn parse(bytes: &[u8]) -> Option<Self> {
         let end_of_name = bytes.iter().rposition(|byte| *byte == b')')?;
         let text = std::str::from_utf8(&bytes[end_of_name + 1..]).ok()?;
-        let fields: Vec<&str> = text.split_whitespace().collect();
+        let mut fields = text.split_whitespace();
 
         Some(Self {
-            state: fields.first()?.to_string(),
-            parent: fields.get(1)?.parse().ok()?,
-            group: fields.get(2)?.parse().ok()?,
-            start: fields.get(19)?.parse().ok()?,
+            state: fields.next()?.to_string(),
+            parent: fields.next()?.parse().ok()?,
+            group: fields.next()?.parse().ok()?,
+            // The start time is field 22 of the line, so 16 fields after the group.
+            start: fields.nth(16)?.parse().ok()?,
         })
     }
 

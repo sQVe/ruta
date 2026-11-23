@@ -26,8 +26,15 @@
   ],
   "packageRules": [
     {
-      "description": "Group and automerge non-major GitHub Actions updates",
+      "description": "Re-enable GitHub Actions updates for sQVe/stomme, because the shared preset disables them and its custom manager only matches the tag form. The digest pin needs the built-in manager to update the commit and its version comment.",
       "matchManagers": ["github-actions"],
+      "matchPackageNames": ["sQVe/stomme"],
+      "enabled": true
+    },
+    {
+      "description": "Group and automerge non-major GitHub Actions updates, except sQVe/stomme, which keeps the shared preset's group and merge policy",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["!sQVe/stomme"],
       "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
       "groupName": "GitHub Actions",
       "automerge": true

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 
-use super::{IdentityError, ProcessIdentity, process_is_ours};
+use super::{IdentityError, ProcessIdentity, error_is_survivor, process_is_ours};
 use crate::cleanup;
 use crate::process::poll_until;
 use crate::process_stat::ProcessStat;
@@ -13,8 +13,39 @@ use crate::root::root_created;
 pub(crate) const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) fn stop_window(root: &Path) -> anyhow::Result<()> {
-    stop_app_group(root)?;
-    stop_marked(root, std::process::id(), STOP_TIMEOUT)
+    stop_window_with(root, stop_app_group)
+}
+
+fn stop_window_with(
+    root: &Path,
+    stop_group: impl FnOnce(&Path) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let group = stop_group(root);
+    let marked = stop_marked(root, std::process::id(), STOP_TIMEOUT);
+
+    combine_stop_results(group, marked)
+}
+
+// A survivor keeps the root, so its `DidNotStop` stays primary even when the other step also
+// failed.
+fn combine_stop_results(
+    group: anyhow::Result<()>,
+    marked: anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    match (group, marked) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(group_error), Err(marked_error)) => {
+            let (primary, secondary) = if error_is_survivor(&marked_error) {
+                (marked_error, group_error)
+            } else {
+                (group_error, marked_error)
+            };
+
+            Err(primary.context(format!("{secondary:#}")))
+        }
+    }
 }
 
 pub(crate) fn stop_app_group(root: &Path) -> anyhow::Result<()> {
@@ -43,7 +74,7 @@ fn stop_recorded_with(
         .into());
     }
 
-    cleanup::remove_file(path);
+    cleanup::remove_file(path)?;
 
     Ok(())
 }
@@ -52,19 +83,20 @@ fn stop_group(root: &Path, timeout: Duration) -> anyhow::Result<()> {
     let path = root.join(crate::root::record::PID);
 
     let Some(leader) = ProcessIdentity::read(&path) else {
-        cleanup::remove_file(&path);
+        cleanup::remove_file(&path)?;
         return Ok(());
     };
 
-    if stop_all(|| group_members(leader, root), timeout)?.is_some() {
-        return Err(IdentityError::DidNotStop {
-            pid: leader.pid,
-            path,
-        }
-        .into());
-    }
+    stop_all(
+        || group_members(leader, root),
+        timeout,
+        |pid| IdentityError::DidNotStop {
+            pid,
+            path: path.clone(),
+        },
+    )?;
 
-    cleanup::remove_file(&path);
+    cleanup::remove_file(&path)?;
 
     Ok(())
 }
@@ -77,45 +109,67 @@ fn stop_marked(root: &Path, ruta: u32, timeout: Duration) -> anyhow::Result<()> 
     };
     let spared = self_and_ancestors(ruta);
 
-    match stop_all(|| marked_processes(root, created, &spared), timeout)? {
-        Some(pid) => Err(IdentityError::DidNotStop {
+    stop_all(
+        || marked_processes(root, created, &spared),
+        timeout,
+        |pid| IdentityError::DidNotStop {
             pid,
             path: root.to_path_buf(),
-        }
-        .into()),
-        None => Ok(()),
-    }
+        },
+    )?;
+
+    Ok(())
 }
 
-// Sends TERM, then KILL after `timeout`, until `members` finds no process. Returns a process that
-// is still alive after both waits.
+// Sends TERM, then KILL after `timeout`, until `members` finds no process. A process that is still
+// alive after both waits becomes `survivor`.
 fn stop_all(
     members: impl Fn() -> Vec<ProcessIdentity>,
     timeout: Duration,
-) -> anyhow::Result<Option<u32>> {
+    survivor: impl FnOnce(u32) -> IdentityError,
+) -> anyhow::Result<()> {
+    stop_all_with(members, timeout, survivor, signal_members)
+}
+
+fn stop_all_with(
+    members: impl Fn() -> Vec<ProcessIdentity>,
+    timeout: Duration,
+    survivor: impl FnOnce(u32) -> IdentityError,
+    mut signal: impl FnMut(&[ProcessIdentity], rustix::process::Signal) -> std::io::Result<()>,
+) -> anyhow::Result<()> {
     let alive = members();
     if alive.is_empty() {
-        return Ok(None);
+        return Ok(());
     }
 
-    signal_members(&alive, rustix::process::Signal::TERM);
+    let mut report = signal(&alive, rustix::process::Signal::TERM);
 
     if poll_until(timeout, || Ok(members().is_empty().then_some(())))?.is_some() {
-        return Ok(None);
+        return report.map_err(Into::into);
     }
 
     let killed = poll_until(timeout, || {
         let alive = members();
-        signal_members(&alive, rustix::process::Signal::KILL);
+        let signalled = signal(&alive, rustix::process::Signal::KILL);
+
+        if report.is_ok() {
+            report = signalled;
+        }
 
         Ok(alive.is_empty().then_some(()))
     })?;
 
     if killed.is_some() {
-        return Ok(None);
+        return report.map_err(Into::into);
     }
 
-    Ok(members().first().map(|identity| identity.pid))
+    match members().first() {
+        Some(identity) => Err(cleanup::with_report_failure(
+            survivor(identity.pid).into(),
+            report,
+        )),
+        None => report.map_err(Into::into),
+    }
 }
 
 // The live processes of the current user that hold this root's marker and started after the root
@@ -180,13 +234,17 @@ fn group_members(leader: ProcessIdentity, root: &Path) -> Vec<ProcessIdentity> {
     entries
         .filter_map(|(pid, _)| {
             let stat = ProcessStat::read_live(pid)?;
-            let in_group = stat.group == leader.pid;
+
+            if stat.group != leader.pid {
+                return None;
+            }
+
             let is_leader = pid == leader.pid;
             let is_recorded_leader = is_leader && stat.start == leader.started;
             let is_marked_member = !is_leader && process_is_ours(pid, root);
             let belongs_to_sandbox = is_recorded_leader || is_marked_member;
 
-            (in_group && belongs_to_sandbox).then_some(ProcessIdentity {
+            belongs_to_sandbox.then_some(ProcessIdentity {
                 pid,
                 started: stat.start,
             })
@@ -194,7 +252,12 @@ fn group_members(leader: ProcessIdentity, root: &Path) -> Vec<ProcessIdentity> {
         .collect()
 }
 
-fn signal_members(members: &[ProcessIdentity], signal: rustix::process::Signal) {
+fn signal_members(
+    members: &[ProcessIdentity],
+    signal: rustix::process::Signal,
+) -> std::io::Result<()> {
+    let mut first = Ok(());
+
     for &identity in members {
         let Some(raw) = rustix::process::Pid::from_raw(identity.pid as i32) else {
             continue;
@@ -207,8 +270,14 @@ fn signal_members(members: &[ProcessIdentity], signal: rustix::process::Signal) 
             continue;
         }
 
-        send_signal(identity.pid, &pidfd, signal);
+        let reported = cleanup::warn(
+            &format!("stop the process {}", identity.pid),
+            rustix::process::pidfd_send_signal(&pidfd, signal).map_err(std::io::Error::from),
+        );
+        first = first.and(reported);
     }
+
+    first
 }
 
 fn open_pidfd(raw: rustix::process::Pid) -> std::io::Result<rustix::fd::OwnedFd> {
@@ -231,7 +300,7 @@ fn stop_process(
     }
 
     let pidfd = opened.with_context(|| format!("Could not open the process {}", identity.pid))?;
-    send_signal(identity.pid, &pidfd, rustix::process::Signal::TERM);
+    send_signal(identity.pid, &pidfd, rustix::process::Signal::TERM)?;
     let stopped = poll_until(timeout, || {
         let alive =
             ProcessStat::read_live(identity.pid).is_some_and(|stat| stat.start == identity.started);
@@ -242,11 +311,15 @@ fn stop_process(
     Ok(stopped.is_some())
 }
 
-fn send_signal(pid: u32, pidfd: &rustix::fd::OwnedFd, signal: rustix::process::Signal) {
+fn send_signal(
+    pid: u32,
+    pidfd: &rustix::fd::OwnedFd,
+    signal: rustix::process::Signal,
+) -> std::io::Result<()> {
     cleanup::warn(
         &format!("stop the process {pid}"),
         rustix::process::pidfd_send_signal(pidfd, signal).map_err(std::io::Error::from),
-    );
+    )
 }
 
 #[cfg(test)]

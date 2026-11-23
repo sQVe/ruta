@@ -27,6 +27,28 @@ fn a_failed_start_keeps_the_end_of_the_app_log_after_the_root_is_removed() {
 }
 
 #[test]
+fn a_failed_cleanup_report_keeps_the_app_log_tail() {
+    let root = crate::test_support::temporary_sandbox_root("failed-start-report");
+    fs::write(root.path().join("app.log"), "app line 1\n").expect("write the app log");
+
+    let error = failed_start_with(
+        root.path(),
+        anyhow::anyhow!("the app exited"),
+        |root, _| Err(will_not_stop(root)),
+        |_| Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe)),
+    );
+
+    let failed = error
+        .downcast_ref::<FailedStart>()
+        .expect("the error holds the log tail");
+    assert_eq!(failed.log_tail, ["app line 1"]);
+    assert!(
+        format!("{error:#}").contains("Could not report the cleanup"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
 fn a_failed_start_without_an_app_log_keeps_its_error_unchanged() {
     let root = crate::test_support::temporary_sandbox_root("failed-start-no-log");
 

@@ -26,6 +26,7 @@ imports = ["process", "root", "test_support", "tool"]
 
 [modules.cleanup]
 entry = "crates/ruta/src/cleanup.rs"
+imports = ["test_support"]
 
 [modules.command]
 entry = "crates/ruta/src/command.rs"
@@ -66,6 +67,7 @@ entry = "crates/ruta/src/orchestration.rs"
 imports = [
   "app_start",
   "capture",
+  "cleanup",
   "command",
   "config",
   "display",

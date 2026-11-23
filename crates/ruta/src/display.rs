@@ -1,8 +1,10 @@
 use std::fs;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use rustix::fs::OFlags;
 use thiserror::Error;
 
 use crate::cleanup;
@@ -125,46 +127,97 @@ pub(crate) fn weston_command(
     command
 }
 
-pub(crate) fn clean_display_files(display: &str) {
-    clean_display_files_in(Path::new("/tmp"), display, DISPLAY_CLEANUP_TIMEOUT);
+pub(crate) fn clean_display_files(display: &str) -> std::io::Result<()> {
+    clean_display_files_with(display, &mut cleanup::report)
+}
+
+pub(crate) fn clean_display_files_with(
+    display: &str,
+    report: &mut impl FnMut(&str) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    clean_display_files_in(Path::new("/tmp"), display, DISPLAY_CLEANUP_TIMEOUT, report)
 }
 
 pub(crate) fn is_decimal(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
 }
 
-fn clean_display_files_in(folder: &Path, display: &str, timeout: Duration) {
+fn clean_display_files_in(
+    folder: &Path,
+    display: &str,
+    timeout: Duration,
+    report: &mut impl FnMut(&str) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let Some(number) = display.strip_prefix(':') else {
-        return;
+        return Ok(());
     };
 
     if !is_decimal(number) {
-        return;
+        return Ok(());
     }
 
     let lock = folder.join(format!(".X{number}-lock"));
     let socket = folder.join(format!(".X11-unix/X{number}"));
     let owner = lock_owner(&lock);
 
-    if let Some(pid) = owner {
+    // A lock that is there but cannot be read may still name a live owner, so only an absent lock
+    // lets the cleanup go on.
+    if owner == LockOwner::Unknown {
+        return Ok(());
+    }
+
+    if let LockOwner::Owner(pid) = owner {
         let stopped = poll_until(timeout, || Ok((!lock_owner_is_alive(pid)).then_some(())))
             .expect("the wait for the lock owner cannot fail");
 
         if stopped.is_none() {
-            return;
+            return Ok(());
         }
     }
 
     if lock_owner(&lock) != owner {
-        return;
+        return Ok(());
     }
 
-    cleanup::remove_file(&lock);
-    cleanup::remove_file(&socket);
+    cleanup::remove_file_with(report, &lock).and(cleanup::remove_file_with(report, &socket))
 }
 
-fn lock_owner(lock: &Path) -> Option<u32> {
-    fs::read_to_string(lock).ok()?.trim().parse().ok()
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LockOwner {
+    Absent,
+    Unknown,
+    Owner(u32),
+}
+
+fn lock_owner(lock: &Path) -> LockOwner {
+    // Open without following a link or blocking on a FIFO, then check the opened handle, so the
+    // type check and the read use the same object.
+    let fd = match rustix::fs::open(
+        lock,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(error) if error == rustix::io::Errno::NOENT => return LockOwner::Absent,
+        Err(_) => return LockOwner::Unknown,
+    };
+
+    let is_file = rustix::fs::fstat(&fd)
+        .is_ok_and(|stat| rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file());
+
+    if !is_file {
+        return LockOwner::Unknown;
+    }
+
+    let mut contents = String::new();
+    if fs::File::from(fd).read_to_string(&mut contents).is_err() {
+        return LockOwner::Unknown;
+    }
+
+    match contents.trim().parse::<i32>() {
+        Ok(owner) if owner > 0 => LockOwner::Owner(owner.unsigned_abs()),
+        _ => LockOwner::Unknown,
+    }
 }
 
 fn lock_owner_is_alive(pid: u32) -> bool {

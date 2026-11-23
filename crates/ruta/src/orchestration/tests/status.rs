@@ -195,7 +195,7 @@ fn status_refuses_an_unsafe_root() {
 }
 
 #[test]
-fn a_start_records_the_project_folder_before_the_app_starts() {
+fn a_failed_start_does_not_publish_the_new_folder() {
     crate::test_support::in_test_namespace!();
 
     let root = live_sandbox("start-folder");
@@ -205,6 +205,7 @@ fn a_start_records_the_project_folder_before_the_app_starts() {
     // The live display matches the config, so the start reuses it and stops nothing.
     record_display_settings(root.path(), "headless", size);
     prepare_root(root.path()).expect("the root is prepared");
+    fs::write(root.path().join("folder"), "/elsewhere").expect("write the old folder");
     let target = crate::test_support::temporary_directory();
     let link = root.path().join("bin").join("xdg-open");
     std::os::unix::fs::symlink(target.path(), &link).expect("link the opener");
@@ -213,7 +214,8 @@ fn a_start_records_the_project_folder_before_the_app_starts() {
         .expect_err("the linked opener stops the start");
 
     assert_eq!(
-        status(&config, root.path(), window_exists).expect("the sandbox serves the folder"),
-        "ruta test is up and serves /project/of the\nsandbox\n"
+        crate::root::recorded_folder(root.path()).expect("read the folder record"),
+        Some(PathBuf::from("/elsewhere")),
+        "a failed start publishes no folder"
     );
 }

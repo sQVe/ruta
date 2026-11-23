@@ -4,12 +4,18 @@ on:
   push:
     branches: [renovate/stomme]
 
+concurrency:
+  # Runs are grouped by ref and commit, so a delayed event for another commit cannot cancel or
+  # replace this commit's run.
+  group: renovate-stomme-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
   sync:
-    uses: sQVe/stomme/.github/workflows/sync-update.yml@v0.2.0
+    uses: sQVe/stomme/.github/workflows/sync-update.yml@5a74df4fa839f0d98d5388a0211c3a5d9b9024fd # v0.2.0
     secrets:
       app-id: ${{ secrets.STOMME_APP_ID }}
       app-private-key: ${{ secrets.STOMME_APP_PRIVATE_KEY }}
