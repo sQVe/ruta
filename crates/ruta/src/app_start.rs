@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead as _, BufReader, Read, Write as _};
 use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
@@ -47,8 +47,7 @@ pub(crate) fn start_app(
         cleanup::remove_file(&log_path),
         cleanup::remove_file(&ready_path),
     ])?;
-    let log = File::create(&log_path)
-        .with_context(|| format!("Could not create {}", log_path.display()))?;
+    let log = create_log(&log_path)?;
     let environment = app_environment(&caller_environment(), root, display, &config.environment);
     let program = &config.app.command.program;
 
@@ -84,6 +83,22 @@ pub(crate) fn start_app(
         &root.join(crate::root::record::ARGUMENTS),
         format!("{recorded}\n"),
     )
+}
+
+// The app's stderr and the `cat` that copies the app's stdout write this file from two
+// processes. A shared file position lets `splice` overwrite the app's bytes, so every write
+// must append. The log is emptied after opening because `OpenOptions` rejects append with
+// truncate, and it must start empty even when removing the old file failed.
+fn create_log(path: &Path) -> anyhow::Result<File> {
+    let context = || format!("Could not create {}", path.display());
+    let file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .with_context(context)?;
+    file.set_len(0).with_context(context)?;
+
+    Ok(file)
 }
 
 fn start_with_ready_line(
