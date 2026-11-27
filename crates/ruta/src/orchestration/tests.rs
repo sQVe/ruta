@@ -1,5 +1,6 @@
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
 use thiserror::Error;
@@ -788,6 +789,27 @@ fn io_kind(error: &anyhow::Error) -> Option<std::io::ErrorKind> {
         .map(std::io::Error::kind)
 }
 
+// Bounds the call, so a regression that blocks fails the test instead of hanging the suite.
+fn log_within(root: &Path, wait: Duration) -> anyhow::Result<String> {
+    let root = root.to_path_buf();
+    let (sender, receiver) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        sender
+            .send(log(&root))
+            .expect("the test waits for the log result");
+    });
+
+    receiver
+        .recv_timeout(wait)
+        .unwrap_or_else(|error| match error {
+            RecvTimeoutError::Disconnected => panic!("the log call panicked"),
+            RecvTimeoutError::Timeout => {
+                panic!("the log call did not return before the wait")
+            }
+        })
+}
+
 #[test]
 fn opened_accepts_a_missing_or_normal_file_and_fails_on_a_folder() {
     let root = crate::test_support::temporary_sandbox_root("opened");
@@ -817,11 +839,55 @@ fn log_fails_on_a_missing_log_and_prints_a_normal_one() {
     let error = log(root.path()).expect_err("a missing log fails");
 
     assert_eq!(io_kind(&error), Some(std::io::ErrorKind::NotFound));
+    assert!(
+        format!("{error:#}").starts_with("Could not read the app log: "),
+        "the error names the app log"
+    );
 
     fs::write(root.path().join("app.log"), "ready\n").expect("write the log");
     assert_eq!(
         log(root.path()).expect("a normal log is returned"),
         "ready\n"
+    );
+}
+
+#[test]
+fn log_refuses_a_fifo_without_blocking() {
+    let root = crate::test_support::temporary_sandbox_root("log-fifo");
+    let fifo = root.path().join("app.log");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .expect("make the fifo");
+
+    let error = log_within(root.path(), Duration::from_secs(10)).expect_err("a fifo is refused");
+
+    assert_eq!(
+        format!("{error:#}"),
+        "Could not read the app log: the app log is not a regular file"
+    );
+}
+
+#[test]
+fn log_refuses_a_symlinked_app_log_before_reading() {
+    let root = crate::test_support::temporary_sandbox_root("log-link");
+    let target = root.path().join("target.log");
+    let link = root.path().join("app.log");
+    fs::write(&target, "secret\n").expect("write the target");
+    std::os::unix::fs::symlink(&target, &link).expect("link the log");
+
+    let error = log(root.path()).expect_err("a symlink is refused");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<RootError>(),
+            Some(RootError::LinkedPath { path }) if path == &link
+        ),
+        "the root refuses the linked log before any read"
     );
 }
 

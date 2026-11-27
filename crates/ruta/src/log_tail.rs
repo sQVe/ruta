@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read as _, Seek as _, SeekFrom};
+use std::io::{Read, Seek as _, SeekFrom};
 use std::path::Path;
 
 use rustix::fs::{Mode, OFlags};
@@ -19,26 +19,44 @@ pub(crate) fn last_lines(path: &Path, count: usize) -> Vec<String> {
     lines[first..].iter().map(|line| line.to_string()).collect()
 }
 
-// Opens without following a symlink and without blocking on a FIFO, and reads only a regular file.
-fn read_tail(path: &Path) -> std::io::Result<Vec<u8>> {
+// Opens without following a symlink and without blocking on a FIFO, and refuses anything that is
+// not a regular file.
+pub(crate) fn open_app_log(path: &Path) -> std::io::Result<File> {
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-    let mut file = File::from(rustix::fs::open(path, flags, Mode::empty())?);
-    let metadata = file.metadata()?;
+    let file = File::from(rustix::fs::open(path, flags, Mode::empty())?);
 
-    if !metadata.is_file() {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the app log is not a regular file",
+        ));
     }
 
-    let start = metadata.len().saturating_sub(TAIL_BYTES as u64);
-    let mut bytes = Vec::new();
+    Ok(file)
+}
+
+// Reads only the last `TAIL_BYTES` of a regular log.
+fn read_tail(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut file = open_app_log(path)?;
+    let start = file.metadata()?.len().saturating_sub(TAIL_BYTES as u64);
 
     file.seek(SeekFrom::Start(
         start.saturating_sub(LOOK_BACK_BYTES as u64),
     ))?;
-    file.read_to_end(&mut bytes)?;
 
+    read_tail_from(&mut file, start)
+}
+
+// Reads at most the window and the look-back bytes before it, so a log that grows while it is read
+// cannot grow the excerpt past the window.
+fn read_tail_from(reader: &mut impl Read, start: u64) -> std::io::Result<Vec<u8>> {
     let window_offset = usize::try_from(start.min(LOOK_BACK_BYTES as u64))
         .expect("the window offset is at most the look-back bytes");
+    let limit = window_offset + TAIL_BYTES;
+    let mut bytes = Vec::new();
+
+    reader.take(limit as u64).read_to_end(&mut bytes)?;
+
     let window_offset = window_offset.min(bytes.len());
     let mut window = bytes.split_off(window_offset);
     let preceding = bytes.as_slice();
@@ -94,8 +112,32 @@ fn is_one_character(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Duration;
 
     use super::*;
+
+    const FIFO_WAIT: Duration = Duration::from_secs(10);
+
+    // Bounds a call that would block forever when a writerless FIFO open loses `O_NONBLOCK`.
+    fn within<T: Send + 'static>(call: impl FnOnce() -> T + Send + 'static) -> T {
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            sender
+                .send(call())
+                .expect("the test waits for the call result");
+        });
+
+        receiver
+            .recv_timeout(FIFO_WAIT)
+            .unwrap_or_else(|error| match error {
+                RecvTimeoutError::Disconnected => panic!("the call panicked"),
+                RecvTimeoutError::Timeout => {
+                    panic!("the call did not return before the wait")
+                }
+            })
+    }
 
     #[test]
     fn last_lines_keeps_only_the_last_lines() {
@@ -242,6 +284,75 @@ mod tests {
     }
 
     #[test]
+    fn open_app_log_refuses_a_fifo_and_a_symlink_and_opens_a_regular_log() {
+        let folder = crate::test_support::temporary_directory();
+        let fifo = folder.path().join("fifo.log");
+        let target = folder.path().join("target.log");
+        let link = folder.path().join("link.log");
+        let regular = folder.path().join("regular.log");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .expect("make the fifo");
+        fs::write(&target, "secret\n").expect("write the target");
+        std::os::unix::fs::symlink(&target, &link).expect("link the log");
+        fs::write(&regular, "ready\n").expect("write the regular log");
+
+        let fifo_error =
+            within(move || open_app_log(&fifo)).expect_err("a fifo is not a regular file");
+        assert_eq!(fifo_error.kind(), std::io::ErrorKind::InvalidInput);
+
+        let link_error = open_app_log(&link).expect_err("a symlink is not followed");
+        assert_eq!(
+            link_error.raw_os_error(),
+            Some(rustix::io::Errno::LOOP.raw_os_error())
+        );
+
+        let mut file = open_app_log(&regular).expect("a regular log opens");
+        let mut text = String::new();
+        file.read_to_string(&mut text).expect("read the log");
+        assert_eq!(text, "ready\n");
+    }
+
+    #[test]
+    fn read_tail_from_stops_at_the_tail_bytes_when_the_reader_keeps_yielding() {
+        for start in 0..=LOOK_BACK_BYTES as u64 {
+            let mut endless = std::io::repeat(b'x').take((TAIL_BYTES * 4) as u64);
+
+            let window = read_tail_from(&mut endless, start).expect("read the tail");
+
+            assert_eq!(
+                window.len(),
+                TAIL_BYTES,
+                "start {start} cannot grow the excerpt past the window"
+            );
+        }
+    }
+
+    #[test]
+    fn read_tail_from_keeps_the_window_when_a_newline_follows_it() {
+        let content = [
+            vec![b'x'; TAIL_BYTES + 1],
+            b"\n".to_vec(),
+            vec![b'x'; TAIL_BYTES],
+        ]
+        .concat();
+        let mut log = std::io::Cursor::new(content);
+
+        let window = read_tail_from(&mut log, 1).expect("read the tail");
+
+        assert_eq!(
+            window,
+            vec![b'x'; TAIL_BYTES],
+            "a newline just past the window is not read"
+        );
+    }
+
+    #[test]
     fn last_lines_does_not_open_a_fifo_or_follow_a_symlink() {
         let folder = crate::test_support::temporary_directory();
         let fifo = folder.path().join("fifo.log");
@@ -258,7 +369,11 @@ mod tests {
         fs::write(&target, "secret\n").expect("write the target");
         std::os::unix::fs::symlink(&target, &link).expect("link the log");
 
-        assert_eq!(last_lines(&fifo, 5), Vec::<String>::new(), "fifo");
+        assert_eq!(
+            within(move || last_lines(&fifo, 5)),
+            Vec::<String>::new(),
+            "fifo"
+        );
         assert_eq!(last_lines(&link, 5), Vec::<String>::new(), "symlink");
     }
 

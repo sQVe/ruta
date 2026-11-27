@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
@@ -16,7 +17,7 @@ use crate::environment::{caller_environment, sandbox_environment};
 use crate::identity::stop::{stop_recorded, stop_window};
 use crate::identity::{RECORD_TIMEOUT, error_is_survivor, record_matches, record_xwayland};
 use crate::input::{focus_window, send, window_exists, window_id};
-use crate::log_tail::last_lines;
+use crate::log_tail::{last_lines, open_app_log};
 use crate::root::{
     install_openers, prepare_root, record, record_root_creation, remove_root, require_trusted_root,
     root_path,
@@ -417,7 +418,10 @@ fn shot(name: &str, root: &Path, file: Option<PathBuf>) -> anyhow::Result<String
 fn log(root: &Path) -> anyhow::Result<String> {
     require_trusted_root(root)?;
 
-    let bytes = fs::read(root.join(crate::root::record::APP_LOG))
+    let mut file = open_app_log(&root.join(crate::root::record::APP_LOG))
+        .with_context(|| "Could not read the app log")?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
         .with_context(|| "Could not read the app log")?;
 
     Ok(String::from_utf8_lossy_owned(bytes))
