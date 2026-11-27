@@ -1,4 +1,128 @@
+use std::collections::HashSet;
+
 use super::*;
+
+const LABELS: &[&str] = &[
+    "a11y-cleanup",
+    "a11y-click",
+    "a11y-tree",
+    "a11y-type",
+    "bad",
+    "broken-app",
+    "broken-stderr",
+    "broken-stdout",
+    "capture-crop",
+    "capture-plain",
+    "capture-ready",
+    "command",
+    "escaped-app",
+    "escaped-other",
+    "escaped-probe",
+    "fifo-log",
+    "input",
+    "input-not-up",
+    "mode-child",
+    "mode-child-command",
+    "mode-exit",
+    "mode-normal",
+    "mode-panic",
+    "non-utf8",
+    "one",
+    "output",
+    "output-capture",
+    "output-errors",
+    "output-order",
+    "plain-tool",
+    "preflight",
+    "resize",
+    "restart-escape",
+    "status",
+    "status-absent",
+    "two",
+    "up",
+    "up-escape",
+];
+
+const CAPTURE_LABELS: &[&str] = &[
+    "broken-stdout",
+    "capture-crop",
+    "capture-plain",
+    "capture-ready",
+    "output-capture",
+    "output-order",
+];
+
+#[test]
+fn two_projects_with_one_label_get_different_sandbox_roots() {
+    let project = Project::new(&Config::default());
+    let other_project = Project::new(&Config::default());
+
+    let root = sandbox_root(&project.sandbox_name("shared-label"));
+    let other_root = sandbox_root(&other_project.sandbox_name("shared-label"));
+
+    assert_ne!(root, other_root);
+}
+
+#[test]
+fn sandbox_names_are_valid_ruta_names() {
+    for &label in LABELS {
+        let name = next_sandbox_name(label);
+
+        assert_valid_ruta_name(&name);
+    }
+
+    for &label in CAPTURE_LABELS {
+        let name = next_sandbox_name(label);
+        let capture_name = format!("{name}-capture");
+
+        assert_valid_ruta_name(&capture_name);
+    }
+}
+
+#[test]
+fn generated_names_keep_one_length_and_stay_distinct() {
+    let names: Vec<String> = (0..5000)
+        .map(|_| next_sandbox_name("shared-label"))
+        .collect();
+    let lengths: HashSet<usize> = names.iter().map(String::len).collect();
+    let distinct: HashSet<&str> = names.iter().map(String::as_str).collect();
+    let counters: HashSet<&str> = names
+        .iter()
+        .map(|name| &name[name.len() - NAME_COUNTER_DIGITS..])
+        .collect();
+
+    for name in &names {
+        assert_valid_ruta_name(name);
+    }
+
+    assert_eq!(lengths.len(), 1, "every name has one length: {lengths:?}");
+    assert_eq!(distinct.len(), names.len(), "every name is distinct");
+    assert_eq!(
+        counters.len(),
+        names.len(),
+        "every name has a distinct counter"
+    );
+}
+
+fn assert_valid_ruta_name(name: &str) {
+    let starts_with_letter_or_digit = name
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_lowercase() || character.is_ascii_digit());
+    let holds_only_valid_characters = name.chars().all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+    });
+
+    assert!(name.len() <= 32, "{name}: at most 32 bytes");
+    assert!(
+        starts_with_letter_or_digit,
+        "{name}: starts with a lowercase letter or a digit"
+    );
+    assert!(
+        holds_only_valid_characters,
+        "{name}: holds only lowercase letters, digits, and hyphens"
+    );
+}
 
 #[test]
 fn default_config_keeps_the_complete_template() {

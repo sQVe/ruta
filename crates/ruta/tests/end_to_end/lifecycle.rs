@@ -52,11 +52,11 @@ fn status_proves_which_folder_started_the_sandbox() {
     in_test_namespace!();
 
     let project = Project::new(&Config::default());
-    let sandbox = project.sandbox("status");
+    let name = next_sandbox_name("status");
+    let sandbox = project.sandbox_with_name(&name);
     let other_project = Project::new(&Config::default());
-    let other_folder = other_project.sandbox("status");
+    let other_folder = other_project.sandbox_with_name(&name);
     assert_eq!(sandbox.name(), other_folder.name());
-    let name = sandbox.name();
     let folder = project.folder().display();
 
     sandbox.succeed(&["up"]);
