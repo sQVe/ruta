@@ -17,6 +17,10 @@ Accepted. Numbers are never reused. The Retired table keeps each retired ADR's l
 - [0002: One shared CLI for private app windows](./0002-purpose-and-design.md)
 - [0005: ruta supports Linux only](./0005-linux-only.md)
 
+### Sandbox lifecycle
+
+- [0008: One lock file per sandbox serializes its commands](./0008-one-lock-file-per-sandbox.md)
+
 ### Project and toolchain
 
 - [0003: Toolchain and quality gates](./0003-toolchain-and-quality-gates.md)
