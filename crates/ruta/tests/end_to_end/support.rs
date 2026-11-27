@@ -131,13 +131,18 @@ fn counter_digits(id: u32) -> String {
     digits.iter().map(|digit| char::from(*digit)).collect()
 }
 
-pub(crate) fn sandbox_capture_name(name: &str) -> String {
+// The capture name is only valid when it fits, so callers that may exceed the limit get `None`.
+pub(crate) fn capture_name(name: &str) -> Option<String> {
     let capture_name = format!("{name}-capture");
+    let within_limit = capture_name.len() <= NAME_LIMIT;
 
-    assert!(
-        capture_name.len() <= NAME_LIMIT,
-        "the sandbox {name:?} builds a capture name longer than {NAME_LIMIT} bytes: {capture_name}"
-    );
+    within_limit.then_some(capture_name)
+}
+
+pub(crate) fn sandbox_capture_name(name: &str) -> String {
+    let Some(capture_name) = capture_name(name) else {
+        panic!("the sandbox {name:?} builds a capture name longer than {NAME_LIMIT} bytes");
+    };
 
     capture_name
 }
@@ -173,10 +178,9 @@ impl Sandbox<'_> {
     }
 
     pub(crate) fn capture_lock_path(&self) -> Option<PathBuf> {
-        let capture_name = format!("{}-capture", self.name);
-        let within_limit = capture_name.len() <= NAME_LIMIT;
+        let capture_name = capture_name(&self.name);
 
-        within_limit.then(|| sandbox_lock_path(&capture_name))
+        capture_name.map(|name| sandbox_lock_path(&name))
     }
 
     pub(crate) fn run(&self, arguments: &[&str]) -> Output {
@@ -294,8 +298,8 @@ impl Sandbox<'_> {
         Ok(())
     }
 
-    fn remove_locks(&self) -> std::io::Result<()> {
-        let mut failure = None;
+    fn remove_locks(&self) -> Vec<String> {
+        let mut failures = Vec::new();
         let mut paths = vec![self.lock_path()];
 
         if let Some(capture_lock) = self.capture_lock_path() {
@@ -306,14 +310,11 @@ impl Sandbox<'_> {
             if let Err(error) = fs::remove_file(&path)
                 && error.kind() != std::io::ErrorKind::NotFound
             {
-                failure.get_or_insert(error);
+                failures.push(format!("{}: {error}", path.display()));
             }
         }
 
-        match failure {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        failures
     }
 }
 
@@ -340,8 +341,8 @@ impl Drop for Sandbox<'_> {
             );
         }
 
-        if let Err(error) = self.remove_locks() {
-            eprintln!("could not remove the lock file of {}: {error}", self.name);
+        for failure in self.remove_locks() {
+            eprintln!("could not remove a lock file of {}: {failure}", self.name);
         }
     }
 }
