@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{Seek as _, SeekFrom};
 use std::os::unix::net::UnixStream;
 
 use super::*;
@@ -22,7 +23,7 @@ fn start_script(script: &str) -> (ChildGuard, ChildStdout) {
 
 fn log_file(folder: &Path) -> (File, PathBuf) {
     let path = folder.join("app.log");
-    let file = File::create(&path).expect("create the log");
+    let file = create_log(&path).expect("create the log");
 
     (file, path)
 }
@@ -101,6 +102,43 @@ fn a_ready_line_app_whose_record_fails_keeps_its_output_in_the_log() {
     assert_eq!(
         fs::read_to_string(&log_path).expect("read the log"),
         "ruta-test: the setup is broken\n"
+    );
+}
+
+#[test]
+fn a_writer_behind_the_end_of_the_app_log_keeps_the_earlier_lines() {
+    let folder = crate::test_support::temporary_directory();
+    let log_path = folder.path().join("app.log");
+    let mut log = create_log(&log_path).expect("create the log");
+    log.write_all(b"first\n").expect("write the first line");
+    let mut earlier_position = log.try_clone().expect("clone the log");
+    earlier_position
+        .seek(SeekFrom::Start(0))
+        .expect("seek to the start");
+
+    earlier_position
+        .write_all(b"second\n")
+        .expect("write the second line");
+
+    assert_eq!(
+        fs::read_to_string(&log_path).expect("read the log"),
+        "first\nsecond\n"
+    );
+}
+
+#[test]
+fn create_log_starts_the_app_log_empty() {
+    let folder = crate::test_support::temporary_directory();
+    let log_path = folder.path().join("app.log");
+    fs::write(&log_path, "old run\n").expect("write the old log");
+
+    let mut log = create_log(&log_path).expect("create the log");
+    assert_eq!(fs::read_to_string(&log_path).expect("read the log"), "");
+
+    log.write_all(b"new run\n").expect("write the new line");
+    assert_eq!(
+        fs::read_to_string(&log_path).expect("read the log"),
+        "new run\n"
     );
 }
 
