@@ -86,17 +86,18 @@ pub(crate) fn start_app(
 }
 
 // The app's stderr and the `cat` that copies the app's stdout write this file from two
-// processes. A shared file position lets `splice` overwrite the app's bytes, so every write
-// must append. The log is emptied after opening because `OpenOptions` rejects append with
-// truncate, and it must start empty even when removing the old file failed.
+// processes. `cat` copies pipe data with `splice`, which cannot append and takes no file position
+// lock, so without append the two writers overwrite each other's bytes. Every write must append,
+// and the log must start empty even when removing the old file failed. `OpenOptions` rejects
+// append with truncate, so it is emptied here.
 fn create_log(path: &Path) -> anyhow::Result<File> {
-    let context = || format!("Could not create {}", path.display());
     let file = OpenOptions::new()
         .append(true)
         .create(true)
         .open(path)
-        .with_context(context)?;
-    file.set_len(0).with_context(context)?;
+        .with_context(|| format!("Could not create {}", path.display()))?;
+    file.set_len(0)
+        .with_context(|| format!("Could not empty {}", path.display()))?;
 
     Ok(file)
 }
