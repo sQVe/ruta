@@ -239,7 +239,7 @@ fn copy_until_ready_fails_a_line_over_the_bound() {
     let (log, log_path) = log_file(folder.path());
     let app = PathBuf::from("/apps/test-app");
     let limit = 8;
-    let line = vec![b'a'; usize::try_from(limit).expect("the limit fits") + 1];
+    let line = b"{\"a\":\"aaaaaaaa\"}\n";
 
     let error = copy_until_ready(BufReader::new(&line[..]), log, &app, limit)
         .expect_err("the line passes the bound");
@@ -256,7 +256,7 @@ fn copy_until_ready_fails_a_line_over_the_bound() {
     );
     assert_eq!(
         fs::read_to_string(&log_path).expect("read the log"),
-        "a".repeat(line.len())
+        String::from_utf8_lossy(line)
     );
 }
 
@@ -280,11 +280,18 @@ fn copy_until_ready_accepts_a_line_at_the_bound() {
 }
 
 #[test]
+// The error message tells users this bound in bytes, so the value is a contract.
+fn the_ready_line_bound_is_64_kib() {
+    assert_eq!(READY_LINE_LIMIT, 65_536);
+}
+
+#[test]
 fn copy_until_ready_accepts_a_line_at_the_ready_line_bound() {
     let folder = crate::test_support::temporary_directory();
     let (log, log_path) = log_file(folder.path());
     let app = PathBuf::from("/apps/test-app");
-    let input = format!("{}\n{{}}\n", "a".repeat(65_536));
+    let length = usize::try_from(READY_LINE_LIMIT).expect("the ready line bound fits");
+    let input = format!("{}\n{{}}\n", "a".repeat(length));
 
     let (line, _) = copy_until_ready(
         BufReader::new(input.as_bytes()),

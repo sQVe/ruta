@@ -126,19 +126,17 @@ fn start_app_in_line_mode_keeps_logs_ready_text_and_arguments() {
 }
 
 #[test]
-fn start_app_fails_when_the_app_prints_a_ready_line_over_the_bound() {
+fn start_app_fails_when_the_app_prints_a_line_over_the_bound() {
     crate::test_support::in_test_namespace!();
 
     let root = temporary_sandbox_root("start-line-long");
+    let script = format!(
+        "head -c {} /dev/zero | tr \"\\0\" a; exec sleep 30",
+        READY_LINE_LIMIT + 1
+    );
     let mut config = command_config(
         root.path(),
-        command_line(
-            "sh",
-            &[
-                "-c",
-                r#"head -c 65537 /dev/zero | tr "\0" a; exec sleep 30"#,
-            ],
-        ),
+        command_line("sh", &["-c", script.as_str()]),
         command_line("true", &[]),
         "start-line-long",
     );
@@ -165,6 +163,10 @@ fn start_app_fails_when_the_app_prints_a_ready_line_over_the_bound() {
     assert!(
         logged.iter().all(|byte| *byte == b'a'),
         "the log holds only the app's line"
+    );
+    assert!(
+        !root.path().join("ready.json").exists(),
+        "a refused start writes no ready record"
     );
 
     stop_window(root.path()).expect("the app stops");
