@@ -826,6 +826,30 @@ fn log_fails_on_a_missing_log_and_prints_a_normal_one() {
 }
 
 #[test]
+fn log_shows_the_replacement_character_for_an_invalid_byte() {
+    let root = crate::test_support::temporary_sandbox_root("log-invalid");
+
+    fs::write(root.path().join("app.log"), b"ready\n\xffstill here\n").expect("write the log");
+
+    assert_eq!(
+        log(root.path()).expect("the readable lines are returned"),
+        "ready\n\u{fffd}still here\n"
+    );
+}
+
+#[test]
+fn log_shows_one_replacement_character_for_a_truncated_sequence() {
+    let root = crate::test_support::temporary_sandbox_root("log-truncated");
+
+    fs::write(root.path().join("app.log"), b"a\xe2\x82b\n").expect("write the log");
+
+    assert_eq!(
+        log(root.path()).expect("the readable lines are returned"),
+        "a\u{fffd}b\n"
+    );
+}
+
+#[test]
 fn execute_returns_a_command_failure() {
     crate::test_support::in_test_namespace!();
 
