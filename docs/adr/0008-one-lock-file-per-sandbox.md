@@ -75,9 +75,10 @@ retry.
 
 The folder record exists only while it names the folder that started the current window. A start
 removes the folder record before it stops the old window, and publishes the new record after the
-new window is up. A start killed between those steps leaves no folder record, and `status` reports
-that the sandbox has no folder record. `status` reads the display, the window, and the folder record
-under one shared lock, so it never sees a start halfway through.
+new window is up. So a start killed between those steps never leaves a window paired with another
+start's folder. When a window is still up, `status` reports that the sandbox has no folder record.
+When no window is up, `status` reports that the sandbox is not up. `status` reads the display, the
+window, and the folder record under one shared lock, so it never sees a start halfway through.
 
 ## Consequences
 
