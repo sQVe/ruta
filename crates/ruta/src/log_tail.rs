@@ -6,9 +6,6 @@ use rustix::fs::{Mode, OFlags};
 
 const TAIL_BYTES: usize = 16 * 1024;
 
-// The last `count` lines of the log at `path`, or none when it cannot be read. The read seeks one
-// byte before the last `TAIL_BYTES` and reads from there. The byte before the window tells a line
-// start from a line middle; it exists only when the window starts after byte zero.
 pub(crate) fn last_lines(path: &Path, count: usize) -> Vec<String> {
     let Ok(tail) = read_tail(path) else {
         return Vec::new();
