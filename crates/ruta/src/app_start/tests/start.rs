@@ -126,6 +126,57 @@ fn start_app_in_line_mode_keeps_logs_ready_text_and_arguments() {
 }
 
 #[test]
+fn start_app_fails_when_the_app_prints_a_line_over_the_bound() {
+    crate::test_support::in_test_namespace!();
+
+    let root = temporary_sandbox_root("start-line-long");
+    let script = format!(
+        "head -c {} /dev/zero | tr \"\\0\" a; exec sleep 30",
+        READY_LINE_LIMIT + 1
+    );
+    let mut config = command_config(
+        root.path(),
+        command_line("sh", &["-c", script.as_str()]),
+        command_line("true", &[]),
+        "start-line-long",
+    );
+    config.ready = Ready::Line;
+
+    let error =
+        start_app(root.path(), &config, &[], DISPLAY).expect_err("the line passes the bound");
+    let log_path = root.path().join("app.log");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<AppStartError>(),
+            Some(AppStartError::ReadyLineTooLong { app, limit })
+                if app == &PathBuf::from("sh") && *limit == READY_LINE_LIMIT
+        ),
+        "unexpected error: {error:#}"
+    );
+    let logged = fs::read(&log_path).expect("read the log");
+    assert!(
+        logged.len() as u64 > READY_LINE_LIMIT,
+        "the log holds {} bytes",
+        logged.len()
+    );
+    assert!(
+        logged.iter().all(|byte| *byte == b'a'),
+        "the log holds only the app's line"
+    );
+    assert!(
+        !root.path().join("ready.json").exists(),
+        "a refused start writes no ready record"
+    );
+
+    stop_window(root.path()).expect("the app stops");
+    assert_eq!(
+        wait_until_gone("RUTA_TEST_APP=start-line-long", Duration::from_secs(2)),
+        Vec::<u32>::new()
+    );
+}
+
+#[test]
 fn start_app_stops_the_app_group_when_the_app_record_fails() {
     crate::test_support::in_test_namespace!();
 
