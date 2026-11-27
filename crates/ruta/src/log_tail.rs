@@ -5,9 +5,9 @@ use std::path::Path;
 use rustix::fs::{Mode, OFlags};
 
 const TAIL_BYTES: usize = 16 * 1024;
+const MAX_CHARACTER_BYTES: usize = 4;
+const LOOK_BACK_BYTES: usize = MAX_CHARACTER_BYTES - 1;
 
-// The last `count` lines of the log at `path`, or none when it cannot be read. Only the last
-// `TAIL_BYTES` are read, so a huge log costs no more than a small one.
 pub(crate) fn last_lines(path: &Path, count: usize) -> Vec<String> {
     let Ok(tail) = read_tail(path) else {
         return Vec::new();
@@ -29,23 +29,66 @@ fn read_tail(path: &Path) -> std::io::Result<Vec<u8>> {
         return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
     }
 
-    let length = metadata.len();
-    let start = length.saturating_sub(TAIL_BYTES as u64);
-    let mut tail = Vec::new();
+    let start = metadata.len().saturating_sub(TAIL_BYTES as u64);
+    let mut bytes = Vec::new();
 
-    file.seek(SeekFrom::Start(start))?;
-    file.read_to_end(&mut tail)?;
+    file.seek(SeekFrom::Start(
+        start.saturating_sub(LOOK_BACK_BYTES as u64),
+    ))?;
+    file.read_to_end(&mut bytes)?;
 
-    // A tail that starts inside a line drops that partial line.
-    if start > 0 {
-        let after_break = tail
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(tail.len(), |index| index + 1);
-        tail.drain(..after_break);
+    let window_offset = usize::try_from(start.min(LOOK_BACK_BYTES as u64))
+        .expect("the window offset is at most the look-back bytes");
+    let window_offset = window_offset.min(bytes.len());
+    let mut window = bytes.split_off(window_offset);
+    let preceding = bytes.as_slice();
+
+    if preceding.last().is_some_and(|byte| *byte != b'\n') {
+        drop_partial_first_line(&mut window, preceding);
     }
 
-    Ok(tail)
+    Ok(window)
+}
+
+fn drop_partial_first_line(window: &mut Vec<u8>, preceding: &[u8]) {
+    if let Some(line_break) = window.iter().position(|byte| *byte == b'\n') {
+        window.drain(..=line_break);
+        return;
+    }
+
+    drop_completed_character(window, preceding);
+}
+
+fn drop_completed_character(window: &mut Vec<u8>, preceding: &[u8]) {
+    let Some(lead) = preceding
+        .iter()
+        .rposition(|byte| !is_continuation_byte(*byte))
+    else {
+        return;
+    };
+    let begun = &preceding[lead..];
+
+    for length in 1..=LOOK_BACK_BYTES {
+        let Some(head) = window.get(..length) else {
+            return;
+        };
+        let joined = [begun, head].concat();
+
+        if is_one_character(&joined) {
+            if length < window.len() {
+                window.drain(..length);
+            }
+            return;
+        }
+    }
+}
+
+fn is_continuation_byte(byte: u8) -> bool {
+    byte & 0b1100_0000 == 0b1000_0000
+}
+
+fn is_one_character(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok_and(|text| text.chars().count() == 1)
 }
 
 #[cfg(test)]
@@ -67,17 +110,126 @@ mod tests {
     }
 
     #[test]
-    fn last_lines_reads_only_the_end_of_a_long_log() {
+    fn last_lines_returns_the_lines_inside_the_tail_window() {
         let folder = crate::test_support::temporary_directory();
         let log = folder.path().join("app.log");
-        let long_line = "x".repeat(TAIL_BYTES * 2);
-        fs::write(&log, format!("{long_line}\nlast\n")).expect("write the log");
 
-        assert_eq!(
-            last_lines(&log, 5),
-            ["last"],
-            "the partial line at the start of the tail is dropped"
-        );
+        let first_in_window = "first in window\n";
+        let line_start_content = format!(
+            "{}\n{first_in_window}{}",
+            "x".repeat(TAIL_BYTES),
+            "y".repeat(TAIL_BYTES - first_in_window.len())
+        )
+        .into_bytes();
+        let line_start_lines = vec![
+            "first in window".to_string(),
+            "y".repeat(TAIL_BYTES - first_in_window.len()),
+        ];
+
+        let partial_line = "\nfirst complete\n";
+        let mid_line_content = format!("{}{partial_line}", "x".repeat(TAIL_BYTES * 2)).into_bytes();
+        let mid_line_lines = vec!["first complete".to_string()];
+
+        let no_newline_content = "x".repeat(TAIL_BYTES * 2).into_bytes();
+        let no_newline_lines = vec!["x".repeat(TAIL_BYTES)];
+
+        let split_character_content =
+            format!("{}é{}", "x".repeat(TAIL_BYTES), "y".repeat(TAIL_BYTES - 1)).into_bytes();
+        let split_character_lines = vec!["y".repeat(TAIL_BYTES - 1)];
+
+        let three_byte_character_content =
+            format!("{}€{}", "x".repeat(TAIL_BYTES), "y".repeat(TAIL_BYTES - 1)).into_bytes();
+        let three_byte_character_lines = vec!["y".repeat(TAIL_BYTES - 1)];
+
+        let four_byte_character_content =
+            format!("{}😀{}", "x".repeat(TAIL_BYTES), "y".repeat(TAIL_BYTES - 3)).into_bytes();
+        let four_byte_character_lines = vec!["y".repeat(TAIL_BYTES - 3)];
+
+        let orphan_continuation_content = [
+            "x".repeat(TAIL_BYTES).into_bytes(),
+            b"y\x80\x80".to_vec(),
+            "y".repeat(TAIL_BYTES - 2).into_bytes(),
+        ]
+        .concat();
+        let orphan_continuation_lines = vec![format!(
+            "{}{}",
+            "\u{FFFD}".repeat(2),
+            "y".repeat(TAIL_BYTES - 2)
+        )];
+
+        let continuation_window_content = [
+            "x".repeat(TAIL_BYTES).into_bytes(),
+            b"y".to_vec(),
+            vec![0x80; TAIL_BYTES],
+        ]
+        .concat();
+        let continuation_window_lines = vec!["\u{FFFD}".repeat(TAIL_BYTES)];
+
+        let no_lead_content = [
+            "x".repeat(TAIL_BYTES - 3).into_bytes(),
+            vec![0x80; TAIL_BYTES + 3],
+        ]
+        .concat();
+        let no_lead_lines = vec!["\u{FFFD}".repeat(TAIL_BYTES)];
+
+        let cases = [
+            (
+                "window starts on a line start",
+                line_start_content,
+                line_start_lines,
+            ),
+            ("window starts mid-line", mid_line_content, mid_line_lines),
+            (
+                "window starts inside a multi-byte character",
+                split_character_content,
+                split_character_lines,
+            ),
+            (
+                "window starts at the last byte of a three-byte character",
+                three_byte_character_content,
+                three_byte_character_lines,
+            ),
+            (
+                "window starts after the first byte of a four-byte character",
+                four_byte_character_content,
+                four_byte_character_lines,
+            ),
+            (
+                "window holds no newline",
+                no_newline_content,
+                no_newline_lines,
+            ),
+            (
+                "window starts with continuation bytes after an ASCII byte",
+                orphan_continuation_content,
+                orphan_continuation_lines,
+            ),
+            (
+                "window holds only continuation bytes",
+                continuation_window_content,
+                continuation_window_lines,
+            ),
+            (
+                "window starts after three continuation bytes with no lead byte",
+                no_lead_content,
+                no_lead_lines,
+            ),
+        ];
+
+        for (case, content, expected) in cases {
+            fs::write(&log, content).expect("write the log");
+
+            assert_eq!(last_lines(&log, 5), expected, "{case}");
+        }
+    }
+
+    #[test]
+    fn drop_completed_character_keeps_a_window_that_is_only_the_completed_character() {
+        let mut window = vec![0xA9];
+
+        drop_completed_character(&mut window, &[0xC3]);
+
+        assert_eq!(window, [0xA9], "the excerpt is never empty");
     }
 
     #[test]
