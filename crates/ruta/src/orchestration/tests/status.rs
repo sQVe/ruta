@@ -178,6 +178,48 @@ fn status_refuses_a_root_without_a_folder_record() {
 }
 
 #[test]
+fn status_refuses_a_live_root_without_a_published_folder() {
+    let root = live_sandbox("status-staged-live");
+    let staged = Path::new("/staged/other");
+    fs::write(
+        root.path().join("folder.staged"),
+        staged.as_os_str().as_bytes(),
+    )
+    .expect("write the staged folder");
+
+    let error = status_error(root.path(), window_exists);
+
+    assert_eq!(
+        error,
+        StatusError::NoFolderRecord {
+            name: "test".to_string()
+        }
+    );
+    assert!(!error.to_string().contains(staged.to_str().expect("UTF-8")));
+}
+
+#[test]
+fn status_reports_not_up_without_using_the_staged_folder() {
+    let root = live_sandbox("status-staged-gone");
+    let staged = Path::new("/staged/other");
+    fs::write(
+        root.path().join("folder.staged"),
+        staged.as_os_str().as_bytes(),
+    )
+    .expect("write the staged folder");
+
+    let error = status_error(root.path(), window_gone);
+
+    assert_eq!(
+        error,
+        StatusError::NotUp {
+            name: "test".to_string()
+        }
+    );
+    assert!(!error.to_string().contains(staged.to_str().expect("UTF-8")));
+}
+
+#[test]
 fn status_refuses_an_unsafe_root() {
     let root = served_sandbox("status-unsafe", Path::new("/nonexistent"));
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).expect("make root unsafe");

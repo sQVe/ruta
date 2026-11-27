@@ -22,6 +22,7 @@ fn capture_refuses_symlinked_output_in_its_root_without_starting_processes() {
 
         let error = capture(
             &test_config("test"),
+            "test-capture",
             root.path(),
             &out,
             &[],
@@ -72,8 +73,15 @@ fn capture_refuses_output_in_its_root_before_creating_it() {
     ];
 
     for (out, expected) in cases {
-        let error = capture(&test_config("test"), &root, &out, &[], &mut |_| Ok(()))
-            .expect_err("output would be removed during teardown");
+        let error = capture(
+            &test_config("test"),
+            "test-capture",
+            &root,
+            &out,
+            &[],
+            &mut |_| Ok(()),
+        )
+        .expect_err("output would be removed during teardown");
 
         assert_eq!(
             error.downcast_ref::<CaptureOutputInsideRoot>(),
@@ -114,8 +122,15 @@ fn capture_refuses_relative_output_in_its_root() {
     }
     relative.push(out.strip_prefix("/").expect("absolute output"));
 
-    let error = capture(&test_config("test"), &root, &relative, &[], &mut |_| Ok(()))
-        .expect_err("relative output would be removed during teardown");
+    let error = capture(
+        &test_config("test"),
+        "test-capture",
+        &root,
+        &relative,
+        &[],
+        &mut |_| Ok(()),
+    )
+    .expect_err("relative output would be removed during teardown");
 
     assert_eq!(
         error.downcast_ref::<CaptureOutputInsideRoot>(),
@@ -167,58 +182,118 @@ fn capture_accepts_output_outside_its_root() {
 fn capture_rejects_a_26_byte_name_before_creating_its_root() {
     crate::test_support::in_test_namespace!();
 
-    let folder = crate::test_support::temporary_directory();
-    let name = "a".repeat(26);
-    let derived_name = format!("{name}-capture");
-    let root = folder.path().join(&derived_name);
-    let out = folder.path().join("output");
+    let root = crate::test_support::temporary_sandbox_root("cap26");
+    let base = lowercase_sandbox_name(root.path());
+    assert!(base.len() < 26);
+    let name = format!("{base}{}", "a".repeat(26 - base.len()));
+    assert_eq!(name.len(), 26);
+    let capture_name = format!("{name}-capture");
+    let capture_root = root_path(&capture_name);
+    let out = crate::test_support::temporary_directory();
+    let output = out.path().join("output");
 
-    let error = capture(&test_config(&name), &root, &out, &[], &mut |_| Ok(()))
-        .expect_err("the derived capture name exceeds the limit");
+    let error = execute(
+        &test_config(&name),
+        Sandbox::Capture {
+            out: output.clone(),
+            arguments: Vec::new(),
+        },
+        &mut |_| Ok(()),
+    )
+    .expect_err("the derived capture name exceeds the limit");
 
     assert_eq!(
         error.downcast_ref::<crate::config::ConfigError>(),
         Some(&crate::config::ConfigError::BadName {
             key: "RUTA_NAME".to_string(),
-            name: derived_name.clone(),
+            name: capture_name.clone(),
         })
     );
-    assert!(error.to_string().contains(&derived_name));
+    assert!(error.to_string().contains(&capture_name));
     assert!(error.to_string().contains("at most 32 bytes"));
-    assert!(!root.exists());
-    assert!(!out.exists());
-    assert_eq!(
-        fs::read_dir(folder.path())
-            .expect("untouched folder")
-            .count(),
-        0
-    );
+    assert!(!capture_root.exists());
+    assert!(!output.exists());
+    assert_eq!(fs::read_dir(out.path()).expect("list out").count(), 0);
 }
 
 #[test]
 fn capture_accepts_a_24_byte_name_before_checking_its_root() {
     crate::test_support::in_test_namespace!();
 
-    let root = crate::test_support::temporary_sandbox_root("capture-name-limit");
-    let folder = crate::test_support::temporary_directory();
-    let out = folder.path().join("output");
-    let name = "a".repeat(24);
-    fs::write(root.path().join("marker"), "keep").expect("write marker");
+    let root = crate::test_support::temporary_sandbox_root("cap24");
+    let base = lowercase_sandbox_name(root.path());
+    assert!(base.len() < 24);
+    let name = format!("{base}{}", "a".repeat(24 - base.len()));
+    assert_eq!(name.len(), 24);
+    let capture_name = format!("{name}-capture");
+    let capture_root = root_path(&capture_name);
+    let out = crate::test_support::temporary_directory();
+    let output = out.path().join("output");
+    fs::create_dir(&capture_root).expect("create the capture root");
+    fs::write(capture_root.join("marker"), "keep").expect("write marker");
 
-    let error = capture(&test_config(&name), root.path(), &out, &[], &mut |_| Ok(()))
-        .expect_err("the valid name reaches the existing-root check");
+    let error = execute(
+        &test_config(&name),
+        Sandbox::Capture {
+            out: output.clone(),
+            arguments: Vec::new(),
+        },
+        &mut |_| Ok(()),
+    )
+    .expect_err("the valid name reaches the existing-root check");
 
     assert!(error.downcast_ref::<crate::config::ConfigError>().is_none());
     assert_eq!(
         error.to_string(),
-        format!("The capture root already exists; run 'RUTA_NAME={name}-capture ruta down' first.")
+        format!("The capture root already exists; run 'RUTA_NAME={capture_name} ruta down' first.")
     );
     assert_eq!(
-        fs::read_to_string(root.path().join("marker")).expect("marker stays"),
+        fs::read_to_string(capture_root.join("marker")).expect("marker stays"),
         "keep"
     );
-    assert_eq!(fs::read_dir(root.path()).expect("root stays").count(), 1);
-    assert!(!out.exists());
+    assert_eq!(fs::read_dir(&capture_root).expect("root stays").count(), 1);
+    assert!(!output.exists());
+
+    fs::remove_file(capture_root.join("marker")).expect("remove the marker");
+    fs::remove_dir(&capture_root).expect("remove the capture root");
+    remove_lock(&capture_name);
+}
+
+#[test]
+fn capture_rejects_a_32_byte_configured_name_before_taking_its_lock() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("capname");
+    let base = lowercase_sandbox_name(root.path());
+    assert!(base.len() < 32);
+    let name = format!("{base}{}", "a".repeat(32 - base.len()));
+    assert_eq!(name.len(), 32);
+    let capture_name = format!("{name}-capture");
+    let capture_root = root_path(&capture_name);
+    let out = crate::test_support::temporary_directory();
+    let output = out.path().join("output");
+
+    let error = execute(
+        &test_config(&name),
+        Sandbox::Capture {
+            out: output.clone(),
+            arguments: Vec::new(),
+        },
+        &mut |_| Ok(()),
+    )
+    .expect_err("the derived capture name is too long");
+
+    assert_eq!(
+        error.downcast_ref::<crate::config::ConfigError>(),
+        Some(&crate::config::ConfigError::BadName {
+            key: "RUTA_NAME".to_string(),
+            name: capture_name.clone(),
+        })
+    );
+    assert!(!lock_path(&capture_name).exists(), "no capture lock file");
+    assert!(!capture_root.exists(), "no capture root");
+    assert!(!output.exists(), "no output");
+    assert_eq!(fs::read_dir(out.path()).expect("list out").count(), 0);
 }
 
 #[test]
@@ -321,8 +396,15 @@ fn capture_reports_root_creation_errors_without_starting() {
     let folder = crate::test_support::temporary_directory();
     let root = folder.path().join("missing/root");
     let out = folder.path().join("output");
-    let error = capture(&test_config("test"), &root, &out, &[], &mut |_| Ok(()))
-        .expect_err("missing parent prevents root creation");
+    let error = capture(
+        &test_config("test"),
+        "test-capture",
+        &root,
+        &out,
+        &[],
+        &mut |_| Ok(()),
+    )
+    .expect_err("missing parent prevents root creation");
 
     assert_eq!(
         error

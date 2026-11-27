@@ -56,6 +56,10 @@ pub(crate) fn root_path(name: &str) -> PathBuf {
     Path::new(ROOT_PARENT).join(format!("{ROOT_PREFIX}{name}"))
 }
 
+pub(crate) fn lock_path(name: &str) -> PathBuf {
+    Path::new(ROOT_PARENT).join(format!("{ROOT_PREFIX}{name}.lock"))
+}
+
 pub(crate) fn socket_name(name: &str) -> String {
     format!("{SOCKET_PREFIX}{name}")
 }
@@ -108,6 +112,7 @@ pub(crate) struct RootMetadata {
 pub(crate) enum RootReason {
     Symlink,
     NotDirectory,
+    NotRegularFile,
     WrongOwner,
     WrongMode { mode: u32 },
 }
@@ -117,6 +122,7 @@ impl std::fmt::Display for RootReason {
         match self {
             RootReason::Symlink => formatter.write_str("it is a symlink"),
             RootReason::NotDirectory => formatter.write_str("it is not a folder"),
+            RootReason::NotRegularFile => formatter.write_str("it is not a regular file"),
             RootReason::WrongOwner => formatter.write_str("it is not owned by the current user"),
             RootReason::WrongMode { mode } => write!(formatter, "its mode is {mode:o}, not 700"),
         }
@@ -263,7 +269,7 @@ fn private_folder_missing(path: &Path) -> anyhow::Result<bool> {
         mode: metadata.permissions().mode(),
     };
 
-    match root_metadata_problem(&described, current_uid()?) {
+    match root_metadata_problem(&described, current_uid()) {
         Some(reason) => Err(RootError::Unsafe {
             path: path.to_path_buf(),
             reason,
@@ -297,7 +303,7 @@ pub(crate) fn refuse_unsafe_root(root: &Path) -> anyhow::Result<()> {
         mode: metadata.permissions().mode(),
     };
 
-    match root_metadata_problem(&described, current_uid()?) {
+    match root_metadata_problem(&described, current_uid()) {
         Some(reason) => Err(RootError::Unsafe {
             path: root.to_path_buf(),
             reason,
@@ -321,10 +327,8 @@ fn is_symlink(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
 }
 
-fn current_uid() -> anyhow::Result<u32> {
-    fs::metadata("/proc/self")
-        .map(|metadata| metadata.uid())
-        .with_context(|| "Could not read the current user id")
+pub(crate) fn current_uid() -> u32 {
+    rustix::process::getuid().as_raw()
 }
 
 pub(crate) fn remove_root(root: &Path) -> anyhow::Result<()> {
@@ -394,6 +398,8 @@ pub(crate) fn stage_folder(root: &Path, folder: &Path) -> anyhow::Result<PathBuf
 
     let staged = root.join(record::FOLDER_STAGED);
     write_staged(&staged, folder.as_os_str().as_bytes())?;
+
+    remove_record(&path).with_context(|| format!("Could not remove {}", path.display()))?;
 
     Ok(staged)
 }

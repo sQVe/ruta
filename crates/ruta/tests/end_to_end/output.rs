@@ -154,6 +154,7 @@ fn guide_prints_without_a_config_and_status_refuses_an_absent_sandbox() {
         &format!("ruta {name} is not up\n"),
     );
     assert!(!sandbox_root(&name).exists(), "status creates no root");
+    fs::remove_file(sandbox_lock_path(&name)).expect("remove the status lock file");
 }
 
 #[test]

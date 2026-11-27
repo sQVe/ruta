@@ -131,19 +131,28 @@ fn counter_digits(id: u32) -> String {
     digits.iter().map(|digit| char::from(*digit)).collect()
 }
 
-pub(crate) fn sandbox_capture_name(name: &str) -> String {
+// The capture name is only valid when it fits, so callers that may exceed the limit get `None`.
+pub(crate) fn capture_name(name: &str) -> Option<String> {
     let capture_name = format!("{name}-capture");
+    let within_limit = capture_name.len() <= NAME_LIMIT;
 
-    assert!(
-        capture_name.len() <= NAME_LIMIT,
-        "the sandbox {name:?} builds a capture name longer than {NAME_LIMIT} bytes: {capture_name}"
-    );
+    within_limit.then_some(capture_name)
+}
+
+pub(crate) fn sandbox_capture_name(name: &str) -> String {
+    let Some(capture_name) = capture_name(name) else {
+        panic!("the sandbox {name:?} builds a capture name longer than {NAME_LIMIT} bytes");
+    };
 
     capture_name
 }
 
 pub(crate) fn sandbox_root(name: &str) -> PathBuf {
     PathBuf::from(format!("/var/tmp/ruta-{name}"))
+}
+
+pub(crate) fn sandbox_lock_path(name: &str) -> PathBuf {
+    PathBuf::from(format!("/var/tmp/ruta-{name}.lock"))
 }
 
 pub(crate) struct Sandbox<'project> {
@@ -162,6 +171,16 @@ impl Sandbox<'_> {
 
     pub(crate) fn capture_root(&self) -> PathBuf {
         sandbox_root(&sandbox_capture_name(&self.name))
+    }
+
+    pub(crate) fn lock_path(&self) -> PathBuf {
+        sandbox_lock_path(&self.name)
+    }
+
+    pub(crate) fn capture_lock_path(&self) -> Option<PathBuf> {
+        let capture = capture_name(&self.name);
+
+        capture.map(|name| sandbox_lock_path(&name))
     }
 
     pub(crate) fn run(&self, arguments: &[&str]) -> Output {
@@ -278,6 +297,25 @@ impl Sandbox<'_> {
 
         Ok(())
     }
+
+    fn remove_locks(&self) -> Vec<(PathBuf, std::io::Error)> {
+        let mut failures = Vec::new();
+        let mut paths = vec![self.lock_path()];
+
+        if let Some(capture_lock) = self.capture_lock_path() {
+            paths.push(capture_lock);
+        }
+
+        for path in paths {
+            if let Err(error) = fs::remove_file(&path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                failures.push((path, error));
+            }
+        }
+
+        failures
+    }
 }
 
 impl Drop for Sandbox<'_> {
@@ -300,6 +338,14 @@ impl Drop for Sandbox<'_> {
                 "ruta {} did not go down: {}",
                 self.name,
                 String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        for (path, error) in self.remove_locks() {
+            eprintln!(
+                "could not remove the lock file {} of {}: {error}",
+                path.display(),
+                self.name
             );
         }
     }

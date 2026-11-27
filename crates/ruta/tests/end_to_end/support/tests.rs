@@ -69,6 +69,96 @@ fn an_over_long_capture_name_is_rejected() {
 }
 
 #[test]
+fn a_long_normal_name_removes_its_lock_on_drop() {
+    in_test_namespace!();
+
+    let project = Project::new(&Config::default());
+    let name = long_sandbox_name("long-normal-name");
+    assert!(name.len() <= NAME_LIMIT);
+    assert!(name.len() + "-capture".len() > NAME_LIMIT);
+    let sandbox = project.sandbox_with_name(&name);
+    let lock_path = sandbox.lock_path();
+    fs::write(&lock_path, "").expect("create the normal lock file");
+
+    drop(sandbox);
+
+    assert!(!lock_path.exists(), "the fixture removed the normal lock");
+}
+
+#[test]
+fn drop_removes_the_normal_and_capture_locks() {
+    in_test_namespace!();
+
+    let project = Project::new(&Config::default());
+    let sandbox = project.sandbox("both-locks");
+    let lock_path = sandbox.lock_path();
+    let capture_lock_path = sandbox.capture_lock_path().expect("the capture name fits");
+    fs::write(&lock_path, "").expect("create the normal lock file");
+    fs::write(&capture_lock_path, "").expect("create the capture lock file");
+
+    drop(sandbox);
+
+    assert!(!lock_path.exists(), "the fixture removed the normal lock");
+    assert!(
+        !capture_lock_path.exists(),
+        "the fixture removed the capture lock"
+    );
+}
+
+#[test]
+fn remove_locks_reports_every_path_it_cannot_remove() {
+    in_test_namespace!();
+
+    let project = Project::new(&Config::default());
+    let sandbox = project.sandbox("remove-locks");
+    let lock_path = sandbox.lock_path();
+    let capture_lock_path = sandbox.capture_lock_path().expect("the capture name fits");
+
+    for path in [&lock_path, &capture_lock_path] {
+        fs::create_dir(path).expect("make the lock path a folder");
+        fs::write(path.join("keep"), "").expect("make the folder non-empty");
+    }
+
+    let failures = sandbox.remove_locks();
+
+    assert_eq!(
+        failures.len(),
+        2,
+        "every failed path is reported: {failures:?}"
+    );
+
+    for expected_path in [&lock_path, &capture_lock_path] {
+        let failure = failures.iter().find(|(path, _)| path == expected_path);
+        let Some((_, error)) = failure else {
+            panic!("{} is reported: {failures:?}", expected_path.display());
+        };
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::IsADirectory,
+            "{}: {failures:?}",
+            expected_path.display()
+        );
+    }
+
+    fs::remove_dir_all(&lock_path).expect("remove the lock folder");
+    fs::remove_dir_all(&capture_lock_path).expect("remove the capture lock folder");
+}
+
+// Pads a test-owned name to the longest normal name whose capture name does not fit.
+fn long_sandbox_name(label: &str) -> String {
+    const LONG_NAME_BYTES: usize = 28;
+
+    let name = next_sandbox_name(label);
+
+    assert!(
+        name.len() <= LONG_NAME_BYTES,
+        "the label {label:?} builds a name longer than {LONG_NAME_BYTES} bytes: {name}"
+    );
+
+    format!("{name}{}", "a".repeat(LONG_NAME_BYTES - name.len()))
+}
+
+#[test]
 fn generated_names_keep_one_length_and_stay_distinct() {
     let names: Vec<String> = (0..5000)
         .map(|_| next_sandbox_name("shared-label"))

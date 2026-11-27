@@ -58,6 +58,10 @@ entry = "crates/ruta/src/input.rs"
 public = ["crates/ruta/src/input/send.rs"]
 imports = ["display", "environment", "process", "root", "test_support", "tool"]
 
+[modules.lock]
+entry = "crates/ruta/src/lock.rs"
+imports = ["root", "test_support"]
+
 [modules.log_tail]
 entry = "crates/ruta/src/log_tail.rs"
 imports = ["test_support"]
@@ -75,6 +79,7 @@ imports = [
   "environment",
   "identity",
   "input",
+  "lock",
   "log_tail",
   "process",
   "process_stat",

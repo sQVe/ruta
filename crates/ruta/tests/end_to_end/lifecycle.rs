@@ -3,6 +3,44 @@ use std::fs;
 use crate::support::*;
 
 #[test]
+fn a_busy_sandbox_fails_before_it_changes_the_root() {
+    in_test_namespace!();
+
+    let project = Project::new(&Config {
+        command: Some(r#"["true"]"#),
+        ..Config::default()
+    });
+    let sandbox = project.sandbox("busy");
+    let lock_path = sandbox.lock_path();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .expect("open the lock file");
+    lock.try_lock().expect("hold the lock");
+
+    let output = sandbox.fail(&["up"]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(output.stdout, b"", "{output:?}");
+    assert_eq!(
+        output.stderr,
+        format!(
+            "ruta {} is busy: another ruta command is using it. Run this command again after that one ends.\n",
+            sandbox.name()
+        )
+        .as_bytes()
+    );
+    assert!(!sandbox.root().exists(), "the root is not created");
+
+    drop(lock);
+    fs::remove_file(&lock_path).expect("remove the lock file the test created");
+    drop(sandbox);
+}
+
+#[test]
 #[ignore = "needs Weston, Xwayland, xdotool, and ImageMagick"]
 fn up_shoots_logs_and_goes_down() {
     in_test_namespace!();

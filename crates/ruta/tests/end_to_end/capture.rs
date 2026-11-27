@@ -18,6 +18,15 @@ fn capture_with_geometry_writes_crop_and_tears_down() {
 
     sandbox.succeed(&["up"]);
     let running_records = sandbox.records();
+    let lock_path = sandbox.lock_path();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .expect("open the sandbox lock");
+    lock.try_lock().expect("hold the sandbox lock");
 
     sandbox.succeed(&[
         "capture",
@@ -27,6 +36,7 @@ fn capture_with_geometry_writes_crop_and_tears_down() {
         "--geometry",
         "10,20,120,80,2",
     ]);
+    drop(lock);
 
     assert_eq!(png_size(&output.path().join("shot.png")), WINDOW_SIZE);
     assert_eq!(png_size(&output.path().join("crop.png")), (240, 160));

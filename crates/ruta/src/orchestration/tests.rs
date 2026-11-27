@@ -10,7 +10,8 @@ use crate::config::{App, CommandLine, Ready};
 use crate::identity::tests::{
     record_child, spawn_ready_sleep, spawn_with_marker, spawn_without_marker,
 };
-use crate::root::{RootError, RootReason};
+use crate::lock::{LockError, LockMode, take};
+use crate::root::{RootError, RootReason, lock_path};
 use crate::test_support::ChildGuard;
 use crate::test_support::display::{
     record_display_settings, record_live_display, stale_display_cases,
@@ -47,6 +48,341 @@ fn test_config(name: &str) -> Config {
         ready: Ready::Line,
         environment: Vec::new(),
     }
+}
+
+fn sandbox_name(root: &Path) -> String {
+    let base = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("a named root");
+
+    base.strip_prefix("ruta-")
+        .expect("a sandbox root name")
+        .to_string()
+}
+
+// Tempfile random characters include uppercase, which RUTA_NAME does not allow.
+fn lowercase_sandbox_name(root: &Path) -> String {
+    sandbox_name(root).to_ascii_lowercase()
+}
+
+fn remove_lock(name: &str) {
+    fs::remove_file(lock_path(name)).expect("remove the lock file");
+}
+
+#[test]
+fn each_command_takes_the_lock_its_state_needs() {
+    let exclusive = [
+        Sandbox::Up {
+            arguments: Vec::new(),
+            headed: false,
+        },
+        Sandbox::Restart {
+            arguments: None,
+            force_headed: false,
+        },
+        Sandbox::Down,
+    ];
+
+    for command in exclusive {
+        assert_eq!(
+            command_lock(&command, "demo", "demo-capture"),
+            Some(("demo", LockMode::Exclusive)),
+            "{command:?}"
+        );
+    }
+
+    let capture = Sandbox::Capture {
+        out: PathBuf::from("/tmp/out"),
+        arguments: Vec::new(),
+    };
+    assert_eq!(
+        command_lock(&capture, "demo", "demo-capture"),
+        Some(("demo-capture", LockMode::Exclusive))
+    );
+
+    let shared = [
+        Sandbox::Status,
+        Sandbox::Shot { file: None },
+        Sandbox::Move {
+            from: (1, 2),
+            to: (3, 4),
+        },
+        Sandbox::Click {
+            x: 1,
+            y: 2,
+            button: 1,
+        },
+        Sandbox::Drag {
+            from: (1, 2),
+            to: (3, 4),
+        },
+        Sandbox::Type {
+            text: "hi".to_string(),
+        },
+        Sandbox::Key {
+            key: "Return".to_string(),
+            modifiers: Vec::new(),
+        },
+        Sandbox::Scroll {
+            x: 1,
+            y: 2,
+            notches: 1,
+        },
+        Sandbox::Hold { keys: Vec::new() },
+        Sandbox::Release { keys: Vec::new() },
+    ];
+
+    for command in shared {
+        assert_eq!(
+            command_lock(&command, "demo", "demo-capture"),
+            Some(("demo", LockMode::Shared)),
+            "{command:?}"
+        );
+    }
+
+    for command in [Sandbox::Log, Sandbox::Opened] {
+        assert_eq!(
+            command_lock(&command, "demo", "demo-capture"),
+            None,
+            "{command:?}"
+        );
+    }
+}
+
+#[test]
+fn a_held_lock_fails_a_command_without_touching_the_root() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("busy");
+    let name = sandbox_name(root.path());
+    fs::write(root.path().join("display"), ":7\n").expect("write the display");
+    let before = fs::read(root.path().join("display")).expect("read the display");
+    let entries = fs::read_dir(root.path()).expect("list the root").count();
+    let lock = take(&name, LockMode::Exclusive).expect("the lock is free");
+
+    let error = execute(&test_config(&name), Sandbox::Down, &mut |_| Ok(()))
+        .expect_err("the held lock refuses down");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<LockError>(),
+            Some(LockError::Busy { name: busy }) if busy == &name
+        ),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "ruta {name} is busy: another ruta command is using it. Run this command again after that one ends."
+        )
+    );
+    assert_eq!(
+        fs::read(root.path().join("display")).expect("the display record"),
+        before
+    );
+    assert_eq!(
+        fs::read_dir(root.path()).expect("list the root").count(),
+        entries
+    );
+
+    drop(lock);
+    remove_lock(&name);
+}
+
+#[test]
+fn an_exclusive_command_fails_while_a_shared_lock_is_held() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("shared-busy");
+    let name = sandbox_name(root.path());
+    let lock = take(&name, LockMode::Shared).expect("the shared lock is free");
+
+    let error = execute(&test_config(&name), Sandbox::Down, &mut |_| Ok(()))
+        .expect_err("down needs the exclusive lock");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<LockError>(),
+            Some(LockError::Busy { .. })
+        ),
+        "unexpected error: {error:#}"
+    );
+    assert!(root.path().is_dir(), "down changed nothing");
+
+    drop(lock);
+    remove_lock(&name);
+}
+
+#[test]
+fn log_and_opened_read_while_an_exclusive_lock_is_held() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("read-busy");
+    let name = sandbox_name(root.path());
+    fs::write(root.path().join("app.log"), "ready\n").expect("write the log");
+    fs::write(root.path().join("opened"), "https://example.com\n").expect("write opened");
+    let lock = take(&name, LockMode::Exclusive).expect("the lock is free");
+    let mut log_output = String::new();
+    let mut opened_output = String::new();
+
+    execute(&test_config(&name), Sandbox::Log, &mut |text| {
+        log_output.push_str(text);
+
+        Ok(())
+    })
+    .expect("log takes no lock");
+    execute(&test_config(&name), Sandbox::Opened, &mut |text| {
+        opened_output.push_str(text);
+
+        Ok(())
+    })
+    .expect("opened takes no lock");
+
+    assert_eq!(log_output, "ready\n");
+    assert_eq!(opened_output, "https://example.com\n");
+
+    drop(lock);
+    remove_lock(&name);
+}
+
+#[test]
+fn capture_ignores_the_sandbox_lock_and_uses_its_own() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("cap");
+    let name = lowercase_sandbox_name(root.path());
+    let capture_name = format!("{name}-capture");
+    let capture_root = root_path(&capture_name);
+    fs::create_dir(&capture_root).expect("the capture root exists");
+    let out = crate::test_support::temporary_directory();
+    let lock = take(&name, LockMode::Exclusive).expect("the sandbox lock is free");
+
+    let error = execute(
+        &test_config(&name),
+        Sandbox::Capture {
+            out: out.path().to_path_buf(),
+            arguments: Vec::new(),
+        },
+        &mut |_| Ok(()),
+    )
+    .expect_err("the capture root already exists");
+
+    assert!(
+        !matches!(
+            error.downcast_ref::<LockError>(),
+            Some(LockError::Busy { .. })
+        ),
+        "capture must not take the sandbox lock: {error:#}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("The capture root already exists"),
+        "unexpected error: {error:#}"
+    );
+
+    drop(lock);
+    fs::remove_dir(&capture_root).expect("remove the capture root");
+    remove_lock(&name);
+    remove_lock(&capture_name);
+}
+
+#[test]
+fn capture_fails_busy_while_its_own_root_is_locked() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("capbusy");
+    let name = lowercase_sandbox_name(root.path());
+    let capture_name = format!("{name}-capture");
+    let capture_root = root_path(&capture_name);
+    let out = crate::test_support::temporary_directory();
+    let lock = take(&capture_name, LockMode::Exclusive).expect("the capture lock is free");
+
+    let error = execute(
+        &test_config(&name),
+        Sandbox::Capture {
+            out: out.path().to_path_buf(),
+            arguments: Vec::new(),
+        },
+        &mut |_| Ok(()),
+    )
+    .expect_err("the capture root is locked");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<LockError>(),
+            Some(LockError::Busy { name: busy }) if busy == &capture_name
+        ),
+        "unexpected error: {error:#}"
+    );
+    assert!(!capture_root.exists(), "the capture root is not created");
+    assert!(
+        !lock_path(&name).exists(),
+        "capture never locks the sandbox"
+    );
+
+    drop(lock);
+    remove_lock(&capture_name);
+}
+
+#[test]
+fn down_keeps_the_lock_file() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("down-lock");
+    let name = sandbox_name(root.path());
+
+    execute(&test_config(&name), Sandbox::Down, &mut |_| Ok(())).expect("down");
+
+    assert!(!root.path().exists(), "the root is removed");
+    let path = lock_path(&name);
+    assert!(path.is_file(), "down keeps the lock file");
+
+    fs::remove_file(path).expect("remove the lock file");
+}
+
+#[test]
+fn the_lock_is_held_while_the_command_reports_its_output() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("guard-lifetime");
+    let name = sandbox_name(root.path());
+    let mut busy = None;
+
+    execute(&test_config(&name), Sandbox::Down, &mut |text| {
+        assert_eq!(text, format!("ruta {name} is gone\n"));
+        busy = Some(matches!(
+            take(&name, LockMode::Exclusive),
+            Err(LockError::Busy { .. })
+        ));
+
+        Ok(())
+    })
+    .expect("down succeeds");
+
+    assert_eq!(busy, Some(true), "the lock is held while emit runs");
+    assert!(!root.path().exists(), "down removed the root");
+    remove_lock(&name);
+}
+
+#[test]
+fn a_start_removes_the_old_folder_record_before_it_runs() {
+    crate::test_support::in_test_namespace!();
+
+    let root = crate::test_support::temporary_sandbox_root("stage-order");
+    let project = crate::test_support::temporary_directory();
+    fs::write(root.path().join("folder"), "/old").expect("write the old folder record");
+    let mut seen = None;
+
+    let _error = start_window_with(root.path(), project.path(), || {
+        seen = Some(root.path().join("folder").exists());
+
+        anyhow::bail!("the start fails")
+    })
+    .expect_err("the start fails");
+
+    assert_eq!(seen, Some(false), "the folder record is gone before start");
 }
 
 #[test]
@@ -237,6 +573,7 @@ fn capture_refuses_an_existing_root_before_starting() {
     fs::write(root.path().join("marker"), "keep").expect("write marker");
     let error = capture(
         &test_config("test"),
+        "test-capture",
         root.path(),
         out.path(),
         &[],
