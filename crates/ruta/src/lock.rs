@@ -13,6 +13,7 @@ pub(crate) enum LockMode {
 }
 
 #[derive(Debug)]
+#[must_use = "dropping the guard releases the lock"]
 pub(crate) struct SandboxLock {
     _file: File,
 }
@@ -33,6 +34,12 @@ pub(crate) enum LockError {
     },
     #[error("Could not open {}", path.display())]
     Open {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Could not secure {}", path.display())]
+    Secure {
         path: PathBuf,
         #[source]
         source: std::io::Error,
@@ -85,7 +92,7 @@ fn open_lock_inode(path: &Path) -> Result<File, LockError> {
     match created {
         Ok(file) => {
             file.set_permissions(fs::Permissions::from_mode(0o600))
-                .map_err(|source| LockError::Open {
+                .map_err(|source| LockError::Secure {
                     path: path.to_path_buf(),
                     source,
                 })?;
@@ -104,9 +111,11 @@ fn open_lock_inode(path: &Path) -> Result<File, LockError> {
 }
 
 fn set_lock_mode(path: &Path) -> Result<(), LockError> {
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|source| LockError::Open {
-        path: path.to_path_buf(),
-        source,
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|source| {
+        LockError::Secure {
+            path: path.to_path_buf(),
+            source,
+        }
     })
 }
 

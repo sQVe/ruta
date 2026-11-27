@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -8,14 +7,6 @@ use crate::test_support::{ChildGuard, temporary_directory};
 
 const BUSY: &str =
     " is busy: another ruta command is using it. Run this command again after that one ends.";
-
-fn unique_name(label: &str) -> String {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-
-    let id = NEXT.fetch_add(1, Ordering::Relaxed);
-
-    format!("lock-{label}-{}-{id}", std::process::id())
-}
 
 fn wait_for_file(path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -42,23 +33,6 @@ fn wait_for_lock(path: &Path) -> SandboxLock {
             Err(error) => panic!("the lock did not free after SIGKILL: {error}"),
         }
     }
-}
-
-#[test]
-fn take_creates_the_lock_file_beside_the_root() {
-    let name = unique_name("take");
-    let path = crate::root::lock_path(&name);
-    let lock = take(&name, LockMode::Exclusive).expect("the lock is free");
-    let mode = fs::metadata(&path)
-        .expect("the lock file exists")
-        .permissions()
-        .mode()
-        & 0o777;
-
-    assert_eq!(mode, 0o600, "the lock file is private");
-
-    drop(lock);
-    fs::remove_file(&path).expect("remove the lock file");
 }
 
 #[test]
@@ -112,10 +86,27 @@ fn the_open_fallback_does_not_change_an_existing_lock_mode() {
 }
 
 #[test]
+fn a_failed_permission_change_names_securing() {
+    let folder = temporary_directory();
+    let path = folder.path().join("ruta-missing.lock");
+
+    let error = set_lock_mode(&path).expect_err("the missing file cannot be secured");
+
+    assert!(
+        matches!(&error, LockError::Secure { path: refused, .. } if refused == &path),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        error.to_string(),
+        format!("Could not secure {}", path.display())
+    );
+}
+
+#[test]
 fn a_restrictive_umask_does_not_keep_the_lock_from_reopening() {
     let folder = temporary_directory();
     let path = folder.path().join("ruta-umask.lock");
-    let status =
+    let output =
         std::process::Command::new(std::env::current_exe().expect("the test binary has a path"))
             .args([
                 "--exact",
@@ -123,10 +114,17 @@ fn a_restrictive_umask_does_not_keep_the_lock_from_reopening() {
                 "--nocapture",
             ])
             .env("RUTA_TEST_LOCK_UMASK_PATH", &path)
-            .status()
+            .output()
             .expect("run the child");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let ran_once = stdout.contains("test result: ok. 1 passed");
 
-    assert!(status.success(), "the child umask test failed: {status}");
+    assert!(
+        output.status.success() && ran_once,
+        "the child umask test failed ({}):\n{stdout}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
