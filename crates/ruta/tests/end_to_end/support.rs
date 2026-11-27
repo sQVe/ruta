@@ -131,6 +131,17 @@ fn counter_digits(id: u32) -> String {
     digits.iter().map(|digit| char::from(*digit)).collect()
 }
 
+pub(crate) fn sandbox_capture_name(name: &str) -> String {
+    let capture_name = format!("{name}-capture");
+
+    assert!(
+        capture_name.len() <= NAME_LIMIT,
+        "the sandbox {name:?} builds a capture name longer than {NAME_LIMIT} bytes: {capture_name}"
+    );
+
+    capture_name
+}
+
 pub(crate) fn sandbox_root(name: &str) -> PathBuf {
     PathBuf::from(format!("/var/tmp/ruta-{name}"))
 }
@@ -150,7 +161,7 @@ impl Sandbox<'_> {
     }
 
     pub(crate) fn capture_root(&self) -> PathBuf {
-        sandbox_root(&format!("{}-capture", self.name))
+        sandbox_root(&sandbox_capture_name(&self.name))
     }
 
     pub(crate) fn run(&self, arguments: &[&str]) -> Output {

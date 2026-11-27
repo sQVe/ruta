@@ -54,10 +54,18 @@ fn a_label_starting_with_a_hyphen_is_rejected() {
 fn capture_names_fit_the_ruta_name_limit() {
     for &label in CAPTURE_LABELS {
         let name = next_sandbox_name(label);
-        let capture_name = format!("{name}-capture");
+        let capture_name = sandbox_capture_name(&name);
 
         assert_valid_ruta_name(&capture_name);
     }
+}
+
+#[test]
+#[should_panic(
+    expected = "the sandbox \"capture-name-that-is-too-long\" builds a capture name longer than"
+)]
+fn an_over_long_capture_name_is_rejected() {
+    sandbox_capture_name("capture-name-that-is-too-long");
 }
 
 #[test]
@@ -82,13 +90,8 @@ fn generated_names_keep_one_length_and_stay_distinct() {
 }
 
 fn assert_valid_ruta_name(name: &str) {
-    let starts_with_letter_or_digit = name
-        .chars()
-        .next()
-        .is_some_and(|character| character.is_ascii_lowercase() || character.is_ascii_digit());
-    let holds_only_valid_characters = name.chars().all(|character| {
-        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
-    });
+    let starts_with_letter_or_digit = name.chars().next().is_some_and(is_name_start);
+    let holds_only_valid_characters = name.chars().all(is_name_character);
 
     assert!(
         name.len() <= NAME_LIMIT,
