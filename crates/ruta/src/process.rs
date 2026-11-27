@@ -1,13 +1,14 @@
 use std::ffi::OsStr;
 use std::io::Read;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::process::CommandExt as _;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, Output, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::process::{Pid, WaitId, WaitIdOptions};
 use thiserror::Error;
 
@@ -20,6 +21,15 @@ const READER_POLL: Duration = Duration::from_millis(10);
 
 pub(crate) fn poll_until<T>(
     timeout: Duration,
+    attempt: impl FnMut() -> anyhow::Result<Option<T>>,
+) -> anyhow::Result<Option<T>> {
+    poll_every(timeout, POLL, attempt)
+}
+
+// Sleeps at most the remaining time, so an attempt never runs past the deadline.
+fn poll_every<T>(
+    timeout: Duration,
+    poll: Duration,
     mut attempt: impl FnMut() -> anyhow::Result<Option<T>>,
 ) -> anyhow::Result<Option<T>> {
     let deadline = Instant::now() + timeout;
@@ -29,11 +39,12 @@ pub(crate) fn poll_until<T>(
             return Ok(Some(value));
         }
 
-        if Instant::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             return Ok(None);
         }
 
-        std::thread::sleep(POLL);
+        std::thread::sleep(poll.min(remaining));
     }
 }
 
@@ -77,7 +88,13 @@ pub(crate) fn run_until(
     timeout: Duration,
     stop_early: impl FnMut() -> bool,
 ) -> anyhow::Result<Output> {
-    run_until_with(command, timeout, stop_early, cleanup::stop_child_group)
+    run_until_with(
+        command,
+        timeout,
+        stop_early,
+        cleanup::stop_child_group,
+        READER_POLL,
+    )
 }
 
 fn run_until_with(
@@ -85,6 +102,7 @@ fn run_until_with(
     timeout: Duration,
     mut stop_early: impl FnMut() -> bool,
     mut stop_command: impl FnMut(&mut Child) -> std::io::Result<()>,
+    reader_poll: Duration,
 ) -> anyhow::Result<Output> {
     let program = command.get_program().to_string_lossy().into_owned();
 
@@ -98,8 +116,14 @@ fn run_until_with(
         .spawn()
         .with_context(|| format!("Could not start {program}"))?;
     let stop = Arc::new(AtomicBool::new(false));
-    let stdout_reader = spawn_reader(child.stdout.take(), Arc::clone(&stop));
-    let stderr_reader = spawn_reader(child.stderr.take(), Arc::clone(&stop));
+    let OutputPipes {
+        stdout,
+        stderr,
+        stdout_probe,
+        stderr_probe,
+    } = take_pipes(&mut child, &program, &mut stop_command)?;
+    let stdout_reader = spawn_reader(stdout, Arc::clone(&stop), reader_poll);
+    let stderr_reader = spawn_reader(stderr, Arc::clone(&stop), reader_poll);
     let deadline = Instant::now() + timeout;
 
     let exited = wait_for(&program, timeout, deadline, || {
@@ -122,11 +146,31 @@ fn run_until_with(
         .with_context(|| format!("Could not wait for {program}"));
 
     let readers = if exited.is_ok() {
-        wait_for(&program, timeout, deadline, || {
-            check_stopped(&program, &mut stop_early)?;
+        let mut checked: Option<Instant> = None;
+        let finished = wait_for_readers(
+            deadline,
+            reader_poll,
+            || {
+                // The readers are polled more often than the app is checked, and that check reads
+                // the process table.
+                if checked.is_none_or(|last| last.elapsed() >= POLL) {
+                    check_stopped(&program, &mut stop_early)?;
+                    checked = Some(Instant::now());
+                }
 
-            Ok((stdout_reader.is_finished() && stderr_reader.is_finished()).then_some(()))
-        })
+                Ok((stdout_reader.is_finished() && stderr_reader.is_finished()).then_some(()))
+            },
+            || {
+                pipes_closed(&stdout_probe, &stderr_probe)
+                    .with_context(|| format!("Could not read the output of {program}"))
+            },
+        );
+
+        match finished {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(timeout_error(&program, timeout)),
+            Err(error) => Err(error),
+        }
     } else {
         Ok(())
     };
@@ -158,13 +202,121 @@ fn wait_for(
     deadline: Instant,
     attempt: impl FnMut() -> anyhow::Result<Option<()>>,
 ) -> anyhow::Result<()> {
-    poll_until(deadline.saturating_duration_since(Instant::now()), attempt)?.ok_or_else(|| {
-        ProcessError::Timeout {
-            program: program.to_string(),
-            duration: timeout,
+    if wait_until(deadline, POLL, attempt)? {
+        return Ok(());
+    }
+
+    Err(timeout_error(program, timeout))
+}
+
+// A reader that found the pipe empty sleeps for one poll before it reads again, so output the
+// command already wrote is complete even when no reader has read it yet. Output that a descendant
+// still holds is not complete, so the closure of the pipes decides at the deadline.
+fn wait_for_readers(
+    deadline: Instant,
+    poll: Duration,
+    mut readers_finished: impl FnMut() -> anyhow::Result<Option<()>>,
+    closed: impl FnOnce() -> anyhow::Result<bool>,
+) -> anyhow::Result<bool> {
+    if wait_until(deadline, poll, &mut readers_finished)? {
+        return Ok(true);
+    }
+
+    if !closed()? {
+        return Ok(false);
+    }
+
+    // End of file is already available, so the readers only report output the command wrote. They
+    // wake within one poll, and a stopped app ends the wait through the attempt.
+    while readers_finished()?.is_none() {
+        std::thread::sleep(poll);
+    }
+
+    Ok(true)
+}
+
+// Waits until the deadline without sleeping past it, so neither an exit nor a reader that finishes
+// late can report success.
+fn wait_until(
+    deadline: Instant,
+    poll: Duration,
+    attempt: impl FnMut() -> anyhow::Result<Option<()>>,
+) -> anyhow::Result<bool> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+
+    Ok(poll_every(remaining, poll, attempt)?.is_some())
+}
+
+// A pipe reports a hangup once every writer closed it, even while unread output remains.
+fn pipes_closed(stdout: &OwnedFd, stderr: &OwnedFd) -> std::io::Result<bool> {
+    Ok(closed_pipe(stdout)? && closed_pipe(stderr)?)
+}
+
+fn closed_pipe(probe: &OwnedFd) -> std::io::Result<bool> {
+    let timeout = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let mut fds = [PollFd::new(probe, PollFlags::empty())];
+
+    loop {
+        match rustix::event::poll(&mut fds, Some(&timeout)) {
+            Ok(_) => return Ok(fds[0].revents().contains(PollFlags::HUP)),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(std::io::Error::from(error)),
         }
-        .into()
-    })
+    }
+}
+
+struct OutputPipes {
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+    stdout_probe: OwnedFd,
+    stderr_probe: OwnedFd,
+}
+
+// The readers own the pipes, so a copy of each read end stays open to ask whether every writer
+// closed it. A command whose setup fails here must not outlive the failure.
+fn take_pipes(
+    child: &mut Child,
+    program: &str,
+    stop_command: &mut impl FnMut(&mut Child) -> std::io::Result<()>,
+) -> anyhow::Result<OutputPipes> {
+    let stdout = child.stdout.take().expect("the command output is piped");
+    let stderr = child.stderr.take().expect("the command output is piped");
+    let probes = duplicate_pipes(&stdout, &stderr);
+
+    match probes {
+        Ok((stdout_probe, stderr_probe)) => Ok(OutputPipes {
+            stdout,
+            stderr,
+            stdout_probe,
+            stderr_probe,
+        }),
+        Err(error) => {
+            let stopped = stop_command(child);
+            let waited = child.wait().map(|_| ());
+            let error = anyhow::Error::new(error)
+                .context(format!("Could not read the output of {program}"));
+
+            Err(cleanup::with_report_failure(error, stopped.and(waited)))
+        }
+    }
+}
+
+fn duplicate_pipes(stdout: &impl AsFd, stderr: &impl AsFd) -> std::io::Result<(OwnedFd, OwnedFd)> {
+    let stdout = stdout.as_fd().try_clone_to_owned()?;
+    let stderr = stderr.as_fd().try_clone_to_owned()?;
+
+    Ok((stdout, stderr))
+}
+
+fn timeout_error(program: &str, timeout: Duration) -> anyhow::Error {
+    ProcessError::Timeout {
+        program: program.to_string(),
+        duration: timeout,
+    }
+    .into()
 }
 
 fn check_stopped(program: &str, stop_early: &mut impl FnMut() -> bool) -> anyhow::Result<()> {
@@ -198,16 +350,18 @@ fn collect(
 }
 
 fn spawn_reader(
-    reader: Option<impl Read + AsFd + Send + 'static>,
+    reader: impl Read + AsFd + Send + 'static,
     stop: Arc<AtomicBool>,
+    poll: Duration,
 ) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>> {
-    std::thread::spawn(move || read_all(reader, &stop))
+    std::thread::spawn(move || read_all(reader, &stop, poll))
 }
 
-fn read_all(reader: Option<impl Read + AsFd>, stop: &AtomicBool) -> std::io::Result<Vec<u8>> {
-    let Some(mut reader) = reader else {
-        return Ok(Vec::new());
-    };
+fn read_all(
+    mut reader: impl Read + AsFd,
+    stop: &AtomicBool,
+    poll: Duration,
+) -> std::io::Result<Vec<u8>> {
     let flags = rustix::fs::fcntl_getfl(&reader).map_err(std::io::Error::from)?;
     rustix::fs::fcntl_setfl(&reader, flags | rustix::fs::OFlags::NONBLOCK)
         .map_err(std::io::Error::from)?;
@@ -223,7 +377,7 @@ fn read_all(reader: Option<impl Read + AsFd>, stop: &AtomicBool) -> std::io::Res
             Ok(0) => return Ok(buffer),
             Ok(read) => buffer.extend_from_slice(&chunk[..read]),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(READER_POLL);
+                std::thread::sleep(poll);
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
@@ -307,6 +461,7 @@ mod tests {
 
                 Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
             },
+            READER_POLL,
         )
         .expect_err("the timeout is reported");
 
@@ -361,15 +516,202 @@ mod tests {
     }
 
     #[test]
+    fn a_stopped_app_is_checked_before_the_readers_are_trusted() {
+        crate::test_support::in_test_namespace!();
+
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 0.05"]);
+        let mut calls = 0;
+
+        let error = run_until_with(
+            command,
+            Duration::from_millis(500),
+            || {
+                calls += 1;
+
+                calls > 1
+            },
+            cleanup::stop_child_group,
+            READER_POLL,
+        )
+        .expect_err("the app stops after the first check");
+
+        assert!(
+            matches!(
+                error.downcast_ref::<ProcessError>(),
+                Some(ProcessError::Stopped { program }) if program == "sh"
+            ),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn a_stopped_app_ends_the_wait_for_the_readers() {
+        crate::test_support::in_test_namespace!();
+
+        let (command, _folder) = command_with_descendant("sleep 3");
+        let started = Instant::now();
+
+        let error = run_until_with(
+            command,
+            Duration::from_millis(1000),
+            || started.elapsed() >= Duration::from_millis(150),
+            cleanup::stop_child_group,
+            Duration::from_millis(250),
+        )
+        .expect_err("the app stops before its descendant closes the output");
+
+        assert!(
+            matches!(
+                error.downcast_ref::<ProcessError>(),
+                Some(ProcessError::Stopped { program }) if program == "sh"
+            ),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn run_with_timeout_rejects_a_command_that_exits_after_the_deadline() {
+        crate::test_support::in_test_namespace!();
+
+        let limit = Duration::from_millis(250);
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 0.4"]);
+
+        let error =
+            run_with_timeout(command, limit).expect_err("the command exits after the limit");
+
+        assert!(
+            matches!(
+                error.downcast_ref::<ProcessError>(),
+                Some(ProcessError::Timeout { program, duration })
+                    if program == "sh" && *duration == limit
+            ),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn a_command_that_exits_inside_the_deadline_keeps_its_output() {
+        crate::test_support::in_test_namespace!();
+
+        // A reader reads the empty pipe within microseconds of its start and then sleeps for its
+        // whole 500 ms poll. The command writes and exits 50 ms later, so its exit is seen at the
+        // next 100 ms exit check, well inside the 300 ms budget, while the readers still sleep.
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 0.05; printf ready"]);
+
+        let output = run_until_with(
+            command,
+            Duration::from_millis(300),
+            || false,
+            cleanup::stop_child_group,
+            Duration::from_millis(500),
+        )
+        .expect("the output is complete when the command exits");
+
+        assert_eq!(output.stdout, b"ready");
+    }
+
+    #[test]
+    fn a_descendant_that_holds_the_output_still_reports_the_timeout() {
+        crate::test_support::in_test_namespace!();
+
+        let limit = Duration::from_millis(300);
+        let (command, _folder) = command_with_descendant("sleep 3");
+
+        let error = run_until_with(
+            command,
+            limit,
+            || false,
+            cleanup::stop_child_group,
+            Duration::from_millis(250),
+        )
+        .expect_err("the descendant keeps the output open");
+
+        assert!(
+            matches!(
+                error.downcast_ref::<ProcessError>(),
+                Some(ProcessError::Timeout { program, duration })
+                    if program == "sh" && *duration == limit
+            ),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn a_descendant_that_closes_the_output_after_the_deadline_still_reports_the_timeout() {
+        crate::test_support::in_test_namespace!();
+
+        for (held, body) in [
+            ("stdout", "exec 2>/dev/null; sleep 0.6; printf late"),
+            ("stderr", "exec >/dev/null; sleep 0.6; printf late >&2"),
+        ] {
+            let limit = Duration::from_millis(250);
+            let (command, _folder) = command_with_descendant(body);
+
+            let error = run_until_with(
+                command,
+                limit,
+                || false,
+                cleanup::stop_child_group,
+                Duration::from_millis(10),
+            )
+            .expect_err("the descendant closes the output after the deadline");
+
+            assert!(
+                matches!(
+                    error.downcast_ref::<ProcessError>(),
+                    Some(ProcessError::Timeout { program, duration })
+                        if program == "sh" && *duration == limit
+                ),
+                "{held}: unexpected error: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_descendant_that_closes_the_output_inside_the_deadline_keeps_its_data() {
+        crate::test_support::in_test_namespace!();
+
+        let (command, _folder) = command_with_descendant("sleep 0.6; printf late");
+
+        let output = run_until_with(
+            command,
+            Duration::from_millis(1200),
+            || false,
+            cleanup::stop_child_group,
+            Duration::from_millis(100),
+        )
+        .expect("the descendant closes the output inside the deadline");
+
+        assert_eq!(output.stdout, b"late");
+    }
+
+    // The command exits only after the descendant left the process group, so the group cleanup
+    // cannot kill the descendant before it writes.
+    fn command_with_descendant(body: &str) -> (Command, tempfile::TempDir) {
+        let folder = crate::test_support::temporary_directory();
+        let script = format!(
+            "setsid sh -c 'touch \"$RUTA_TEST_MARKER\"; {body}' & while [ ! -e \"$RUTA_TEST_MARKER\" ]; do sleep 0.01; done"
+        );
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", &script])
+            .env("RUTA_TEST_MARKER", folder.path().join("detached"));
+
+        (command, folder)
+    }
+
+    #[test]
     fn run_with_timeout_stops_waiting_for_output_a_descendant_outside_the_group_holds() {
         crate::test_support::in_test_namespace!();
 
-        for (held, script) in [
-            ("stdout", "setsid sleep 3 2>/dev/null &"),
-            ("stderr", "setsid sleep 3 >/dev/null &"),
+        for (held, body) in [
+            ("stdout", "exec 2>/dev/null; sleep 3"),
+            ("stderr", "exec >/dev/null; sleep 3"),
         ] {
-            let mut command = Command::new("sh");
-            command.args(["-c", script]);
+            let (command, _folder) = command_with_descendant(body);
             let limit = Duration::from_millis(300);
             let started = Instant::now();
 
@@ -471,6 +813,58 @@ mod tests {
             rendered.matches(&os_error).count(),
             1,
             "rendered: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_reader_returns_a_read_error_instead_of_polling_again() {
+        let folder = crate::test_support::temporary_directory();
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader = UnreadableFile {
+            file: fs::File::open(folder.path()).expect("open the directory"),
+            stop: Arc::clone(&stop),
+        };
+
+        let error = read_all(reader, &stop, Duration::from_millis(1))
+            .expect_err("a read error ends the reader");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+    }
+
+    struct UnreadableFile {
+        file: fs::File,
+        stop: Arc<AtomicBool>,
+    }
+
+    impl Read for UnreadableFile {
+        fn read(&mut self, _chunk: &mut [u8]) -> std::io::Result<usize> {
+            // A reader that treated this error as a retry would spin, so the flag ends it and the
+            // test fails instead of hanging.
+            self.stop.store(true, Ordering::Relaxed);
+
+            Err(std::io::Error::from(std::io::ErrorKind::Other))
+        }
+    }
+
+    impl AsFd for UnreadableFile {
+        fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+            self.file.as_fd()
+        }
+    }
+
+    #[test]
+    fn poll_every_does_not_sleep_past_its_deadline() {
+        let limit = Duration::from_millis(500);
+        let started = Instant::now();
+
+        let value = poll_every::<()>(limit, Duration::from_secs(1), || Ok(None))
+            .expect("the attempt cannot fail");
+        let elapsed = started.elapsed();
+
+        assert!(value.is_none());
+        assert!(
+            elapsed < Duration::from_millis(900),
+            "the wait ran for {elapsed:?} with a limit of {limit:?}"
         );
     }
 
