@@ -70,8 +70,10 @@ fn an_over_long_capture_name_is_rejected() {
 
 #[test]
 fn a_long_normal_name_removes_its_lock_on_drop() {
+    in_test_namespace!();
+
     let project = Project::new(&Config::default());
-    let name = "a".repeat(28);
+    let name = long_sandbox_name("long-normal-name");
     assert!(name.len() <= NAME_LIMIT);
     assert!(name.len() + "-capture".len() > NAME_LIMIT);
     let sandbox = project.sandbox_with_name(&name);
@@ -81,6 +83,20 @@ fn a_long_normal_name_removes_its_lock_on_drop() {
     drop(sandbox);
 
     assert!(!lock_path.exists(), "the fixture removed the normal lock");
+}
+
+// Pads a test-owned name to the longest normal name whose capture name does not fit.
+fn long_sandbox_name(label: &str) -> String {
+    const LONG_NAME_BYTES: usize = 28;
+
+    let name = next_sandbox_name(label);
+
+    assert!(
+        name.len() <= LONG_NAME_BYTES,
+        "the label {label:?} builds a name longer than {LONG_NAME_BYTES} bytes: {name}"
+    );
+
+    format!("{name}{}", "a".repeat(LONG_NAME_BYTES - name.len()))
 }
 
 #[test]

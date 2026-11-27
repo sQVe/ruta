@@ -60,7 +60,11 @@ fn take_path(path: &Path, name: &str, mode: LockMode) -> Result<SandboxLock, Loc
 fn open_lock_file(path: &Path) -> Result<File, LockError> {
     let owner = current_uid();
 
-    refuse_unsafe_path(path, owner)?;
+    let existing = refuse_unsafe_path(path, owner)?;
+
+    if existing {
+        set_lock_mode(path)?;
+    }
 
     let file = open_lock_inode(path)?;
 
@@ -88,17 +92,13 @@ fn open_lock_inode(path: &Path) -> Result<File, LockError> {
 
             Ok(file)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            set_lock_mode(path)?;
-
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .truncate(false)
-                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-                .open(path)
-                .map_err(|source| open_error(path, source))
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => OpenOptions::new()
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(path)
+            .map_err(|source| open_error(path, source)),
         Err(source) => Err(open_error(path, source)),
     }
 }
@@ -124,10 +124,12 @@ fn open_error(path: &Path, source: std::io::Error) -> LockError {
     }
 }
 
-fn refuse_unsafe_path(path: &Path, owner: u32) -> Result<(), LockError> {
+// The boolean is true when the path already names a regular file owned by `owner`. On a sticky
+// directory no other user can replace it between that check and the caller's mode repair.
+fn refuse_unsafe_path(path: &Path, owner: u32) -> Result<bool, LockError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(source) => {
             return Err(LockError::UnreadablePath {
                 path: path.to_path_buf(),
@@ -142,7 +144,9 @@ fn refuse_unsafe_path(path: &Path, owner: u32) -> Result<(), LockError> {
         owner: metadata.uid(),
     };
 
-    refuse_unsafe_metadata(path, &described, owner)
+    refuse_unsafe_metadata(path, &described, owner)?;
+
+    Ok(true)
 }
 
 fn refuse_unsafe_file(path: &Path, file: &File, owner: u32) -> Result<(), LockError> {

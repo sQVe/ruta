@@ -80,6 +80,38 @@ fn take_repairs_a_lock_file_with_no_permissions() {
 }
 
 #[test]
+fn refuse_unsafe_path_reports_whether_a_lock_file_is_already_there() {
+    let folder = temporary_directory();
+    let missing = folder.path().join("ruta-missing.lock");
+    let existing = folder.path().join("ruta-existing.lock");
+    fs::write(&existing, "").expect("create the lock file");
+
+    let validated = refuse_unsafe_path(&existing, current_uid()).expect("the file is safe");
+    let absent = refuse_unsafe_path(&missing, current_uid()).expect("the missing path is safe");
+
+    assert!(validated, "an existing regular file is validated");
+    assert!(!absent, "a missing path holds no lock file");
+}
+
+#[test]
+fn the_open_fallback_does_not_change_an_existing_lock_mode() {
+    let folder = temporary_directory();
+    let path = folder.path().join("ruta-fallback.lock");
+    fs::write(&path, "").expect("create the lock file");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("widen the mode");
+
+    let file = open_lock_inode(&path).expect("the existing file opens");
+    let mode = fs::metadata(&path)
+        .expect("the lock file exists")
+        .permissions()
+        .mode()
+        & 0o777;
+
+    assert_eq!(mode, 0o644, "the create fallback leaves the mode alone");
+    drop(file);
+}
+
+#[test]
 fn a_restrictive_umask_does_not_keep_the_lock_from_reopening() {
     let folder = temporary_directory();
     let path = folder.path().join("ruta-umask.lock");
