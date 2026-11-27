@@ -840,7 +840,7 @@ fn log_fails_on_a_missing_log_and_prints_a_normal_one() {
 
     assert_eq!(io_kind(&error), Some(std::io::ErrorKind::NotFound));
     assert!(
-        format!("{error:#}").starts_with("Could not read the app log"),
+        format!("{error:#}").starts_with("Could not read the app log: "),
         "the error names the app log"
     );
 
