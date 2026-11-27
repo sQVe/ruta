@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::app_start::start_app;
 use crate::cleanup;
 use crate::command::Sandbox;
-use crate::config::Config;
+use crate::config::{Config, check_name};
 use crate::display::{Session, display_session};
 use crate::display_start::{
     clean_recorded_display_files, display_up, ensure_display, recorded_headed,
@@ -17,6 +17,7 @@ use crate::environment::{caller_environment, sandbox_environment};
 use crate::identity::stop::{stop_recorded, stop_window};
 use crate::identity::{RECORD_TIMEOUT, error_is_survivor, record_matches, record_xwayland};
 use crate::input::{focus_window, send, window_exists, window_id};
+use crate::lock::{self, LockMode};
 use crate::log_tail::{last_lines, open_app_log};
 use crate::root::{
     install_openers, prepare_root, record, record_root_creation, remove_root, require_trusted_root,
@@ -41,6 +42,16 @@ pub(crate) fn execute(
 ) -> anyhow::Result<()> {
     let name = &config.name;
     let root = root_path(name);
+    let capture_name = format!("{name}-capture");
+
+    if matches!(&command, Sandbox::Capture { .. }) {
+        check_name("RUTA_NAME", &capture_name)?;
+    }
+
+    let _lock = match command_lock(&command, name, &capture_name) {
+        Some((lock_name, mode)) => Some(lock::take(lock_name, mode)?),
+        None => None,
+    };
 
     let output = match command {
         Sandbox::Up { arguments, headed } => up(config, &root, &arguments, headed),
@@ -51,7 +62,8 @@ pub(crate) fn execute(
         Sandbox::Capture { out, arguments } => {
             return capture(
                 config,
-                &root_path(&format!("{name}-capture")),
+                &capture_name,
+                &root_path(&capture_name),
                 &out,
                 &arguments,
                 emit,
@@ -95,16 +107,39 @@ pub(crate) fn execute(
     Ok(())
 }
 
+fn command_lock<'a>(
+    command: &Sandbox,
+    name: &'a str,
+    capture_name: &'a str,
+) -> Option<(&'a str, LockMode)> {
+    match command {
+        Sandbox::Up { .. } | Sandbox::Restart { .. } | Sandbox::Down => {
+            Some((name, LockMode::Exclusive))
+        }
+        Sandbox::Capture { .. } => Some((capture_name, LockMode::Exclusive)),
+        Sandbox::Status
+        | Sandbox::Shot { .. }
+        | Sandbox::Move { .. }
+        | Sandbox::Click { .. }
+        | Sandbox::Drag { .. }
+        | Sandbox::Type { .. }
+        | Sandbox::Key { .. }
+        | Sandbox::Scroll { .. }
+        | Sandbox::Hold { .. }
+        | Sandbox::Release { .. } => Some((name, LockMode::Shared)),
+        Sandbox::Log | Sandbox::Opened => None,
+    }
+}
+
 fn capture(
     config: &Config,
+    name: &str,
     root: &Path,
     out: &Path,
     arguments: &[String],
     emit: &mut impl FnMut(&str) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let name = format!("{}-capture", config.name);
-
-    run_one_shot(root, &name, out, || {
+    run_one_shot(root, name, out, || {
         capture_inner(config, root, out, arguments, emit)
     })
 }

@@ -9,6 +9,14 @@ fn root_path_is_under_the_temporary_folder() {
 }
 
 #[test]
+fn lock_path_is_beside_the_root() {
+    assert_eq!(
+        lock_path("smoke"),
+        PathBuf::from("/var/tmp/ruta-smoke.lock")
+    );
+}
+
+#[test]
 fn remove_root_accepts_only_sandbox_folders() {
     assert!(remove_root_allowed(Path::new("/var/tmp/ruta-smoke")));
     assert!(!remove_root_allowed(Path::new("/var/tmp/other")));
@@ -379,6 +387,10 @@ fn root_reasons_render_the_refusal_text() {
     assert_eq!(RootReason::Symlink.to_string(), "it is a symlink");
     assert_eq!(RootReason::NotDirectory.to_string(), "it is not a folder");
     assert_eq!(
+        RootReason::NotRegularFile.to_string(),
+        "it is not a regular file"
+    );
+    assert_eq!(
         RootReason::WrongOwner.to_string(),
         "it is not owned by the current user"
     );
@@ -538,6 +550,23 @@ fn recorded_folder_returns_the_exact_folder_that_was_recorded() {
 }
 
 #[test]
+fn stage_folder_removes_the_previous_folder_record() {
+    let root = crate::test_support::temporary_directory();
+    fs::write(root.path().join("folder"), "/old").expect("write the old record");
+
+    let staged = stage_folder(root.path(), Path::new("/new")).expect("the folder is staged");
+
+    assert!(
+        !root.path().join("folder").exists(),
+        "the previous record is removed"
+    );
+    assert_eq!(
+        fs::read_to_string(&staged).expect("the staged record"),
+        "/new"
+    );
+}
+
+#[test]
 fn stage_folder_refuses_a_fifo_at_the_staged_path() {
     let root = crate::test_support::temporary_directory();
     let staged = root.path().join("folder.staged");
@@ -561,6 +590,36 @@ fn stage_folder_refuses_a_fifo_at_the_staged_path() {
         "unexpected error: {error}"
     );
     assert!(staged.exists(), "the fifo is left for the user to remove");
+}
+
+#[test]
+fn a_blocked_staged_record_keeps_the_previous_folder_record() {
+    let root = crate::test_support::temporary_directory();
+    fs::write(root.path().join("folder"), "/old").expect("write the old record");
+    let staged = root.path().join("folder.staged");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &staged,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .expect("make the fifo");
+
+    let error =
+        stage_folder(root.path(), Path::new("/project")).expect_err("the fifo is not opened");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<RootError>(),
+            Some(RootError::FolderRecordBlocked { path }) if path == &staged
+        ),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("folder")).expect("the previous record stays"),
+        "/old"
+    );
 }
 
 #[test]

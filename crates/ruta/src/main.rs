@@ -8,6 +8,7 @@ mod display_start;
 mod environment;
 mod identity;
 mod input;
+mod lock;
 mod log_tail;
 mod orchestration;
 mod process;

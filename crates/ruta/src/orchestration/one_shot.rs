@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use thiserror::Error;
 
-use crate::config::check_name;
 use crate::root::create_root;
 
 use super::{StopTarget, cleanup, stop_target};
@@ -12,7 +11,6 @@ pub(super) fn run_one_shot<B>(root: &Path, name: &str, out: &Path, body: B) -> a
 where
     B: FnOnce() -> anyhow::Result<()>,
 {
-    check_name("RUTA_NAME", name)?;
     refuse_capture_output_in_root(root, out)?;
 
     match create_root(root) {
