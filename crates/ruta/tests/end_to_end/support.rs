@@ -12,6 +12,8 @@ pub(crate) use crate::test_support::namespace::in_test_namespace;
 
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 const NAME_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+// Mirrors the limit RUTA_NAME allows, so a test label fails where its name is built.
+pub(crate) const NAME_LIMIT: usize = 32;
 pub(crate) const NAME_COUNTER_DIGITS: usize = 4;
 const NAME_RANDOM_DIGITS: usize = 5;
 pub(crate) const WINDOW_SIZE: (u32, u32) = (640, 480);
@@ -57,11 +59,7 @@ impl Project {
     }
 
     pub(crate) fn sandbox(&self, label: &str) -> Sandbox<'_> {
-        self.sandbox_with_name(&self.sandbox_name(label))
-    }
-
-    pub(crate) fn sandbox_name(&self, label: &str) -> String {
-        next_sandbox_name(label)
+        self.sandbox_with_name(&next_sandbox_name(label))
     }
 
     pub(crate) fn sandbox_with_name(&self, name: &str) -> Sandbox<'_> {
@@ -76,9 +74,30 @@ pub(crate) fn next_sandbox_name(label: &str) -> String {
     static NEXT_ID: AtomicU32 = AtomicU32::new(0);
 
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let suffix = format!("{}{}", random_digits(), counter_digits(id));
+    let name = format!("{label}-{}{}", random_digits(), counter_digits(id));
 
-    format!("{label}-{suffix}")
+    assert!(
+        name.len() <= NAME_LIMIT,
+        "the label {label:?} builds a name longer than {NAME_LIMIT} bytes: {name}"
+    );
+    assert!(
+        name.chars().next().is_some_and(is_name_start),
+        "the label {label:?} builds a name that does not start with a letter or digit: {name}"
+    );
+    assert!(
+        name.chars().all(is_name_character),
+        "the label {label:?} builds a name with a character RUTA_NAME does not allow: {name}"
+    );
+
+    name
+}
+
+fn is_name_start(character: char) -> bool {
+    character.is_ascii_lowercase() || character.is_ascii_digit()
+}
+
+fn is_name_character(character: char) -> bool {
+    is_name_start(character) || character == '-'
 }
 
 // The random digits separate runs; the counter separates names in one run.
@@ -98,14 +117,15 @@ fn random_digits() -> String {
 
 fn counter_digits(id: u32) -> String {
     // The counter repeats only after 36^4 names, far more than one process builds.
-    let limit = 36_u32.pow(NAME_COUNTER_DIGITS as u32);
+    let base = u32::try_from(NAME_ALPHABET.len()).expect("the alphabet length fits in u32");
+    let limit = base.pow(NAME_COUNTER_DIGITS as u32);
 
     let mut value = id % limit;
     let mut digits = [b'0'; NAME_COUNTER_DIGITS];
 
     for digit in digits.iter_mut().rev() {
-        *digit = NAME_ALPHABET[(value % 36) as usize];
-        value /= 36;
+        *digit = NAME_ALPHABET[(value % base) as usize];
+        value /= base;
     }
 
     digits.iter().map(|digit| char::from(*digit)).collect()

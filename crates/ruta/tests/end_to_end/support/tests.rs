@@ -2,47 +2,6 @@ use std::collections::HashSet;
 
 use super::*;
 
-const LABELS: &[&str] = &[
-    "a11y-cleanup",
-    "a11y-click",
-    "a11y-tree",
-    "a11y-type",
-    "bad",
-    "broken-app",
-    "broken-stderr",
-    "broken-stdout",
-    "capture-crop",
-    "capture-plain",
-    "capture-ready",
-    "command",
-    "escaped-app",
-    "escaped-other",
-    "escaped-probe",
-    "fifo-log",
-    "input",
-    "input-not-up",
-    "mode-child",
-    "mode-child-command",
-    "mode-exit",
-    "mode-normal",
-    "mode-panic",
-    "non-utf8",
-    "one",
-    "output",
-    "output-capture",
-    "output-errors",
-    "output-order",
-    "plain-tool",
-    "preflight",
-    "resize",
-    "restart-escape",
-    "status",
-    "status-absent",
-    "two",
-    "up",
-    "up-escape",
-];
-
 const CAPTURE_LABELS: &[&str] = &[
     "broken-stdout",
     "capture-crop",
@@ -53,24 +12,46 @@ const CAPTURE_LABELS: &[&str] = &[
 ];
 
 #[test]
-fn two_projects_with_one_label_get_different_sandbox_roots() {
-    let project = Project::new(&Config::default());
-    let other_project = Project::new(&Config::default());
-
-    let root = sandbox_root(&project.sandbox_name("shared-label"));
-    let other_root = sandbox_root(&other_project.sandbox_name("shared-label"));
+fn one_label_generates_different_sandbox_roots() {
+    let root = sandbox_root(&next_sandbox_name("shared-label"));
+    let other_root = sandbox_root(&next_sandbox_name("shared-label"));
 
     assert_ne!(root, other_root);
 }
 
 #[test]
-fn sandbox_names_are_valid_ruta_names() {
-    for &label in LABELS {
-        let name = next_sandbox_name(label);
+fn a_normal_label_builds_a_valid_name() {
+    let name = next_sandbox_name("mode-child-command");
 
-        assert_valid_ruta_name(&name);
-    }
+    assert_valid_ruta_name(&name);
+}
 
+#[test]
+#[should_panic(
+    expected = "the label \"over-long-label-that-does-not-fit\" builds a name longer than"
+)]
+fn an_over_long_label_is_rejected() {
+    next_sandbox_name("over-long-label-that-does-not-fit");
+}
+
+#[test]
+#[should_panic(
+    expected = "the label \"bad_label\" builds a name with a character RUTA_NAME does not allow"
+)]
+fn a_label_with_a_disallowed_character_is_rejected() {
+    next_sandbox_name("bad_label");
+}
+
+#[test]
+#[should_panic(
+    expected = "the label \"-bad\" builds a name that does not start with a letter or digit"
+)]
+fn a_label_starting_with_a_hyphen_is_rejected() {
+    next_sandbox_name("-bad");
+}
+
+#[test]
+fn capture_names_fit_the_ruta_name_limit() {
     for &label in CAPTURE_LABELS {
         let name = next_sandbox_name(label);
         let capture_name = format!("{name}-capture");
@@ -91,10 +72,6 @@ fn generated_names_keep_one_length_and_stay_distinct() {
         .map(|name| &name[name.len() - NAME_COUNTER_DIGITS..])
         .collect();
 
-    for name in &names {
-        assert_valid_ruta_name(name);
-    }
-
     assert_eq!(lengths.len(), 1, "every name has one length: {lengths:?}");
     assert_eq!(distinct.len(), names.len(), "every name is distinct");
     assert_eq!(
@@ -113,7 +90,10 @@ fn assert_valid_ruta_name(name: &str) {
         character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
     });
 
-    assert!(name.len() <= 32, "{name}: at most 32 bytes");
+    assert!(
+        name.len() <= NAME_LIMIT,
+        "{name}: at most {NAME_LIMIT} bytes"
+    );
     assert!(
         starts_with_letter_or_digit,
         "{name}: starts with a lowercase letter or a digit"
