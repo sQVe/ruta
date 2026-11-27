@@ -6,8 +6,9 @@ use rustix::fs::{Mode, OFlags};
 
 const TAIL_BYTES: usize = 16 * 1024;
 
-// The last `count` lines of the log at `path`, or none when it cannot be read. Only the last
-// `TAIL_BYTES` are read, so a huge log costs no more than a small one.
+// The last `count` lines of the log at `path`, or none when it cannot be read. The read seeks one
+// byte before the last `TAIL_BYTES` and reads from there. The byte before the window tells a line
+// start from a line middle; it exists only when the window starts after byte zero.
 pub(crate) fn last_lines(path: &Path, count: usize) -> Vec<String> {
     let Ok(tail) = read_tail(path) else {
         return Vec::new();
@@ -29,23 +30,36 @@ fn read_tail(path: &Path) -> std::io::Result<Vec<u8>> {
         return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
     }
 
-    let length = metadata.len();
-    let start = length.saturating_sub(TAIL_BYTES as u64);
-    let mut tail = Vec::new();
+    let start = metadata.len().saturating_sub(TAIL_BYTES as u64);
+    let mut window = Vec::new();
 
-    file.seek(SeekFrom::Start(start))?;
-    file.read_to_end(&mut tail)?;
+    file.seek(SeekFrom::Start(start.saturating_sub(1)))?;
+    file.read_to_end(&mut window)?;
 
-    // A tail that starts inside a line drops that partial line.
-    if start > 0 {
-        let after_break = tail
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(tail.len(), |index| index + 1);
-        tail.drain(..after_break);
+    // The byte before the window tells a line start from a line middle, and is absent at byte 0.
+    let boundary = match window.first() {
+        Some(byte) if start > 0 => Some(*byte),
+        _ => None,
+    };
+
+    if let Some(boundary) = boundary {
+        window.drain(..1);
+
+        if boundary != b'\n' {
+            drop_partial_first_line(&mut window);
+        }
     }
 
-    Ok(tail)
+    Ok(window)
+}
+
+// Without a line break the window holds no complete line, so its bytes are kept as one line.
+fn drop_partial_first_line(window: &mut Vec<u8>) {
+    let Some(line_break) = window.iter().position(|byte| *byte == b'\n') else {
+        return;
+    };
+
+    window.drain(..=line_break);
 }
 
 #[cfg(test)]
@@ -67,17 +81,47 @@ mod tests {
     }
 
     #[test]
-    fn last_lines_reads_only_the_end_of_a_long_log() {
+    fn last_lines_returns_the_lines_inside_the_tail_window() {
         let folder = crate::test_support::temporary_directory();
         let log = folder.path().join("app.log");
-        let long_line = "x".repeat(TAIL_BYTES * 2);
-        fs::write(&log, format!("{long_line}\nlast\n")).expect("write the log");
 
-        assert_eq!(
-            last_lines(&log, 5),
-            ["last"],
-            "the partial line at the start of the tail is dropped"
+        let first_in_window = "first in window\n";
+        let line_start_content = format!(
+            "{}\n{first_in_window}{}",
+            "x".repeat(TAIL_BYTES),
+            "y".repeat(TAIL_BYTES - first_in_window.len())
         );
+        let line_start_lines = vec![
+            "first in window".to_string(),
+            "y".repeat(TAIL_BYTES - first_in_window.len()),
+        ];
+
+        let partial_line = "\nfirst complete\n";
+        let mid_line_content = format!("{}{partial_line}", "x".repeat(TAIL_BYTES * 2));
+        let mid_line_lines = vec!["first complete".to_string()];
+
+        let no_newline_content = "x".repeat(TAIL_BYTES * 2);
+        let no_newline_lines = vec!["x".repeat(TAIL_BYTES)];
+
+        let cases = [
+            (
+                "window starts on a line start",
+                line_start_content,
+                line_start_lines,
+            ),
+            ("window starts mid-line", mid_line_content, mid_line_lines),
+            (
+                "window holds no newline",
+                no_newline_content,
+                no_newline_lines,
+            ),
+        ];
+
+        for (case, content, expected) in cases {
+            fs::write(&log, content).expect("write the log");
+
+            assert_eq!(last_lines(&log, 5), expected, "{case}");
+        }
     }
 
     #[test]
