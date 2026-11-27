@@ -5,6 +5,8 @@ use std::path::Path;
 use rustix::fs::{Mode, OFlags};
 
 const TAIL_BYTES: usize = 16 * 1024;
+const MAX_CHARACTER_BYTES: usize = 4;
+const LOOK_BACK_BYTES: usize = MAX_CHARACTER_BYTES - 1;
 
 pub(crate) fn last_lines(path: &Path, count: usize) -> Vec<String> {
     let Ok(tail) = read_tail(path) else {
@@ -30,10 +32,13 @@ fn read_tail(path: &Path) -> std::io::Result<Vec<u8>> {
     let start = metadata.len().saturating_sub(TAIL_BYTES as u64);
     let mut bytes = Vec::new();
 
-    file.seek(SeekFrom::Start(start.saturating_sub(3)))?;
+    file.seek(SeekFrom::Start(
+        start.saturating_sub(LOOK_BACK_BYTES as u64),
+    ))?;
     file.read_to_end(&mut bytes)?;
 
-    let window_offset = usize::try_from(start.min(3)).expect("the window offset is at most 3");
+    let window_offset = usize::try_from(start.min(LOOK_BACK_BYTES as u64))
+        .expect("the window offset is at most the look-back bytes");
     let window_offset = window_offset.min(bytes.len());
     let mut window = bytes.split_off(window_offset);
     let preceding = bytes.as_slice();
@@ -63,7 +68,7 @@ fn drop_completed_character(window: &mut Vec<u8>, preceding: &[u8]) {
     };
     let begun = &preceding[lead..];
 
-    for length in 1..=3 {
+    for length in 1..=LOOK_BACK_BYTES {
         let Some(head) = window.get(..length) else {
             return;
         };
