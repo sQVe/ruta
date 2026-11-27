@@ -142,13 +142,18 @@ fn guide_prints_without_a_config_and_status_refuses_an_absent_sandbox() {
     assert!(usage.starts_with("Usage:\n"), "{usage}");
 
     let project = Project::new(&Config::default());
-    let sandbox = project.sandbox("status-absent");
+    let name = next_sandbox_name("status-absent");
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_ruta"));
+    command
+        .args(["status"])
+        .current_dir(project.folder())
+        .env("RUTA_NAME", &name);
 
     assert_failure(
-        &sandbox.run(&["status"]),
-        &format!("ruta {} is not up\n", sandbox.name()),
+        &Sandbox::run_command(&mut command),
+        &format!("ruta {name} is not up\n"),
     );
-    assert!(!sandbox.root().exists(), "status creates no root");
+    assert!(!sandbox_root(&name).exists(), "status creates no root");
 }
 
 #[test]
