@@ -146,6 +146,10 @@ pub(crate) fn sandbox_root(name: &str) -> PathBuf {
     PathBuf::from(format!("/var/tmp/ruta-{name}"))
 }
 
+pub(crate) fn sandbox_lock_path(name: &str) -> PathBuf {
+    PathBuf::from(format!("/var/tmp/ruta-{name}.lock"))
+}
+
 pub(crate) struct Sandbox<'project> {
     name: String,
     project: &'project Project,
@@ -162,6 +166,17 @@ impl Sandbox<'_> {
 
     pub(crate) fn capture_root(&self) -> PathBuf {
         sandbox_root(&sandbox_capture_name(&self.name))
+    }
+
+    pub(crate) fn lock_path(&self) -> PathBuf {
+        sandbox_lock_path(&self.name)
+    }
+
+    pub(crate) fn capture_lock_path(&self) -> Option<PathBuf> {
+        let capture_name = format!("{}-capture", self.name);
+        let within_limit = capture_name.len() <= NAME_LIMIT;
+
+        within_limit.then(|| sandbox_lock_path(&capture_name))
     }
 
     pub(crate) fn run(&self, arguments: &[&str]) -> Output {
@@ -278,6 +293,28 @@ impl Sandbox<'_> {
 
         Ok(())
     }
+
+    fn remove_locks(&self) -> std::io::Result<()> {
+        let mut failure = None;
+        let mut paths = vec![self.lock_path()];
+
+        if let Some(capture_lock) = self.capture_lock_path() {
+            paths.push(capture_lock);
+        }
+
+        for path in paths {
+            if let Err(error) = fs::remove_file(&path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                failure.get_or_insert(error);
+            }
+        }
+
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
 }
 
 impl Drop for Sandbox<'_> {
@@ -301,6 +338,10 @@ impl Drop for Sandbox<'_> {
                 self.name,
                 String::from_utf8_lossy(&output.stderr)
             );
+        }
+
+        if let Err(error) = self.remove_locks() {
+            eprintln!("could not remove the lock file of {}: {error}", self.name);
         }
     }
 }

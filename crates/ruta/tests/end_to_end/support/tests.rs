@@ -69,6 +69,21 @@ fn an_over_long_capture_name_is_rejected() {
 }
 
 #[test]
+fn a_long_normal_name_removes_its_lock_on_drop() {
+    let project = Project::new(&Config::default());
+    let name = "a".repeat(28);
+    assert!(name.len() <= NAME_LIMIT);
+    assert!(name.len() + "-capture".len() > NAME_LIMIT);
+    let sandbox = project.sandbox_with_name(&name);
+    let lock_path = sandbox.lock_path();
+    fs::write(&lock_path, "").expect("create the normal lock file");
+
+    drop(sandbox);
+
+    assert!(!lock_path.exists(), "the fixture removed the normal lock");
+}
+
+#[test]
 fn generated_names_keep_one_length_and_stay_distinct() {
     let names: Vec<String> = (0..5000)
         .map(|_| next_sandbox_name("shared-label"))
