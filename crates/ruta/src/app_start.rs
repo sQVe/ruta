@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead as _, BufReader, Read, Write as _};
+use std::io::{BufRead, BufReader, Read, Write as _};
 use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ use crate::root::write_unlinked;
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_GRACE: Duration = Duration::from_millis(500);
 const DRAIN_LIMIT: u64 = 1024 * 1024;
+const READY_LINE_LIMIT: u64 = 64 * 1024;
 
 #[derive(Debug, Error)]
 enum AppStartError {
@@ -31,6 +32,11 @@ enum AppStartError {
         log.display()
     )]
     ReadyTimeout { timeout: Duration, log: PathBuf },
+    #[error(
+        "The app {} printed a line longer than {limit} bytes before it was ready",
+        app.display()
+    )]
+    ReadyLineTooLong { app: PathBuf, limit: u64 },
 }
 
 pub(crate) fn start_app(
@@ -108,6 +114,7 @@ fn start_with_ready_line(
     log: File,
     environment: &[(String, String)],
 ) -> anyhow::Result<()> {
+    let app = PathBuf::from(command.get_program());
     command.stdout(Stdio::piped());
     let (mut child, leader) = spawn_recorded(command, root, &log)?;
     let stdout = child
@@ -118,7 +125,15 @@ fn start_with_ready_line(
 
     let log_path = root.join(crate::root::record::APP_LOG);
     let reader_log = clone_log(&log, &log_path)?;
-    let (line, rest) = read_ready_line(stdout, reader_log, &log_path, leader, root, READY_TIMEOUT)?;
+    let (line, rest) = read_ready_line(
+        stdout,
+        reader_log,
+        &app,
+        &log_path,
+        leader,
+        root,
+        READY_TIMEOUT,
+    )?;
 
     copy_rest(rest, log, environment, leader.pid)?;
     write_unlinked(&root.join(crate::root::record::READY), format!("{line}\n"))
@@ -197,12 +212,16 @@ fn clone_log(log: &File, path: &Path) -> anyhow::Result<File> {
 fn read_ready_line(
     stdout: ChildStdout,
     log: File,
+    app: &Path,
     log_path: &Path,
     leader: ProcessIdentity,
     root: &Path,
     timeout: Duration,
 ) -> anyhow::Result<(String, BufReader<ChildStdout>)> {
-    let reader = std::thread::spawn(move || copy_until_ready(BufReader::new(stdout), log));
+    let reader_app = app.to_path_buf();
+    let reader = std::thread::spawn(move || {
+        copy_until_ready(BufReader::new(stdout), log, &reader_app, READY_LINE_LIMIT)
+    });
 
     let mut exited_at = None;
 
@@ -228,34 +247,62 @@ fn read_ready_line(
 
     let found = reader
         .join()
-        .map_err(|_| anyhow::anyhow!("The reader of the app's output stopped"))?
-        .context("Could not copy the app's output to its log")?;
+        .map_err(|_| anyhow::anyhow!("The reader of the app's output stopped"))?;
 
-    found.ok_or_else(|| app_exited_error(log_path))
+    found?.ok_or_else(|| app_exited_error(log_path))
 }
 
-fn copy_until_ready(
-    mut reader: BufReader<ChildStdout>,
+fn copy_until_ready<R: Read>(
+    mut reader: BufReader<R>,
     mut log: File,
-) -> std::io::Result<Option<(String, BufReader<ChildStdout>)>> {
+    app: &Path,
+    limit: u64,
+) -> anyhow::Result<Option<(String, BufReader<R>)>> {
     let mut line = Vec::new();
 
     loop {
+        let chunk = reader
+            .fill_buf()
+            .context("Could not copy the app's output to its log")?;
+
+        if chunk.is_empty() {
+            return Ok(ready_line_text(&line).map(|text| (text, reader)));
+        }
+
+        let newline = chunk.iter().position(|byte| *byte == b'\n');
+        let logged = newline.map_or(chunk.len(), |index| index + 1);
+        let line_end = newline.unwrap_or(chunk.len());
+
+        log.write_all(&chunk[..logged])
+            .context("Could not copy the app's output to its log")?;
+        line.extend_from_slice(&chunk[..line_end]);
+        reader.consume(logged);
+
+        if line.len() as u64 > limit {
+            return Err(AppStartError::ReadyLineTooLong {
+                app: app.to_path_buf(),
+                limit,
+            }
+            .into());
+        }
+
+        if newline.is_none() {
+            continue;
+        }
+
+        if let Some(text) = ready_line_text(&line) {
+            return Ok(Some((text, reader)));
+        }
+
         line.clear();
-
-        if reader.read_until(b'\n', &mut line)? == 0 {
-            return Ok(None);
-        }
-
-        log.write_all(&line)?;
-
-        let text = String::from_utf8_lossy(&line);
-        let text = text.trim_end_matches(['\n', '\r']);
-
-        if is_json_object(text) {
-            return Ok(Some((text.to_string(), reader)));
-        }
     }
+}
+
+fn ready_line_text(line: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(line);
+    let text = text.trim_end_matches(['\n', '\r']);
+
+    is_json_object(text).then(|| text.to_string())
 }
 
 fn is_json_object(line: &str) -> bool {

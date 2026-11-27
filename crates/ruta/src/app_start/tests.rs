@@ -44,8 +44,17 @@ fn read_ready_after(script: &str, timeout: Duration, before_read: impl FnOnce(u3
     let (started, stdout) = start_script(script);
     let identity = identity_of(started.id());
     before_read(started.id());
+    let app = PathBuf::from("sh");
 
-    let found = read_ready_line(stdout, log, &log_path, identity, folder.path(), timeout);
+    let found = read_ready_line(
+        stdout,
+        log,
+        &app,
+        &log_path,
+        identity,
+        folder.path(),
+        timeout,
+    );
     let logged = fs::read_to_string(&log_path).expect("read the log");
 
     ReadReady {
@@ -181,6 +190,146 @@ fn draining_the_pipe_stops_at_the_limit() {
 }
 
 #[test]
+fn copy_until_ready_writes_an_unfinished_line_to_the_log() {
+    let folder = crate::test_support::temporary_directory();
+    let (log, log_path) = log_file(folder.path());
+    let (reader, mut writer) = UnixStream::pair().expect("create a socket pair");
+    let app = PathBuf::from("test-app");
+
+    let started = std::thread::spawn(move || {
+        copy_until_ready(BufReader::new(reader), log, &app, READY_LINE_LIMIT)
+    });
+    writer
+        .write_all(b"partial")
+        .expect("write the start of the line");
+
+    let partial = poll_until(Duration::from_secs(5), || {
+        let logged = fs::read_to_string(&log_path).expect("read the log");
+
+        Ok(logged.contains("partial").then_some(logged))
+    })
+    .expect("the log check cannot fail");
+
+    assert_eq!(
+        partial.as_deref(),
+        Some("partial"),
+        "the log holds the line start"
+    );
+
+    writer
+        .write_all(b"\n{\"ready\":true}\n")
+        .expect("write the rest of the output");
+
+    let (line, _) = started
+        .join()
+        .expect("the reader finishes")
+        .expect("the copy succeeds")
+        .expect("a ready line");
+
+    assert_eq!(line, "{\"ready\":true}");
+    assert_eq!(
+        fs::read_to_string(&log_path).expect("read the log"),
+        "partial\n{\"ready\":true}\n"
+    );
+}
+
+#[test]
+fn copy_until_ready_fails_a_line_over_the_bound() {
+    let folder = crate::test_support::temporary_directory();
+    let (log, log_path) = log_file(folder.path());
+    let app = PathBuf::from("/apps/test-app");
+    let limit = 8;
+    let line = vec![b'a'; usize::try_from(limit).expect("the limit fits") + 1];
+
+    let error = copy_until_ready(BufReader::new(&line[..]), log, &app, limit)
+        .expect_err("the line passes the bound");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<AppStartError>(),
+            Some(AppStartError::ReadyLineTooLong {
+                app: named_app,
+                limit: recorded_limit,
+            }) if named_app == &app && *recorded_limit == limit
+        ),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(
+        fs::read_to_string(&log_path).expect("read the log"),
+        "a".repeat(line.len())
+    );
+}
+
+#[test]
+fn copy_until_ready_accepts_a_line_at_the_bound() {
+    let folder = crate::test_support::temporary_directory();
+    let (log, log_path) = log_file(folder.path());
+    let app = PathBuf::from("/apps/test-app");
+    let limit = 8;
+    let input = b"12345678\n{}\n";
+
+    let (line, _) = copy_until_ready(BufReader::new(&input[..]), log, &app, limit)
+        .expect("the copy succeeds")
+        .expect("a ready line");
+
+    assert_eq!(line, "{}");
+    assert_eq!(
+        fs::read_to_string(&log_path).expect("read the log"),
+        "12345678\n{}\n"
+    );
+}
+
+#[test]
+fn copy_until_ready_accepts_a_line_at_the_ready_line_bound() {
+    let folder = crate::test_support::temporary_directory();
+    let (log, log_path) = log_file(folder.path());
+    let app = PathBuf::from("/apps/test-app");
+    let input = format!("{}\n{{}}\n", "a".repeat(65_536));
+
+    let (line, _) = copy_until_ready(
+        BufReader::new(input.as_bytes()),
+        log,
+        &app,
+        READY_LINE_LIMIT,
+    )
+    .expect("the copy succeeds")
+    .expect("a ready line");
+
+    assert_eq!(line, "{}");
+    assert_eq!(fs::read_to_string(&log_path).expect("read the log"), input);
+}
+
+#[test]
+fn copy_until_ready_returns_a_ready_line_at_the_end_of_the_output() {
+    let folder = crate::test_support::temporary_directory();
+    let (log, log_path) = log_file(folder.path());
+    let app = PathBuf::from("/apps/test-app");
+
+    let (line, _) = copy_until_ready(BufReader::new(&b"{}"[..]), log, &app, READY_LINE_LIMIT)
+        .expect("the copy succeeds")
+        .expect("a ready line");
+
+    assert_eq!(line, "{}");
+    assert_eq!(fs::read_to_string(&log_path).expect("read the log"), "{}");
+}
+
+#[test]
+fn copy_until_ready_returns_no_ready_line_for_a_final_non_json_segment() {
+    let folder = crate::test_support::temporary_directory();
+    let (log, log_path) = log_file(folder.path());
+    let app = PathBuf::from("/apps/test-app");
+
+    let found = copy_until_ready(BufReader::new(&b"noise"[..]), log, &app, READY_LINE_LIMIT)
+        .expect("the copy succeeds");
+
+    assert!(found.is_none(), "the final segment is not a ready line");
+    assert_eq!(
+        fs::read_to_string(&log_path).expect("read the log"),
+        "noise"
+    );
+}
+
+#[test]
 fn read_ready_line_returns_the_first_json_object_and_logs_the_lines_before_it() {
     crate::test_support::in_test_namespace!();
 
@@ -194,6 +343,19 @@ fn read_ready_line_returns_the_first_json_object_and_logs_the_lines_before_it() 
         logged.starts_with("noise\n[1]\n{\"title\":\"t\"}\n"),
         "logged: {logged:?}"
     );
+}
+
+#[test]
+fn read_ready_line_accepts_a_ready_line_at_the_end_of_the_output() {
+    crate::test_support::in_test_namespace!();
+
+    let ReadReady { found, logged, .. } = read_ready(
+        r#"printf '{"ready":true}'; exec sleep 30 >/dev/null"#,
+        Duration::from_secs(5),
+    );
+
+    assert_eq!(found.expect("a ready line"), r#"{"ready":true}"#);
+    assert_eq!(logged, r#"{"ready":true}"#);
 }
 
 #[test]
@@ -303,9 +465,11 @@ fn copy_rest_keeps_copying_output_after_the_ready_line() {
         std::env::var("PATH").unwrap_or_default(),
     )];
 
+    let app = PathBuf::from("sh");
     let (line, rest) = read_ready_line(
         stdout,
         reader_log,
+        &app,
         &log_path,
         identity_of(pid),
         folder.path(),
@@ -340,6 +504,13 @@ fn the_app_start_errors_render_their_messages() {
                 log: PathBuf::from("/tmp/app.log"),
             },
             "The app was not ready within 2 seconds; see /tmp/app.log",
+        ),
+        (
+            AppStartError::ReadyLineTooLong {
+                app: PathBuf::from("/apps/app"),
+                limit: 65536,
+            },
+            "The app /apps/app printed a line longer than 65536 bytes before it was ready",
         ),
     ];
 
