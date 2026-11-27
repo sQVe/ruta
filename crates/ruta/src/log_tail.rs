@@ -30,7 +30,6 @@ fn read_tail(path: &Path) -> std::io::Result<Vec<u8>> {
     let start = metadata.len().saturating_sub(TAIL_BYTES as u64);
     let mut bytes = Vec::new();
 
-    // A character is at most 4 bytes, so at most 3 bytes before the window can belong to it.
     file.seek(SeekFrom::Start(start.saturating_sub(3)))?;
     file.read_to_end(&mut bytes)?;
 
@@ -39,7 +38,6 @@ fn read_tail(path: &Path) -> std::io::Result<Vec<u8>> {
     let mut window = bytes.split_off(window_offset);
     let preceding = bytes.as_slice();
 
-    // A window that starts after a byte other than a newline starts inside a line.
     if preceding.last().is_some_and(|byte| *byte != b'\n') {
         drop_partial_first_line(&mut window, preceding);
     }
@@ -47,8 +45,6 @@ fn read_tail(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(window)
 }
 
-// Drops the partial first line of a window that starts inside a line. Without a line break, only
-// the bytes that complete a character begun before the window are dropped.
 fn drop_partial_first_line(window: &mut Vec<u8>, preceding: &[u8]) {
     if let Some(line_break) = window.iter().position(|byte| *byte == b'\n') {
         window.drain(..=line_break);
@@ -58,7 +54,6 @@ fn drop_partial_first_line(window: &mut Vec<u8>, preceding: &[u8]) {
     drop_completed_character(window, preceding);
 }
 
-// A character is at most 4 bytes, so at most 3 of its bytes lie in the window.
 fn drop_completed_character(window: &mut Vec<u8>, preceding: &[u8]) {
     let Some(lead) = preceding
         .iter()
@@ -75,7 +70,6 @@ fn drop_completed_character(window: &mut Vec<u8>, preceding: &[u8]) {
         let joined = [begun, head].concat();
 
         if is_one_character(&joined) {
-            // A window that is only the completed character is kept, so the excerpt is never empty.
             if length < window.len() {
                 window.drain(..length);
             }
