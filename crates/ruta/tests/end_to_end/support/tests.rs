@@ -1,4 +1,111 @@
+use std::collections::HashSet;
+
 use super::*;
+
+const CAPTURE_LABELS: &[&str] = &[
+    "broken-stdout",
+    "capture-crop",
+    "capture-plain",
+    "capture-ready",
+    "output-capture",
+    "output-order",
+];
+
+#[test]
+fn one_label_generates_different_sandbox_roots() {
+    let root = sandbox_root(&next_sandbox_name("shared-label"));
+    let other_root = sandbox_root(&next_sandbox_name("shared-label"));
+
+    assert_ne!(root, other_root);
+}
+
+#[test]
+fn a_normal_label_builds_a_valid_name() {
+    let name = next_sandbox_name("mode-child-command");
+
+    assert_valid_ruta_name(&name);
+}
+
+#[test]
+#[should_panic(
+    expected = "the label \"over-long-label-that-does-not-fit\" builds a name longer than"
+)]
+fn an_over_long_label_is_rejected() {
+    next_sandbox_name("over-long-label-that-does-not-fit");
+}
+
+#[test]
+#[should_panic(
+    expected = "the label \"bad_label\" builds a name with a character RUTA_NAME does not allow"
+)]
+fn a_label_with_a_disallowed_character_is_rejected() {
+    next_sandbox_name("bad_label");
+}
+
+#[test]
+#[should_panic(
+    expected = "the label \"-bad\" builds a name that does not start with a letter or digit"
+)]
+fn a_label_starting_with_a_hyphen_is_rejected() {
+    next_sandbox_name("-bad");
+}
+
+#[test]
+fn capture_names_fit_the_ruta_name_limit() {
+    for &label in CAPTURE_LABELS {
+        let name = next_sandbox_name(label);
+        let capture_name = sandbox_capture_name(&name);
+
+        assert_valid_ruta_name(&capture_name);
+    }
+}
+
+#[test]
+#[should_panic(
+    expected = "the sandbox \"capture-name-that-is-too-long\" builds a capture name longer than"
+)]
+fn an_over_long_capture_name_is_rejected() {
+    sandbox_capture_name("capture-name-that-is-too-long");
+}
+
+#[test]
+fn generated_names_keep_one_length_and_stay_distinct() {
+    let names: Vec<String> = (0..5000)
+        .map(|_| next_sandbox_name("shared-label"))
+        .collect();
+    let lengths: HashSet<usize> = names.iter().map(String::len).collect();
+    let distinct: HashSet<&str> = names.iter().map(String::as_str).collect();
+    let counters: HashSet<&str> = names
+        .iter()
+        .map(|name| &name[name.len() - NAME_COUNTER_DIGITS..])
+        .collect();
+
+    assert_eq!(lengths.len(), 1, "every name has one length: {lengths:?}");
+    assert_eq!(distinct.len(), names.len(), "every name is distinct");
+    assert_eq!(
+        counters.len(),
+        names.len(),
+        "every name has a distinct counter"
+    );
+}
+
+fn assert_valid_ruta_name(name: &str) {
+    let starts_with_letter_or_digit = name.chars().next().is_some_and(is_name_start);
+    let holds_only_valid_characters = name.chars().all(is_name_character);
+
+    assert!(
+        name.len() <= NAME_LIMIT,
+        "{name}: at most {NAME_LIMIT} bytes"
+    );
+    assert!(
+        starts_with_letter_or_digit,
+        "{name}: starts with a lowercase letter or a digit"
+    );
+    assert!(
+        holds_only_valid_characters,
+        "{name}: holds only lowercase letters, digits, and hyphens"
+    );
+}
 
 #[test]
 fn default_config_keeps_the_complete_template() {

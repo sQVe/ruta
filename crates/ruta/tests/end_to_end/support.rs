@@ -1,7 +1,9 @@
 use std::fs;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
@@ -9,6 +11,11 @@ use tempfile::TempDir;
 pub(crate) use crate::test_support::namespace::in_test_namespace;
 
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+const NAME_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+// Mirrors the limit RUTA_NAME allows, so a test label fails where its name is built.
+pub(crate) const NAME_LIMIT: usize = 32;
+pub(crate) const NAME_COUNTER_DIGITS: usize = 4;
+const NAME_RANDOM_DIGITS: usize = 5;
 pub(crate) const WINDOW_SIZE: (u32, u32) = (640, 480);
 pub(crate) const TITLE: &str = "ruta test app";
 
@@ -52,11 +59,91 @@ impl Project {
     }
 
     pub(crate) fn sandbox(&self, label: &str) -> Sandbox<'_> {
+        self.sandbox_with_name(&next_sandbox_name(label))
+    }
+
+    pub(crate) fn sandbox_with_name(&self, name: &str) -> Sandbox<'_> {
         Sandbox {
-            name: format!("e2e-{label}-{}", std::process::id()),
+            name: name.to_owned(),
             project: self,
         }
     }
+}
+
+pub(crate) fn next_sandbox_name(label: &str) -> String {
+    static NEXT_ID: AtomicU32 = AtomicU32::new(0);
+
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let name = format!("{label}-{}{}", random_digits(), counter_digits(id));
+
+    assert!(
+        name.len() <= NAME_LIMIT,
+        "the label {label:?} builds a name longer than {NAME_LIMIT} bytes: {name}"
+    );
+    assert!(
+        name.chars().next().is_some_and(is_name_start),
+        "the label {label:?} builds a name that does not start with a letter or digit: {name}"
+    );
+    assert!(
+        name.chars().all(is_name_character),
+        "the label {label:?} builds a name with a character RUTA_NAME does not allow: {name}"
+    );
+
+    name
+}
+
+fn is_name_start(character: char) -> bool {
+    character.is_ascii_lowercase() || character.is_ascii_digit()
+}
+
+fn is_name_character(character: char) -> bool {
+    is_name_start(character) || character == '-'
+}
+
+// The random digits separate runs; the counter separates names in one run.
+fn random_digits() -> String {
+    let mut bytes = [0_u8; NAME_RANDOM_DIGITS];
+
+    fs::File::open("/dev/urandom")
+        .expect("open the random device")
+        .read_exact(&mut bytes)
+        .expect("read the random device");
+
+    bytes
+        .iter()
+        .map(|byte| char::from(NAME_ALPHABET[usize::from(*byte) % NAME_ALPHABET.len()]))
+        .collect()
+}
+
+fn counter_digits(id: u32) -> String {
+    // The counter repeats only after 36^4 names, far more than one process builds.
+    let base = u32::try_from(NAME_ALPHABET.len()).expect("the alphabet length fits in u32");
+    let limit = base.pow(NAME_COUNTER_DIGITS as u32);
+
+    let mut value = id % limit;
+    let mut digits = [b'0'; NAME_COUNTER_DIGITS];
+
+    for digit in digits.iter_mut().rev() {
+        *digit = NAME_ALPHABET[(value % base) as usize];
+        value /= base;
+    }
+
+    digits.iter().map(|digit| char::from(*digit)).collect()
+}
+
+pub(crate) fn sandbox_capture_name(name: &str) -> String {
+    let capture_name = format!("{name}-capture");
+
+    assert!(
+        capture_name.len() <= NAME_LIMIT,
+        "the sandbox {name:?} builds a capture name longer than {NAME_LIMIT} bytes: {capture_name}"
+    );
+
+    capture_name
+}
+
+pub(crate) fn sandbox_root(name: &str) -> PathBuf {
+    PathBuf::from(format!("/var/tmp/ruta-{name}"))
 }
 
 pub(crate) struct Sandbox<'project> {
@@ -70,11 +157,11 @@ impl Sandbox<'_> {
     }
 
     pub(crate) fn root(&self) -> PathBuf {
-        PathBuf::from(format!("/var/tmp/ruta-{}", self.name))
+        sandbox_root(&self.name)
     }
 
     pub(crate) fn capture_root(&self) -> PathBuf {
-        PathBuf::from(format!("/var/tmp/ruta-{}-capture", self.name))
+        sandbox_root(&sandbox_capture_name(&self.name))
     }
 
     pub(crate) fn run(&self, arguments: &[&str]) -> Output {

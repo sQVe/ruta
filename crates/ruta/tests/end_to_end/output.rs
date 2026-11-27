@@ -293,7 +293,7 @@ fn capture_emits_startup_before_screenshot_and_cleanup_warnings() {
         let cleanup = Sandbox::run_command(
             sandbox
                 .command(&["down"])
-                .env("RUTA_NAME", format!("{}-capture", sandbox.name())),
+                .env("RUTA_NAME", sandbox_capture_name(sandbox.name())),
         );
         assert_eq!(cleanup.status.code(), Some(0), "{cleanup:?}");
     }
