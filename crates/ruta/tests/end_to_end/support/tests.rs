@@ -120,23 +120,25 @@ fn remove_locks_reports_every_path_it_cannot_remove() {
     }
 
     let failures = sandbox.remove_locks();
-    let lock_reported = failures
-        .iter()
-        .any(|failure| failure.contains(&lock_path.display().to_string()));
-    let capture_lock_reported = failures
-        .iter()
-        .any(|failure| failure.contains(&capture_lock_path.display().to_string()));
 
     assert_eq!(
         failures.len(),
         2,
         "every failed path is reported: {failures:?}"
     );
-    assert!(lock_reported, "the normal lock is reported: {failures:?}");
-    assert!(
-        capture_lock_reported,
-        "the capture lock is reported: {failures:?}"
-    );
+
+    for expected_path in [&lock_path, &capture_lock_path] {
+        let failure = failures.iter().find(|(path, _)| path == expected_path);
+        let Some((_, error)) = failure else {
+            panic!("{} is reported: {failures:?}", expected_path.display());
+        };
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::IsADirectory,
+            "{}: {failures:?}",
+            expected_path.display()
+        );
+    }
 
     fs::remove_dir_all(&lock_path).expect("remove the lock folder");
     fs::remove_dir_all(&capture_lock_path).expect("remove the capture lock folder");

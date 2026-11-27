@@ -178,9 +178,9 @@ impl Sandbox<'_> {
     }
 
     pub(crate) fn capture_lock_path(&self) -> Option<PathBuf> {
-        let capture_name = capture_name(&self.name);
+        let capture = capture_name(&self.name);
 
-        capture_name.map(|name| sandbox_lock_path(&name))
+        capture.map(|name| sandbox_lock_path(&name))
     }
 
     pub(crate) fn run(&self, arguments: &[&str]) -> Output {
@@ -298,7 +298,7 @@ impl Sandbox<'_> {
         Ok(())
     }
 
-    fn remove_locks(&self) -> Vec<String> {
+    fn remove_locks(&self) -> Vec<(PathBuf, std::io::Error)> {
         let mut failures = Vec::new();
         let mut paths = vec![self.lock_path()];
 
@@ -310,7 +310,7 @@ impl Sandbox<'_> {
             if let Err(error) = fs::remove_file(&path)
                 && error.kind() != std::io::ErrorKind::NotFound
             {
-                failures.push(format!("{}: {error}", path.display()));
+                failures.push((path, error));
             }
         }
 
@@ -341,8 +341,12 @@ impl Drop for Sandbox<'_> {
             );
         }
 
-        for failure in self.remove_locks() {
-            eprintln!("could not remove a lock file of {}: {failure}", self.name);
+        for (path, error) in self.remove_locks() {
+            eprintln!(
+                "could not remove the lock file {} of {}: {error}",
+                path.display(),
+                self.name
+            );
         }
     }
 }

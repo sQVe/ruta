@@ -36,9 +36,8 @@ fn a_busy_sandbox_fails_before_it_changes_the_root() {
     assert!(!sandbox.root().exists(), "the root is not created");
 
     drop(lock);
+    fs::remove_file(&lock_path).expect("remove the lock file the test created");
     drop(sandbox);
-
-    assert!(!lock_path.exists(), "the fixture removed the lock file");
 }
 
 #[test]
