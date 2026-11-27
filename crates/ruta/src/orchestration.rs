@@ -417,8 +417,10 @@ fn shot(name: &str, root: &Path, file: Option<PathBuf>) -> anyhow::Result<String
 fn log(root: &Path) -> anyhow::Result<String> {
     require_trusted_root(root)?;
 
-    fs::read_to_string(root.join(crate::root::record::APP_LOG))
-        .with_context(|| "Could not read the app log")
+    let bytes = fs::read(root.join(crate::root::record::APP_LOG))
+        .with_context(|| "Could not read the app log")?;
+
+    Ok(String::from_utf8_lossy_owned(bytes))
 }
 
 fn opened(root: &Path) -> anyhow::Result<String> {
