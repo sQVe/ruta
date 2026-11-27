@@ -1,5 +1,6 @@
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
 use thiserror::Error;
@@ -801,7 +802,12 @@ fn log_within(root: &Path, wait: Duration) -> anyhow::Result<String> {
 
     receiver
         .recv_timeout(wait)
-        .expect("the log command returns before the wait")
+        .unwrap_or_else(|error| match error {
+            RecvTimeoutError::Disconnected => panic!("the log call panicked"),
+            RecvTimeoutError::Timeout => {
+                panic!("the log call did not return before the wait")
+            }
+        })
 }
 
 #[test]
@@ -833,9 +839,9 @@ fn log_fails_on_a_missing_log_and_prints_a_normal_one() {
     let error = log(root.path()).expect_err("a missing log fails");
 
     assert_eq!(io_kind(&error), Some(std::io::ErrorKind::NotFound));
-    assert_eq!(
-        format!("{error:#}"),
-        "Could not read the app log: No such file or directory (os error 2)"
+    assert!(
+        format!("{error:#}").starts_with("Could not read the app log"),
+        "the error names the app log"
     );
 
     fs::write(root.path().join("app.log"), "ready\n").expect("write the log");

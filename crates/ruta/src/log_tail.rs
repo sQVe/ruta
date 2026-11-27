@@ -112,6 +112,7 @@ fn is_one_character(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::mpsc::RecvTimeoutError;
     use std::time::Duration;
 
     use super::*;
@@ -130,7 +131,12 @@ mod tests {
 
         receiver
             .recv_timeout(FIFO_WAIT)
-            .expect("the call returns before the wait")
+            .unwrap_or_else(|error| match error {
+                RecvTimeoutError::Disconnected => panic!("the call panicked"),
+                RecvTimeoutError::Timeout => {
+                    panic!("the call did not return before the wait")
+                }
+            })
     }
 
     #[test]
