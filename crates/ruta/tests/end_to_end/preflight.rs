@@ -30,12 +30,62 @@ fn a_bad_config_or_bad_arguments_leave_a_running_sandbox_unchanged() {
         sandbox.fail(arguments);
     }
 
+    assert_a_refused_weston_version_leaves_the_sandbox_up(&sandbox, &before);
+
     assert_eq!(
         sandbox.records(),
         before,
         "the sandbox records are unchanged"
     );
     assert_eq!(sandbox.shot_size(), WINDOW_SIZE, "the sandbox is still up");
+}
+
+fn assert_a_refused_weston_version_leaves_the_sandbox_up(
+    sandbox: &Sandbox,
+    before: &[(&'static str, Option<String>)],
+) {
+    let log = sandbox.wait_for_log("ruta-test-app: running");
+    let tools = tempfile::Builder::new()
+        .prefix("ruta-end-to-end-path-")
+        .tempdir()
+        .expect("create the PATH folder");
+    let calls = fake_weston_14(tools.path());
+    let path = old_weston_path(tools.path());
+
+    for arguments in [&["up"][..], &["restart"]] {
+        let mut command = sandbox.command(arguments);
+        command.env("PATH", &path);
+        let output = Sandbox::run_command(&mut command);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(output.status.code(), Some(1), "{arguments:?}: {output:?}");
+        assert!(
+            stderr
+                .contains("The installed weston is version 14.0.2. ruta needs weston 15 or newer"),
+            "{arguments:?}: {stderr}"
+        );
+    }
+
+    assert_eq!(
+        sandbox.records(),
+        before,
+        "the running sandbox records are unchanged"
+    );
+    assert!(
+        sandbox.succeed(&["status"]).contains("is up and serves"),
+        "the sandbox is still up"
+    );
+    assert_eq!(sandbox.succeed(&["log"]), log, "the app log is unchanged");
+    assert_eq!(
+        sandbox.shot_size(),
+        WINDOW_SIZE,
+        "the shot still has the app size"
+    );
+    assert_eq!(
+        fs::read_to_string(&calls).expect("read the weston calls"),
+        "--version\n--version\n",
+        "each start request probes weston once"
+    );
 }
 
 fn path_with(linked: &[&str]) -> TempDir {
@@ -280,61 +330,4 @@ fn up_refuses_an_old_weston_before_it_makes_a_root() {
         fs::read_to_string(&calls).expect("read the weston calls"),
         "--version\n"
     );
-}
-
-#[test]
-#[ignore = "needs Weston, Xwayland, xdotool, and ImageMagick"]
-fn a_refused_weston_version_leaves_a_running_sandbox_up() {
-    in_test_namespace!();
-
-    let project = Project::new(&Config::default());
-    let sandbox = project.sandbox("running-weston");
-    sandbox.succeed(&["up"]);
-    let log = sandbox.wait_for_log("ruta-test-app: running");
-    let before = sandbox.records();
-
-    let tools = tempfile::Builder::new()
-        .prefix("ruta-end-to-end-path-")
-        .tempdir()
-        .expect("create the PATH folder");
-    let calls = fake_weston_14(tools.path());
-    let path = old_weston_path(tools.path());
-
-    for arguments in [&["up"][..], &["restart"]] {
-        let mut command = sandbox.command(arguments);
-        command.env("PATH", &path);
-        let output = Sandbox::run_command(&mut command);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        assert_eq!(output.status.code(), Some(1), "{arguments:?}: {output:?}");
-        assert!(
-            stderr
-                .contains("The installed weston is version 14.0.2. ruta needs weston 15 or newer"),
-            "{arguments:?}: {stderr}"
-        );
-    }
-
-    assert_eq!(
-        sandbox.records(),
-        before,
-        "the running sandbox records are unchanged"
-    );
-    assert!(
-        sandbox.succeed(&["status"]).contains("is up and serves"),
-        "the sandbox is still up"
-    );
-    assert_eq!(sandbox.succeed(&["log"]), log, "the app log is unchanged");
-    assert_eq!(
-        sandbox.shot_size(),
-        WINDOW_SIZE,
-        "the shot still has the app size"
-    );
-    assert_eq!(
-        fs::read_to_string(&calls).expect("read the weston calls"),
-        "--version\n--version\n",
-        "each start request probes weston once"
-    );
-
-    sandbox.succeed(&["down"]);
-    sandbox.assert_gone();
 }

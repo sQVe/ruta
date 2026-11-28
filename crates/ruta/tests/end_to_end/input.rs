@@ -16,6 +16,12 @@ fn input_commands_reach_the_window_at_window_coordinates() {
     let sandbox = project.sandbox("input");
     sandbox.succeed(&["up"]);
     sandbox.wait_for_log("ruta-test-app: running");
+    let window = recorded_window(&sandbox);
+    assert_eq!(
+        focused_window(&sandbox),
+        window,
+        "up leaves the input focus on the app window"
+    );
 
     let click = events_after(&sandbox, &["click", "100", "120"], "button-release", 1);
     let press = only(&click, "button-press", &[("x", "100"), ("y", "120")]);
@@ -105,26 +111,20 @@ fn input_commands_reach_the_window_at_window_coordinates() {
     let press = only(&plain, "button-press", &[("x", "170"), ("y", "180")]);
     assert_eq!(press.state() & SHIFT, 0, "release lets Shift go: {plain:?}");
 
+    assert_focus_stays_on_the_app_window(&sandbox, &window);
+    assert_a_focus_probe_still_reaches_the_app(&sandbox, &window);
+    assert_one_command_restores_a_focus_that_started_elsewhere(&sandbox, &window);
+
     sandbox.succeed(&["down"]);
     sandbox.assert_gone();
 }
 
-#[test]
-#[ignore = "needs Weston, Xwayland, xdotool, and ImageMagick"]
-fn input_focus_stays_on_the_app_window_after_every_command() {
-    in_test_namespace!();
-
-    let project = Project::new(&Config::default());
-    let sandbox = project.sandbox("focus");
-    sandbox.succeed(&["up"]);
-    sandbox.wait_for_log("ruta-test-app: running");
-
-    let window = recorded_window(&sandbox);
-    assert_no_window_decorations(&sandbox, &window);
+fn assert_focus_stays_on_the_app_window(sandbox: &Sandbox, window: &str) {
+    assert_no_window_decorations(sandbox, window);
     assert_eq!(
-        focused_window(&sandbox),
+        focused_window(sandbox),
         window,
-        "up leaves the input focus on the app window"
+        "the input focus stays on the app window"
     );
 
     for arguments in [
@@ -140,64 +140,37 @@ fn input_focus_stays_on_the_app_window_after_every_command() {
         sandbox.succeed(arguments);
 
         assert_eq!(
-            focused_window(&sandbox),
+            focused_window(sandbox),
             window,
             "{arguments:?} leaves the input focus on the app window"
         );
     }
-
-    sandbox.succeed(&["down"]);
-    sandbox.assert_gone();
 }
 
-#[test]
-#[ignore = "needs Weston, Xwayland, xdotool, and ImageMagick"]
-fn a_focus_probe_then_input_still_reaches_the_app() {
-    in_test_namespace!();
-
-    let project = Project::new(&Config::default());
-    let sandbox = project.sandbox("probe");
-    sandbox.succeed(&["up"]);
-    sandbox.wait_for_log("ruta-test-app: running");
-
-    let window = recorded_window(&sandbox);
-    sandbox_xdotool(&sandbox, &["windowfocus", &window]);
+fn assert_a_focus_probe_still_reaches_the_app(sandbox: &Sandbox, window: &str) {
+    sandbox_xdotool(sandbox, &["windowfocus", window]);
     assert_eq!(
-        focused_window(&sandbox),
+        focused_window(sandbox),
         window,
         "the probe leaves the raw input focus on the app window"
     );
 
-    let typed = events_after(&sandbox, &["type", "hi"], "key-release", 2);
+    let typed = events_after(sandbox, &["type", "hi"], "key-release", 2);
     assert_eq!(
         keysyms(&typed, "key-press"),
         ["0x68", "0x69"],
         "type reaches the app after the focus probe: {typed:?}"
     );
 
-    let key = events_after(&sandbox, &["key", "Return"], "key-release", 1);
+    let key = events_after(sandbox, &["key", "Return"], "key-release", 1);
     assert_eq!(
         keysyms(&key, "key-press"),
         ["0xff0d"],
         "key reaches the app after the focus probe: {key:?}"
     );
-
-    sandbox.succeed(&["down"]);
-    sandbox.assert_gone();
 }
 
-#[test]
-#[ignore = "needs Weston, Xwayland, xdotool, and ImageMagick"]
-fn one_input_command_restores_a_focus_that_started_elsewhere() {
-    in_test_namespace!();
-
-    let project = Project::new(&Config::default());
-    let sandbox = project.sandbox("restore");
-    sandbox.succeed(&["up"]);
-    sandbox.wait_for_log("ruta-test-app: running");
-
-    let window = recorded_window(&sandbox);
-
+fn assert_one_command_restores_a_focus_that_started_elsewhere(sandbox: &Sandbox, window: &str) {
     for arguments in [
         &["move", "10", "10", "20", "20"][..],
         &["click", "100", "120"],
@@ -210,15 +183,15 @@ fn one_input_command_restores_a_focus_that_started_elsewhere() {
     ] {
         // PointerRoot is where a sandbox at rest sits on the old display stack, so the command must
         // put the focus on the app itself instead of relying on the pointer.
-        sandbox_xdotool(&sandbox, &["windowfocus", "1"]);
+        sandbox_xdotool(sandbox, &["windowfocus", "1"]);
         assert_eq!(
-            focused_window(&sandbox),
+            focused_window(sandbox),
             "1",
             "{arguments:?} starts on PointerRoot, not the app window"
         );
 
         if arguments[0] == "type" {
-            let typed = events_after(&sandbox, arguments, "key-release", 2);
+            let typed = events_after(sandbox, arguments, "key-release", 2);
             assert_eq!(
                 keysyms(&typed, "key-press"),
                 ["0x68", "0x69"],
@@ -229,14 +202,11 @@ fn one_input_command_restores_a_focus_that_started_elsewhere() {
         }
 
         assert_eq!(
-            focused_window(&sandbox),
+            focused_window(sandbox),
             window,
             "{arguments:?} restores the raw input focus to the app window"
         );
     }
-
-    sandbox.succeed(&["down"]);
-    sandbox.assert_gone();
 }
 
 fn recorded_window(sandbox: &Sandbox) -> String {

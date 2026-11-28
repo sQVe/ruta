@@ -425,36 +425,31 @@ fn capture_reports_root_creation_errors_without_starting() {
 }
 
 #[test]
-fn create_capture_folder_creates_a_missing_folder() {
+fn prepare_capture_folder_removes_only_capture_outputs() {
     let directory = crate::test_support::temporary_directory();
     let folder = directory.path().join("nested/output");
 
     create_capture_folder(&folder).expect("create missing output folder");
-
     assert!(folder.is_dir());
-}
-
-#[test]
-fn clear_capture_folder_removes_only_capture_outputs() {
-    let folder = crate::test_support::temporary_directory();
     for name in ["shot.png", "crop.png", "capture.json", "keep.txt"] {
-        fs::write(folder.path().join(name), "old").expect("write old output");
+        fs::write(folder.join(name), "old").expect("write old output");
     }
 
-    clear_capture_folder(folder.path()).expect("clear old outputs");
+    clear_capture_folder(&folder).expect("clear old outputs");
 
     for name in ["shot.png", "crop.png", "capture.json"] {
-        assert!(!folder.path().join(name).exists(), "{name}");
+        assert!(!folder.join(name).exists(), "{name}");
     }
     assert_eq!(
-        fs::read_to_string(folder.path().join("keep.txt")).expect("unrelated file"),
+        fs::read_to_string(folder.join("keep.txt")).expect("unrelated file"),
         "old"
     );
 }
 
 #[test]
-fn clear_capture_folder_refuses_to_remove_a_directory() {
+fn prepare_capture_folder_refuses_to_remove_a_directory() {
     let folder = crate::test_support::temporary_directory();
+    create_capture_folder(folder.path()).expect("the output folder is there");
     let shot = folder.path().join("shot.png");
     fs::create_dir(&shot).expect("create shot directory");
     fs::write(shot.join("keep.txt"), "keep").expect("write marker");
