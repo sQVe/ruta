@@ -205,9 +205,11 @@ fn capture_window(name: &str, root: &Path, out: &Path) -> anyhow::Result<()> {
 }
 
 // A missing weston gets the install hint before the version probe, and the version refusal wins
-// over the other tools, so each command checks and probes before it checks the tools.
+// over the other tools, so each command checks and probes before it checks the tools. The root is
+// validated first because the probe resolves `weston` from its `bin` folder.
 // `start_window` probes again for the executable the display start uses.
 fn require_display_weston(root: &Path, session: &Session) -> anyhow::Result<()> {
+    require_trusted_root(root)?;
     require_program(Tool::Weston)?;
 
     let environment = session.environment(&caller_environment(), root);
