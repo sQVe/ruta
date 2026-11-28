@@ -15,6 +15,7 @@ const WHEEL_DOWN: u8 = 5;
 
 #[mutants::skip]
 fn warm_up(environment: &[(String, String)], window: &str) -> anyhow::Result<()> {
+    super::set_focus(environment, window)?;
     move_pointer(environment, window, (0, 0))?;
     std::thread::sleep(INPUT_SETTLE);
 
@@ -150,18 +151,29 @@ pub(crate) fn key(
     )
 }
 
-#[mutants::skip]
-pub(crate) fn hold(root: &Path, display: &str, keys: &[String]) -> anyhow::Result<()> {
+pub(crate) fn hold(
+    root: &Path,
+    display: &str,
+    window: &str,
+    keys: &[String],
+) -> anyhow::Result<()> {
     let environment = sandbox_environment(&caller_environment(), root, display);
+    super::set_focus(&environment, window)?;
 
     xdotool(&environment, &key_arguments("keydown", keys), TOOL_TIMEOUT)
 }
 
-#[mutants::skip]
-pub(crate) fn release(root: &Path, display: &str, keys: &[String]) -> anyhow::Result<()> {
+pub(crate) fn release(
+    root: &Path,
+    display: &str,
+    window: &str,
+    keys: &[String],
+) -> anyhow::Result<()> {
     let environment = sandbox_environment(&caller_environment(), root, display);
+    let released = xdotool(&environment, &key_arguments("keyup", keys), TOOL_TIMEOUT);
+    let focused = super::set_focus(&environment, window);
 
-    xdotool(&environment, &key_arguments("keyup", keys), TOOL_TIMEOUT)
+    released.and(focused)
 }
 
 #[mutants::skip]
@@ -239,9 +251,199 @@ fn key_arguments(action: &str, keys: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::path::PathBuf;
+
     use super::*;
 
+    use crate::input::WindowError;
     use crate::test_support::strings;
+
+    // A fake xdotool that records every call, answers the focus request with `windowfocus` and the
+    // focus query with `getwindowfocus`.
+    fn fake_xdotool(
+        windowfocus: &str,
+        getwindowfocus: &str,
+    ) -> (tempfile::TempDir, Vec<(String, String)>, PathBuf) {
+        let folder = crate::test_support::temporary_directory();
+        let calls = folder.path().join("calls");
+        let script = folder.path().join("xdotool");
+        let script_text = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  windowfocus) {windowfocus} ;;\n  getwindowfocus) {getwindowfocus}\nesac\nexit 0\n",
+            calls.display()
+        );
+        fs::write(&script, script_text).expect("write the fake xdotool");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
+            .expect("make the fake xdotool runnable");
+        let environment = vec![(
+            "PATH".to_string(),
+            folder.path().to_string_lossy().into_owned(),
+        )];
+
+        (folder, environment, calls)
+    }
+
+    #[test]
+    fn warm_up_refuses_a_focus_that_stayed_on_another_window() {
+        crate::test_support::in_test_namespace!();
+
+        let (_folder, environment, calls) = fake_xdotool("exit 0", "printf '999\\n'");
+
+        let error = warm_up(&environment, "123").expect_err("the focus stayed elsewhere");
+
+        assert_eq!(
+            error.downcast_ref::<WindowError>(),
+            Some(&WindowError::FocusRefused {
+                window: "123".to_string(),
+                holder: "999".to_string(),
+            })
+        );
+        assert_eq!(
+            fs::read_to_string(&calls).expect("read the calls"),
+            "windowfocus 123\ngetwindowfocus -f\n",
+            "a refused focus sends no pointer, key or button input"
+        );
+    }
+
+    #[test]
+    fn warm_up_names_a_failed_focus_query() {
+        crate::test_support::in_test_namespace!();
+
+        let (_folder, environment, calls) = fake_xdotool(
+            "exit 0",
+            "printf 'Failed creating new xdo instance.\\n' >&2; exit 1",
+        );
+
+        let error = warm_up(&environment, "123").expect_err("the focus query fails");
+
+        assert_eq!(
+            format!("{error:#}"),
+            "xdotool getwindowfocus failed: Failed creating new xdo instance."
+        );
+        assert_eq!(
+            fs::read_to_string(&calls).expect("read the calls"),
+            "windowfocus 123\ngetwindowfocus -f\n",
+            "a failed focus query sends no pointer, key or button input"
+        );
+    }
+
+    #[test]
+    fn warm_up_names_a_failed_focus_request() {
+        crate::test_support::in_test_namespace!();
+
+        let (_folder, environment, calls) = fake_xdotool(
+            "printf 'Failed to focus the window.\\n' >&2; exit 1",
+            "exit 0",
+        );
+
+        let error = warm_up(&environment, "123").expect_err("the focus request fails");
+
+        assert_eq!(
+            format!("{error:#}"),
+            "xdotool windowfocus 123 failed: Failed to focus the window."
+        );
+        assert_eq!(
+            fs::read_to_string(&calls).expect("read the calls"),
+            "windowfocus 123\n",
+            "a failed focus request makes no focus query and sends no input"
+        );
+    }
+
+    // hold and release build the sandbox environment themselves, which puts the root's bin folder
+    // first on PATH, so the fake xdotool must live there.
+    fn fake_root_xdotool(windowfocus: &str, getwindowfocus: &str) -> (tempfile::TempDir, PathBuf) {
+        let root = crate::test_support::temporary_sandbox_root("send-keys");
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).expect("create the bin folder");
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o700))
+            .expect("make the bin folder private");
+        let calls = root.path().join("calls");
+        let script = bin.join("xdotool");
+        let script_text = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  windowfocus) {windowfocus} ;;\n  getwindowfocus) {getwindowfocus}\nesac\nexit 0\n",
+            calls.display()
+        );
+        fs::write(&script, script_text).expect("write the fake xdotool");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
+            .expect("make the fake xdotool runnable");
+
+        (root, calls)
+    }
+
+    #[test]
+    fn hold_sends_the_keydown_only_after_a_taken_focus() {
+        crate::test_support::in_test_namespace!();
+
+        let (root, calls) = fake_root_xdotool("exit 0", "printf '123\\n'");
+
+        hold(root.path(), ":7", "123", &strings(&["Shift_L"])).expect("the focus is taken");
+
+        assert_eq!(
+            fs::read_to_string(&calls).expect("read the calls"),
+            "windowfocus 123\ngetwindowfocus -f\nkeydown Shift_L\n"
+        );
+    }
+
+    #[test]
+    fn hold_refuses_a_focus_that_stayed_elsewhere_without_pressing_a_key() {
+        crate::test_support::in_test_namespace!();
+
+        let (root, calls) = fake_root_xdotool("exit 0", "printf '999\\n'");
+
+        let error = hold(root.path(), ":7", "123", &strings(&["Shift_L"]))
+            .expect_err("the focus stayed elsewhere");
+
+        assert_eq!(
+            error.downcast_ref::<WindowError>(),
+            Some(&WindowError::FocusRefused {
+                window: "123".to_string(),
+                holder: "999".to_string(),
+            })
+        );
+        assert_eq!(
+            fs::read_to_string(&calls).expect("read the calls"),
+            "windowfocus 123\ngetwindowfocus -f\n",
+            "a refused focus presses no key"
+        );
+    }
+
+    #[test]
+    fn release_sends_the_keyup_after_a_taken_focus() {
+        crate::test_support::in_test_namespace!();
+
+        let (root, calls) = fake_root_xdotool("exit 0", "printf '123\\n'");
+
+        release(root.path(), ":7", "123", &strings(&["Shift_L"])).expect("the focus is taken");
+
+        assert_eq!(
+            fs::read_to_string(&calls).expect("read the calls"),
+            "keyup Shift_L\nwindowfocus 123\ngetwindowfocus -f\n"
+        );
+    }
+
+    #[test]
+    fn release_sends_the_keyup_when_the_focus_is_refused() {
+        crate::test_support::in_test_namespace!();
+
+        let (root, calls) = fake_root_xdotool("exit 0", "printf '999\\n'");
+
+        let error = release(root.path(), ":7", "123", &strings(&["Shift_L"]))
+            .expect_err("the focus stayed elsewhere");
+
+        assert_eq!(
+            error.downcast_ref::<WindowError>(),
+            Some(&WindowError::FocusRefused {
+                window: "123".to_string(),
+                holder: "999".to_string(),
+            })
+        );
+        assert_eq!(
+            fs::read_to_string(&calls).expect("read the calls"),
+            "keyup Shift_L\nwindowfocus 123\ngetwindowfocus -f\n",
+            "the keyup goes out before the refused focus is reported"
+        );
+    }
 
     #[test]
     fn interpolate_hits_both_ends_and_the_middle() {

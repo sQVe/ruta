@@ -27,6 +27,8 @@ pub(crate) fn ensure_display(
         return Ok(display.clone());
     }
 
+    let environment = session.environment(&caller_environment(), root);
+
     stop_unusable_display(root, display.as_deref())?;
 
     prepare_root(root)?;
@@ -40,7 +42,6 @@ pub(crate) fn ensure_display(
         cleanup::remove_file(&root.join(record::SIZE)),
     ])?;
 
-    let environment = session.environment(&caller_environment(), root);
     let command = display::weston_command(session, &socket_name(name), size, &log, &environment);
     spawn_weston(command, root)?;
 

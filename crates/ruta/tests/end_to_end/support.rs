@@ -1,5 +1,7 @@
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::Read as _;
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
@@ -405,6 +407,53 @@ pub(crate) fn test_app() -> &'static Path {
     static APP: OnceLock<PathBuf> = OnceLock::new();
 
     APP.get_or_init(build_test_app)
+}
+
+// Runs xdotool on the sandbox display with the environment the app got, so a test never reaches
+// the caller's display.
+pub(crate) fn sandbox_xdotool(sandbox: &Sandbox, arguments: &[&str]) -> String {
+    let mut command = Command::new("xdotool");
+    command
+        .args(arguments)
+        .env_clear()
+        .envs(app_environment(sandbox))
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+    let output = command.output().expect("run xdotool");
+
+    assert!(
+        output.status.success(),
+        "xdotool {arguments:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    String::from_utf8(output.stdout)
+        .expect("the xdotool output is UTF-8")
+        .trim()
+        .to_string()
+}
+
+fn app_environment(sandbox: &Sandbox) -> Vec<(OsString, OsString)> {
+    let pid = sandbox.recorded_pid("pid");
+    let environment = fs::read(format!("/proc/{pid}/environ")).expect("read the app environment");
+    let keys = ["DISPLAY", "HOME", "XDG_RUNTIME_DIR", "XAUTHORITY"];
+
+    environment
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| {
+            let separator = entry.iter().position(|byte| *byte == b'=')?;
+            let key = &entry[..separator];
+            let value = &entry[separator + 1..];
+            let wanted = keys.iter().any(|name| key == name.as_bytes());
+
+            wanted.then_some((key, value))
+        })
+        .map(|(key, value)| {
+            let key = OsStr::from_bytes(key).to_owned();
+            let value = OsStr::from_bytes(value).to_owned();
+
+            (key, value)
+        })
+        .collect()
 }
 
 // The test namespace has no network, so the test app's dependencies must already be downloaded.

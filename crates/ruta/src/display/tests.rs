@@ -45,6 +45,7 @@ fn headless_weston_drops_the_wayland_session() {
         arguments,
         [
             "--xwayland",
+            "--no-xwm-decorations",
             "--socket=ruta-mock",
             "--width=1400",
             "--height=900",
@@ -80,6 +81,7 @@ fn nested_weston_gets_the_caller_wayland_session() {
         arguments,
         [
             "--xwayland",
+            "--no-xwm-decorations",
             "--socket=ruta-demo",
             "--width=1400",
             "--height=900",
@@ -524,5 +526,111 @@ fn the_display_errors_render_their_messages() {
     assert_eq!(
         error.to_string(),
         "weston did not print a display within 3 seconds."
+    );
+}
+
+fn weston_folder(script: &str) -> (tempfile::TempDir, Vec<(String, String)>) {
+    let folder = crate::test_support::temporary_directory();
+    let weston = folder.path().join("weston");
+    fs::write(&weston, script).expect("write the fake weston");
+    fs::set_permissions(&weston, fs::Permissions::from_mode(0o755))
+        .expect("make the fake weston runnable");
+    let environment = vec![(
+        "PATH".to_string(),
+        folder.path().to_string_lossy().into_owned(),
+    )];
+
+    (folder, environment)
+}
+
+#[test]
+fn weston_version_accepts_fifteen_and_newer() {
+    for answer in ["weston 15.0.1\n", "weston 16.0.0\n", "weston 15\n"] {
+        assert_eq!(weston_version(answer), Ok(()), "{answer:?}");
+    }
+}
+
+#[test]
+fn weston_version_refuses_fourteen_and_names_the_minimum() {
+    let error = weston_version("weston 14.0.2\n").expect_err("weston 14 is refused");
+
+    assert_eq!(
+        error,
+        WestonVersionError::TooOld {
+            found: "14.0.2".to_string(),
+            minimum: 15,
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        concat!(
+            "The installed weston is version 14.0.2. ruta needs weston 15 or newer, because a ",
+            "sandbox window must hold the X input focus."
+        )
+    );
+}
+
+#[test]
+fn weston_version_refuses_an_answer_it_cannot_read() {
+    for answer in ["", "weston\n", "weston .", "wayland 15.0.1", "15.0.1"] {
+        let error = weston_version(answer).expect_err("the answer is refused");
+
+        assert!(
+            matches!(&error, WestonVersionError::Unreadable { .. }),
+            "{answer:?}: {error:?}"
+        );
+    }
+
+    assert_eq!(
+        weston_version("no version here")
+            .expect_err("the answer is refused")
+            .to_string(),
+        "Could not read the weston version from \"no version here\"."
+    );
+}
+
+#[test]
+fn the_version_check_runs_only_the_version_query() {
+    crate::test_support::in_test_namespace!();
+
+    let folder = crate::test_support::temporary_directory();
+    let calls = folder.path().join("calls");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1\" = \"--version\" ]; then\n  echo 'weston 14.0.2'\n  exit 0\nfi\nexit 0\n",
+        calls.display()
+    );
+    let (_folder, environment) = weston_folder(&script);
+
+    let error = require_weston_version(&environment).expect_err("weston 14 is refused");
+
+    assert_eq!(
+        error.downcast_ref::<WestonVersionError>(),
+        Some(&WestonVersionError::TooOld {
+            found: "14.0.2".to_string(),
+            minimum: 15,
+        })
+    );
+    assert_eq!(
+        fs::read_to_string(&calls).expect("read the calls"),
+        "--version\n",
+        "the refusal comes before a display start"
+    );
+}
+
+#[test]
+fn require_weston_version_accepts_fifteen_and_reports_a_failed_query() {
+    crate::test_support::in_test_namespace!();
+
+    let (_accepted, accepted_environment) = weston_folder("#!/bin/sh\necho 'weston 15.0.1'\n");
+    let (_refused, refused_environment) =
+        weston_folder("#!/bin/sh\necho 'unknown option' >&2\nexit 2\n");
+
+    require_weston_version(&accepted_environment).expect("weston 15 is accepted");
+
+    let error = require_weston_version(&refused_environment).expect_err("the query fails");
+
+    assert_eq!(
+        format!("{error:#}"),
+        "weston --version failed: unknown option"
     );
 }

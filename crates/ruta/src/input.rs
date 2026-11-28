@@ -41,6 +41,12 @@ enum WindowError {
     },
     #[error("xdotool getwindowgeometry {window} failed: {errors}")]
     QueryFailed { window: String, errors: String },
+    #[error(
+        "Window {window} did not take the input focus; window {holder} holds it instead. The \
+         session that started the sandbox must restart it with down and then up, with the same app \
+         arguments, so the display restarts without window frames."
+    )]
+    FocusRefused { window: String, holder: String },
 }
 
 pub(crate) fn window_id(root: &Path) -> anyhow::Result<String> {
@@ -101,6 +107,7 @@ pub(crate) fn focus_window(
     )
     .with_context(|| "Could not write the window id")?;
 
+    set_focus(&environment, &window)?;
     xdotool(
         &environment,
         &["mousemove", "--window", &window, FOCUS_X, FOCUS_Y],
@@ -108,6 +115,42 @@ pub(crate) fn focus_window(
     )?;
     std::thread::sleep(INPUT_SETTLE);
     xdotool(&environment, &["click", "1"], process::TOOL_TIMEOUT)
+}
+
+// XWM reverts a focus it did not set one round trip later, so the read waits for that round trip.
+fn set_focus(environment: &[(String, String)], window: &str) -> anyhow::Result<()> {
+    xdotool(environment, &["windowfocus", window], process::TOOL_TIMEOUT)?;
+    std::thread::sleep(INPUT_SETTLE);
+
+    // `-f` reads the focus itself: the default walk to a window with a class fails on PointerRoot.
+    let command = xdotool_command(environment, &["getwindowfocus", "-f"]);
+    let output = process::run_with_timeout(command, process::TOOL_TIMEOUT)?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "xdotool getwindowfocus failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let focus = String::from_utf8_lossy(&output.stdout);
+
+    focus_answer(window, &focus)?;
+
+    Ok(())
+}
+
+fn focus_answer(window: &str, focus: &str) -> Result<(), WindowError> {
+    let holder = focus.trim();
+
+    if holder == window {
+        return Ok(());
+    }
+
+    Err(WindowError::FocusRefused {
+        window: window.to_string(),
+        holder: holder.to_string(),
+    })
 }
 
 #[mutants::skip]
@@ -376,6 +419,39 @@ mod tests {
         ] {
             assert_eq!(parse_geometry(output), None, "{output:?}");
         }
+    }
+
+    #[test]
+    fn focus_answer_accepts_the_window_that_took_the_focus() {
+        assert_eq!(focus_answer("123", "123\n"), Ok(()));
+    }
+
+    #[test]
+    fn focus_answer_names_the_window_that_holds_the_focus() {
+        assert_eq!(
+            focus_answer("123", "456\n"),
+            Err(WindowError::FocusRefused {
+                window: "123".to_string(),
+                holder: "456".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_focus_error_names_both_windows_and_the_restart() {
+        let error = WindowError::FocusRefused {
+            window: "123".to_string(),
+            holder: "456".to_string(),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            concat!(
+                "Window 123 did not take the input focus; window 456 holds it instead. ",
+                "The session that started the sandbox must restart it with down and then up, ",
+                "with the same app arguments, so the display restarts without window frames."
+            )
+        );
     }
 
     #[test]

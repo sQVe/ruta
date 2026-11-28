@@ -9,7 +9,7 @@ use crate::app_start::start_app;
 use crate::cleanup;
 use crate::command::Sandbox;
 use crate::config::{Config, check_name};
-use crate::display::{Session, display_session};
+use crate::display::{Session, display_session, require_weston_version};
 use crate::display_start::{
     clean_recorded_display_files, display_up, ensure_display, recorded_headed,
 };
@@ -88,11 +88,11 @@ pub(crate) fn execute(
         Sandbox::Scroll { x, y, notches } => with_window(name, &root, |display, window| {
             send::scroll(&root, display, window, (x, y), notches)
         }),
-        Sandbox::Hold { keys } => {
-            with_window(name, &root, |display, _| send::hold(&root, display, &keys))
-        }
-        Sandbox::Release { keys } => with_window(name, &root, |display, _| {
-            send::release(&root, display, &keys)
+        Sandbox::Hold { keys } => with_window(name, &root, |display, window| {
+            send::hold(&root, display, window, &keys)
+        }),
+        Sandbox::Release { keys } => with_window(name, &root, |display, window| {
+            send::release(&root, display, window, &keys)
         }),
         Sandbox::Status => status::status(config, &root, recorded_window_exists),
         Sandbox::Log => log(&root),
@@ -204,10 +204,24 @@ fn capture_window(name: &str, root: &Path, out: &Path) -> anyhow::Result<()> {
     crate::capture::write_capture(out, ready_line.as_deref(), &environment)
 }
 
+// A missing weston gets the install hint before the version probe, and the version refusal wins
+// over the other tools, so each command checks and probes before it checks the tools. The root is
+// validated first because the probe resolves `weston` from its `bin` folder.
+// `start_window` probes again for the executable the display start uses.
+fn require_display_weston(root: &Path, session: &Session) -> anyhow::Result<()> {
+    require_trusted_root(root)?;
+    require_program(Tool::Weston)?;
+
+    let environment = session.environment(&caller_environment(), root);
+
+    require_weston_version(&environment)
+}
+
 #[mutants::skip]
 fn up(config: &Config, root: &Path, arguments: &[String], headed: bool) -> anyhow::Result<String> {
-    require_display_tools()?;
     let session = caller_session(headed)?;
+    require_display_weston(root, &session)?;
+    require_display_tools()?;
 
     start_window(config, root, arguments, &session)
 }
@@ -219,10 +233,10 @@ fn restart(
     arguments: Option<Vec<String>>,
     force_headed: bool,
 ) -> anyhow::Result<String> {
-    require_display_tools()?;
-
     let (arguments, headed) = restart_plan(root, arguments, force_headed)?;
     let session = caller_session(headed)?;
+    require_display_weston(root, &session)?;
+    require_display_tools()?;
 
     start_window(config, root, &arguments, &session)
 }
@@ -275,6 +289,12 @@ fn start_window(
     arguments: &[String],
     session: &Session,
 ) -> anyhow::Result<String> {
+    // The probe runs before start_window_with stages the folder record, so a refused weston leaves
+    // a running sandbox and its records untouched.
+    require_trusted_root(root)?;
+    let environment = session.environment(&caller_environment(), root);
+    require_weston_version(&environment)?;
+
     start_window_with(root, &config.folder, || {
         start_sandbox(config, root, arguments, session)
     })
