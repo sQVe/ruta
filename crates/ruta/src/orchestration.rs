@@ -151,9 +151,6 @@ fn capture_inner(
     arguments: &[String],
     emit: &mut impl FnMut(&str) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    require_display_tools()?;
-    require_program(Tool::Import)?;
-
     record_root_creation(root)?;
     create_capture_folder(out)?;
 
@@ -162,6 +159,9 @@ fn capture_inner(
         fs::canonicalize(out).context("Could not resolve the capture output folder")?;
     refuse_capture_output_in_root(&resolved_root, &resolved_out)?;
     refuse_blocked_capture_output(out)?;
+
+    require_display_tools()?;
+    require_program(Tool::Import)?;
 
     let output = start_window(config, root, arguments, &Session::Headless)?;
 
