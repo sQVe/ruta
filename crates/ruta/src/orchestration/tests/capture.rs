@@ -429,13 +429,13 @@ fn prepare_capture_folder_removes_only_capture_outputs() {
     let directory = crate::test_support::temporary_directory();
     let folder = directory.path().join("nested/output");
 
-    create_capture_folder(&folder).expect("create missing output folder");
+    prepare_capture_folder(&folder).expect("create missing output folder");
     assert!(folder.is_dir());
     for name in ["shot.png", "crop.png", "capture.json", "keep.txt"] {
         fs::write(folder.join(name), "old").expect("write old output");
     }
 
-    clear_capture_folder(&folder).expect("clear old outputs");
+    prepare_capture_folder(&folder).expect("clear old outputs");
 
     for name in ["shot.png", "crop.png", "capture.json"] {
         assert!(!folder.join(name).exists(), "{name}");
@@ -449,13 +449,12 @@ fn prepare_capture_folder_removes_only_capture_outputs() {
 #[test]
 fn prepare_capture_folder_refuses_to_remove_a_directory() {
     let folder = crate::test_support::temporary_directory();
-    create_capture_folder(folder.path()).expect("the output folder is there");
     let shot = folder.path().join("shot.png");
     fs::create_dir(&shot).expect("create shot directory");
     fs::write(shot.join("keep.txt"), "keep").expect("write marker");
     fs::write(folder.path().join("crop.png"), "keep").expect("write later output");
 
-    let error = clear_capture_folder(folder.path()).expect_err("refuse directory");
+    let error = prepare_capture_folder(folder.path()).expect_err("refuse directory");
 
     assert_eq!(
         error
@@ -472,90 +471,4 @@ fn prepare_capture_folder_refuses_to_remove_a_directory() {
         fs::read_to_string(folder.path().join("crop.png")).expect("later output stays"),
         "keep"
     );
-}
-
-#[test]
-fn refuse_blocked_capture_output_accepts_absent_and_regular_files() {
-    let folder = crate::test_support::temporary_directory();
-    fs::write(folder.path().join("crop.png"), "old").expect("write a regular output");
-
-    refuse_blocked_capture_output(folder.path()).expect("absent and regular files are allowed");
-}
-
-#[test]
-fn refuse_blocked_capture_output_names_the_blocked_path() {
-    let folder = crate::test_support::temporary_directory();
-    let blocked = folder.path().join("shot.png");
-    fs::create_dir(&blocked).expect("create the blocked output");
-
-    let error = refuse_blocked_capture_output(folder.path()).expect_err("a directory is refused");
-
-    assert_eq!(
-        error.downcast_ref::<CaptureOutputBlocked>(),
-        Some(&CaptureOutputBlocked {
-            path: blocked.clone()
-        })
-    );
-    assert!(
-        error.to_string().contains(&blocked.display().to_string()),
-        "{error}"
-    );
-}
-
-#[test]
-fn refuse_blocked_capture_output_reports_an_unreadable_path() {
-    crate::test_support::in_test_namespace!();
-
-    let folder = crate::test_support::temporary_directory();
-    fs::set_permissions(folder.path(), fs::Permissions::from_mode(0o000))
-        .expect("make the output folder unreadable");
-
-    let error = refuse_blocked_capture_output(folder.path()).expect_err("the path is unreadable");
-
-    fs::set_permissions(folder.path(), fs::Permissions::from_mode(0o700))
-        .expect("restore the output folder");
-    assert_eq!(
-        error
-            .downcast_ref::<std::io::Error>()
-            .expect("IO error")
-            .kind(),
-        std::io::ErrorKind::PermissionDenied
-    );
-    assert!(
-        error
-            .to_string()
-            .contains(&folder.path().join("shot.png").display().to_string()),
-        "{error}"
-    );
-}
-
-#[test]
-fn capture_refuses_a_directory_output_before_starting() {
-    crate::test_support::in_test_namespace!();
-
-    let name = format!("dir-output-{}-capture", std::process::id());
-    let root = root_path(&name);
-    let _ = fs::remove_dir_all(&root);
-    let out = crate::test_support::temporary_directory();
-    let blocked = out.path().join("capture.json");
-    fs::create_dir(&blocked).expect("create the blocked output");
-
-    let error = capture(
-        &test_config("test"),
-        &name,
-        &root,
-        out.path(),
-        &[],
-        &mut |_| Ok(()),
-    )
-    .expect_err("the blocked output is refused");
-
-    assert_eq!(
-        error.downcast_ref::<CaptureOutputBlocked>(),
-        Some(&CaptureOutputBlocked {
-            path: blocked.clone()
-        })
-    );
-    assert!(blocked.is_dir(), "the directory stays");
-    assert!(!root.exists(), "the capture root is removed");
 }

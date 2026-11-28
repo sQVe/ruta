@@ -152,56 +152,25 @@ fn capture_inner(
     emit: &mut impl FnMut(&str) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     record_root_creation(root)?;
-    create_capture_folder(out)?;
+    prepare_capture_folder(out)?;
 
     let resolved_root = fs::canonicalize(root).context("Could not resolve the capture root")?;
     let resolved_out =
         fs::canonicalize(out).context("Could not resolve the capture output folder")?;
     refuse_capture_output_in_root(&resolved_root, &resolved_out)?;
-    refuse_blocked_capture_output(out)?;
-
     require_display_tools()?;
     require_program(Tool::Import)?;
 
     let output = start_window(config, root, arguments, &Session::Headless)?;
 
-    clear_capture_folder(out)?;
     emit(&output)?;
 
     capture_window(&config.name, root, out)
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
-#[error(
-    "The capture output {path} is not a regular file. Remove it so the capture can replace it."
-)]
-struct CaptureOutputBlocked {
-    path: PathBuf,
-}
+fn prepare_capture_folder(folder: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(folder).with_context(|| format!("Could not create {}", folder.display()))?;
 
-fn refuse_blocked_capture_output(folder: &Path) -> anyhow::Result<()> {
-    for name in [crate::root::record::SHOT, "crop.png", "capture.json"] {
-        let path = folder.join(name);
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) if !metadata.is_file() => {
-                return Err(CaptureOutputBlocked { path }.into());
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| format!("Could not read {}", path.display()));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn create_capture_folder(folder: &Path) -> anyhow::Result<()> {
-    fs::create_dir_all(folder).with_context(|| format!("Could not create {}", folder.display()))
-}
-
-fn clear_capture_folder(folder: &Path) -> anyhow::Result<()> {
     for name in [crate::root::record::SHOT, "crop.png", "capture.json"] {
         let path = folder.join(name);
         match fs::remove_file(&path) {
@@ -237,7 +206,6 @@ fn capture_window(name: &str, root: &Path, out: &Path) -> anyhow::Result<()> {
 
 #[mutants::skip]
 fn up(config: &Config, root: &Path, arguments: &[String], headed: bool) -> anyhow::Result<String> {
-    require_display_tools()?;
     let session = caller_session(headed)?;
 
     start_window(config, root, arguments, &session)
@@ -250,8 +218,6 @@ fn restart(
     arguments: Option<Vec<String>>,
     force_headed: bool,
 ) -> anyhow::Result<String> {
-    require_display_tools()?;
-
     let (arguments, headed) = restart_plan(root, arguments, force_headed)?;
     let session = caller_session(headed)?;
 
@@ -311,6 +277,7 @@ fn start_window(
     require_trusted_root(root)?;
     let environment = session.environment(&caller_environment(), root);
     require_weston_version(&environment)?;
+    require_display_tools()?;
 
     start_window_with(root, &config.folder, || {
         start_sandbox(config, root, arguments, session)

@@ -216,103 +216,12 @@ fn fake_weston_14(folder: &Path) -> PathBuf {
     calls
 }
 
-// The refusal tests must run on a machine without display tools, so every tool that a command
-// checks before the refusal gets a stub that exits 0.
-fn write_display_tool_stubs(folder: &Path) {
-    for tool in ["Xwayland", "xdotool", "cat", "import"] {
-        let stub = folder.join(tool);
-        fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("write the tool stub");
-        fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .expect("make the tool stub runnable");
-    }
-}
-
 fn old_weston_path(folder: &Path) -> String {
     format!(
         "{}:{}",
         folder.display(),
         std::env::var("PATH").expect("PATH is set")
     )
-}
-
-#[test]
-fn capture_refuses_an_old_weston_before_it_clears_the_output() {
-    in_test_namespace!();
-
-    let project = Project::new(&Config::default());
-    let sandbox = project.sandbox("old-weston");
-    let tools = tempfile::Builder::new()
-        .prefix("ruta-end-to-end-path-")
-        .tempdir()
-        .expect("create the PATH folder");
-    let calls = fake_weston_14(tools.path());
-    write_display_tool_stubs(tools.path());
-    let out = tempfile::tempdir().expect("create the output folder");
-    for name in ["shot.png", "crop.png", "capture.json"] {
-        fs::write(out.path().join(name), format!("old {name}")).expect("write the old output");
-    }
-    let out_argument = out.path().to_str().expect("the output path is UTF-8");
-
-    let output = Sandbox::fail_command(
-        sandbox
-            .command(&["capture", "--out", out_argument])
-            .env("PATH", old_weston_path(tools.path())),
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        stderr.contains("The installed weston is version 14.0.2. ruta needs weston 15 or newer"),
-        "{stderr}"
-    );
-    for name in ["shot.png", "crop.png", "capture.json"] {
-        assert_eq!(
-            fs::read_to_string(out.path().join(name)).expect("the old output remains"),
-            format!("old {name}"),
-            "{name} is untouched"
-        );
-    }
-    assert_eq!(
-        fs::read_to_string(&calls).expect("read the weston calls"),
-        "--version\n"
-    );
-    assert!(!sandbox.capture_root().exists(), "no capture root is made");
-}
-
-#[test]
-fn capture_refuses_a_directory_output_before_it_starts_the_app() {
-    in_test_namespace!();
-
-    let project = Project::new(&Config::default());
-    let sandbox = project.sandbox("dir-output");
-    let tools = tempfile::Builder::new()
-        .prefix("ruta-end-to-end-path-")
-        .tempdir()
-        .expect("create the PATH folder");
-    let calls = fake_weston_14(tools.path());
-    write_display_tool_stubs(tools.path());
-    let out = tempfile::tempdir().expect("create the output folder");
-    let blocked = out.path().join("shot.png");
-    fs::create_dir(&blocked).expect("block the output");
-    let out_argument = out.path().to_str().expect("the output path is UTF-8");
-
-    let output = Sandbox::fail_command(
-        sandbox
-            .command(&["capture", "--out", out_argument])
-            .env("PATH", old_weston_path(tools.path())),
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        stderr.contains(&blocked.display().to_string()),
-        "the error names the path: {stderr}"
-    );
-    assert!(
-        stderr.contains("is not a regular file"),
-        "the error is the typed refusal: {stderr}"
-    );
-    assert!(blocked.is_dir(), "the directory stays");
-    assert!(!calls.exists(), "the fake weston saw no call");
-    assert!(!sandbox.capture_root().exists(), "no capture root is left");
 }
 
 #[test]
@@ -326,13 +235,8 @@ fn up_refuses_an_old_weston_before_it_makes_a_root() {
         .tempdir()
         .expect("create the PATH folder");
     let calls = fake_weston_14(tools.path());
-    write_display_tool_stubs(tools.path());
 
-    let output = Sandbox::fail_command(
-        sandbox
-            .command(&["up"])
-            .env("PATH", old_weston_path(tools.path())),
-    );
+    let output = Sandbox::fail_command(sandbox.command(&["up"]).env("PATH", tools.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
