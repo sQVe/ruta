@@ -151,3 +151,190 @@ fn up_on_a_refused_root_with_a_fifo_log_fails_at_once() {
         "the error is the refusal: {stderr}"
     );
 }
+
+fn fake_weston_14(folder: &Path) -> PathBuf {
+    let calls = folder.join("weston.calls");
+    let weston = folder.join("weston");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1\" = \"--version\" ]; then\n  echo 'weston 14.0.2'\n  exit 0\nfi\nexit 0\n",
+        calls.display()
+    );
+    fs::write(&weston, script).expect("write the fake weston");
+    fs::set_permissions(&weston, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("make the fake weston runnable");
+
+    calls
+}
+
+fn old_weston_path(folder: &Path) -> String {
+    format!(
+        "{}:{}",
+        folder.display(),
+        std::env::var("PATH").expect("PATH is set")
+    )
+}
+
+#[test]
+fn capture_refuses_an_old_weston_before_it_clears_the_output() {
+    in_test_namespace!();
+
+    let project = Project::new(&Config::default());
+    let sandbox = project.sandbox("old-weston");
+    let tools = tempfile::Builder::new()
+        .prefix("ruta-end-to-end-path-")
+        .tempdir()
+        .expect("create the PATH folder");
+    let calls = fake_weston_14(tools.path());
+    let out = tempfile::tempdir().expect("create the output folder");
+    for name in ["shot.png", "crop.png", "capture.json"] {
+        fs::write(out.path().join(name), format!("old {name}")).expect("write the old output");
+    }
+    let out_argument = out.path().to_str().expect("the output path is UTF-8");
+
+    let output = Sandbox::fail_command(
+        sandbox
+            .command(&["capture", "--out", out_argument])
+            .env("PATH", old_weston_path(tools.path())),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("The installed weston is version 14.0.2. ruta needs weston 15 or newer"),
+        "{stderr}"
+    );
+    for name in ["shot.png", "crop.png", "capture.json"] {
+        assert_eq!(
+            fs::read_to_string(out.path().join(name)).expect("the old output remains"),
+            format!("old {name}"),
+            "{name} is untouched"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(&calls).expect("read the weston calls"),
+        "--version\n"
+    );
+    assert!(!sandbox.capture_root().exists(), "no capture root is made");
+}
+
+#[test]
+fn capture_refuses_a_directory_output_before_it_starts_the_app() {
+    in_test_namespace!();
+
+    let project = Project::new(&Config::default());
+    let sandbox = project.sandbox("dir-output");
+    let tools = tempfile::Builder::new()
+        .prefix("ruta-end-to-end-path-")
+        .tempdir()
+        .expect("create the PATH folder");
+    let calls = fake_weston_14(tools.path());
+    let out = tempfile::tempdir().expect("create the output folder");
+    let blocked = out.path().join("shot.png");
+    fs::create_dir(&blocked).expect("block the output");
+    let out_argument = out.path().to_str().expect("the output path is UTF-8");
+
+    let output = Sandbox::fail_command(
+        sandbox
+            .command(&["capture", "--out", out_argument])
+            .env("PATH", old_weston_path(tools.path())),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains(&blocked.display().to_string()),
+        "the error names the path: {stderr}"
+    );
+    assert!(
+        stderr.contains("is not a regular file"),
+        "the error is the typed refusal: {stderr}"
+    );
+    assert!(blocked.is_dir(), "the directory stays");
+    assert!(!calls.exists(), "the fake weston saw no call");
+    assert!(!sandbox.capture_root().exists(), "no capture root is left");
+}
+
+#[test]
+fn up_refuses_an_old_weston_before_it_makes_a_root() {
+    in_test_namespace!();
+
+    let project = Project::new(&Config::default());
+    let sandbox = project.sandbox("old-weston-up");
+    let tools = tempfile::Builder::new()
+        .prefix("ruta-end-to-end-path-")
+        .tempdir()
+        .expect("create the PATH folder");
+    let calls = fake_weston_14(tools.path());
+
+    let output = Sandbox::fail_command(
+        sandbox
+            .command(&["up"])
+            .env("PATH", old_weston_path(tools.path())),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("The installed weston is version 14.0.2. ruta needs weston 15 or newer"),
+        "{stderr}"
+    );
+    assert!(!sandbox.root().exists(), "no sandbox root is made");
+    assert_eq!(
+        fs::read_to_string(&calls).expect("read the weston calls"),
+        "--version\n"
+    );
+}
+
+#[test]
+#[ignore = "needs Weston, Xwayland, xdotool, and ImageMagick"]
+fn a_refused_weston_version_leaves_a_running_sandbox_up() {
+    in_test_namespace!();
+
+    let project = Project::new(&Config::default());
+    let sandbox = project.sandbox("running-weston");
+    sandbox.succeed(&["up"]);
+    let log = sandbox.wait_for_log("ruta-test-app: running");
+    let before = sandbox.records();
+
+    let tools = tempfile::Builder::new()
+        .prefix("ruta-end-to-end-path-")
+        .tempdir()
+        .expect("create the PATH folder");
+    let calls = fake_weston_14(tools.path());
+    let path = old_weston_path(tools.path());
+
+    for arguments in [&["up"][..], &["restart"]] {
+        let mut command = sandbox.command(arguments);
+        command.env("PATH", &path);
+        let output = Sandbox::run_command(&mut command);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(output.status.code(), Some(1), "{arguments:?}: {output:?}");
+        assert!(
+            stderr
+                .contains("The installed weston is version 14.0.2. ruta needs weston 15 or newer"),
+            "{arguments:?}: {stderr}"
+        );
+    }
+
+    assert_eq!(
+        sandbox.records(),
+        before,
+        "the running sandbox records are unchanged"
+    );
+    assert!(
+        sandbox.succeed(&["status"]).contains("is up and serves"),
+        "the sandbox is still up"
+    );
+    assert_eq!(sandbox.succeed(&["log"]), log, "the app log is unchanged");
+    assert_eq!(
+        sandbox.shot_size(),
+        WINDOW_SIZE,
+        "the shot still has the app size"
+    );
+    assert_eq!(
+        fs::read_to_string(&calls).expect("read the weston calls"),
+        "--version\n--version\n",
+        "each start request probes weston once"
+    );
+
+    sandbox.succeed(&["down"]);
+    sandbox.assert_gone();
+}

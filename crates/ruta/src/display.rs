@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::cleanup;
 use crate::environment::{nested_weston_environment, weston_environment};
-use crate::process::{poll_until, sandboxed_command};
+use crate::process::{TOOL_TIMEOUT, poll_until, run_with_timeout, sandboxed_command};
 use crate::process_stat::ProcessStat;
 use crate::tool::Tool;
 
@@ -110,6 +110,7 @@ pub(crate) fn weston_command(
 
     command
         .arg("--xwayland")
+        .arg("--no-xwm-decorations")
         .arg(format!("--socket={socket}"))
         .arg(format!("--width={width}"))
         .arg(format!("--height={height}"))
@@ -125,6 +126,62 @@ pub(crate) fn weston_command(
     };
 
     command
+}
+
+const MINIMUM_WESTON: u32 = 15;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+enum WestonVersionError {
+    #[error(
+        "The installed weston is version {found}. ruta needs weston {minimum} or newer, because a \
+         sandbox window must hold the X input focus."
+    )]
+    TooOld { found: String, minimum: u32 },
+    #[error("Could not read the weston version from \"{answer}\".")]
+    Unreadable { answer: String },
+}
+
+pub(crate) fn require_weston_version(environment: &[(String, String)]) -> anyhow::Result<()> {
+    let mut command = sandboxed_command(Tool::Weston.name(), environment);
+    command.arg("--version");
+
+    let label = format!("{} --version", Tool::Weston.name());
+    let output = run_with_timeout(command, TOOL_TIMEOUT)?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "{label} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let answer = String::from_utf8_lossy(&output.stdout);
+
+    Ok(weston_version(&answer)?)
+}
+
+fn weston_version(answer: &str) -> Result<(), WestonVersionError> {
+    let answer = answer.trim();
+    let Some(version) = answer.strip_prefix("weston ") else {
+        return Err(WestonVersionError::Unreadable {
+            answer: answer.to_string(),
+        });
+    };
+    let major = version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok());
+
+    match major {
+        Some(major) if major >= MINIMUM_WESTON => Ok(()),
+        Some(_) => Err(WestonVersionError::TooOld {
+            found: version.to_string(),
+            minimum: MINIMUM_WESTON,
+        }),
+        None => Err(WestonVersionError::Unreadable {
+            answer: answer.to_string(),
+        }),
+    }
 }
 
 pub(crate) fn clean_display_files(display: &str) -> std::io::Result<()> {

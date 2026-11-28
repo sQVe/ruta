@@ -436,6 +436,44 @@ fn a_successful_start_records_the_folder_for_status() {
 }
 
 #[test]
+fn start_window_refuses_an_unsafe_root_before_running_its_weston() {
+    crate::test_support::in_test_namespace!();
+
+    let folder = crate::test_support::temporary_directory();
+    let target = crate::test_support::temporary_directory();
+    let calls = target.path().join("weston.calls");
+    let bin = target.path().join("bin");
+    fs::create_dir(&bin).expect("create the bin folder");
+    let weston = bin.join("weston");
+    fs::write(
+        &weston,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1\" = \"--version\" ]; then\n  echo 'weston 15.0.1'\nfi\nexit 0\n",
+            calls.display()
+        ),
+    )
+    .expect("write the fake weston");
+    fs::set_permissions(&weston, fs::Permissions::from_mode(0o755))
+        .expect("make the fake weston runnable");
+    let root = folder.path().join("root");
+    std::os::unix::fs::symlink(target.path(), &root).expect("link the root");
+    let project = crate::test_support::temporary_directory();
+    let config = replacement_config(project.path().to_path_buf());
+
+    let error = start_window(&config, &root, &[], &Session::Headless)
+        .expect_err("the symlinked root is refused");
+
+    assert!(
+        matches!(
+            error.downcast_ref::<RootError>(),
+            Some(RootError::Unsafe { path, reason: RootReason::Symlink }) if path == &root
+        ),
+        "unexpected error: {error:#}"
+    );
+    assert!(!calls.exists(), "the root's weston never ran");
+}
+
+#[test]
 fn a_failed_publish_stops_the_new_sandbox() {
     crate::test_support::in_test_namespace!();
 
@@ -492,8 +530,20 @@ fn record_fake_display(root: &Path) -> ChildGuard {
     fs::write(root.join("display"), ":7\n").expect("write the display");
     record_display_settings(root, "headless", display_size((640, 480)));
     write_fake_xdotool(root);
+    write_fake_weston(root);
 
     weston
+}
+
+fn write_fake_weston(root: &Path) {
+    let weston = root.join("bin/weston");
+    fs::write(
+        &weston,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'weston 15.0.1'\nfi\nexit 0\n",
+    )
+    .expect("write the fake weston");
+    fs::set_permissions(&weston, fs::Permissions::from_mode(0o755))
+        .expect("make the fake weston runnable");
 }
 
 fn write_fake_xdotool(root: &Path) {
@@ -504,7 +554,7 @@ fn write_fake_xdotool(root: &Path) {
     let xdotool = bin.join("xdotool");
     fs::write(
         &xdotool,
-        "#!/bin/sh\ncase \"$1\" in\n  search) printf '12345\\n' ;;\n  getwindowgeometry) printf 'WINDOW=12345\\nX=0\\nY=0\\nWIDTH=640\\nHEIGHT=480\\nSCREEN=0\\n' ;;\nesac\nexit 0\n",
+        "#!/bin/sh\ncase \"$1\" in\n  search) printf '12345\\n' ;;\n  windowfocus) exit 0 ;;\n  getwindowfocus) printf '12345\\n' ;;\n  getwindowgeometry) printf 'WINDOW=12345\\nX=0\\nY=0\\nWIDTH=640\\nHEIGHT=480\\nSCREEN=0\\n' ;;\nesac\nexit 0\n",
     )
     .expect("write the fake xdotool");
     fs::set_permissions(&xdotool, fs::Permissions::from_mode(0o755))

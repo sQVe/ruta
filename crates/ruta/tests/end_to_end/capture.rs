@@ -149,6 +149,10 @@ fn write_fake_tools(folder: &std::path::Path) {
         folder,
         "weston",
         r#"#!/bin/bash
+if [ "$1" = "--version" ]; then
+  echo 'weston 15.0.1'
+  exit 0
+fi
 for argument in "$@"; do
   case "$argument" in
     --log=*) log="${argument#--log=}" ;;
@@ -168,6 +172,8 @@ exec -a ruta-fake-weston sleep 30
         r#"#!/bin/sh
 case "$1" in
   search) printf '12345\n' ;;
+  windowfocus) exit 0 ;;
+  getwindowfocus) printf '12345\n' ;;
   getwindowgeometry) printf 'WINDOW=12345\nX=0\nY=0\nWIDTH=640\nHEIGHT=480\nSCREEN=0\n' ;;
 esac
 exit 0
