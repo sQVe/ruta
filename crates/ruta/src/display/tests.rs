@@ -590,7 +590,7 @@ fn weston_version_refuses_an_answer_it_cannot_read() {
 }
 
 #[test]
-fn the_version_check_runs_weston_once_before_any_display_start() {
+fn the_version_check_runs_only_the_version_query() {
     crate::test_support::in_test_namespace!();
 
     let folder = crate::test_support::temporary_directory();

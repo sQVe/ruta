@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::cleanup;
 use crate::environment::{nested_weston_environment, weston_environment};
-use crate::process::{TOOL_TIMEOUT, poll_until, run_with_timeout, sandboxed_command};
+use crate::process::{TOOL_TIMEOUT, poll_until, run_tool_output, sandboxed_command};
 use crate::process_stat::ProcessStat;
 use crate::tool::Tool;
 
@@ -146,15 +146,7 @@ pub(crate) fn require_weston_version(environment: &[(String, String)]) -> anyhow
     command.arg("--version");
 
     let label = format!("{} --version", Tool::Weston.name());
-    let output = run_with_timeout(command, TOOL_TIMEOUT)?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "{label} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-
+    let output = run_tool_output(command, &label, TOOL_TIMEOUT)?;
     let answer = String::from_utf8_lossy(&output.stdout);
 
     Ok(weston_version(&answer)?)

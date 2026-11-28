@@ -6,6 +6,19 @@ use crate::support::*;
 const SHIFT: u16 = 0x1;
 const BUTTON_1: u16 = 0x100;
 const SHIFT_L: &str = "0xffe1";
+// Matches the settle the production focus code waits, because XWM reverts a client-set focus one
+// round trip later.
+const FOCUS_SETTLE: Duration = Duration::from_millis(150);
+const FOCUS_COMMANDS: &[&[&str]] = &[
+    &["move", "10", "10", "20", "20"],
+    &["click", "100", "120"],
+    &["drag", "50", "60", "200", "210"],
+    &["type", "hi"],
+    &["key", "Return"],
+    &["scroll", "300", "200", "3"],
+    &["hold", "Shift_L"],
+    &["release", "Shift_L"],
+];
 
 #[test]
 #[ignore = "needs Weston, Xwayland, xdotool, and ImageMagick"]
@@ -127,16 +140,7 @@ fn assert_focus_stays_on_the_app_window(sandbox: &Sandbox, window: &str) {
         "the input focus stays on the app window"
     );
 
-    for arguments in [
-        &["move", "10", "10", "20", "20"][..],
-        &["click", "100", "120"],
-        &["drag", "50", "60", "200", "210"],
-        &["type", "hi"],
-        &["key", "Return"],
-        &["scroll", "300", "200", "3"],
-        &["hold", "Shift_L"],
-        &["release", "Shift_L"],
-    ] {
+    for arguments in FOCUS_COMMANDS {
         sandbox.succeed(arguments);
 
         assert_eq!(
@@ -149,41 +153,34 @@ fn assert_focus_stays_on_the_app_window(sandbox: &Sandbox, window: &str) {
 
 fn assert_a_focus_probe_still_reaches_the_app(sandbox: &Sandbox, window: &str) {
     sandbox_xdotool(sandbox, &["windowfocus", window]);
+    std::thread::sleep(FOCUS_SETTLE);
     assert_eq!(
         focused_window(sandbox),
         window,
         "the probe leaves the raw input focus on the app window"
     );
 
-    let typed = events_after(sandbox, &["type", "hi"], "key-release", 2);
+    let typed = events_after_xdotool(sandbox, &["type", "--", "hi"], "key-release", 2);
     assert_eq!(
         keysyms(&typed, "key-press"),
         ["0x68", "0x69"],
-        "type reaches the app after the focus probe: {typed:?}"
+        "raw type reaches the app after the focus probe: {typed:?}"
     );
 
-    let key = events_after(sandbox, &["key", "Return"], "key-release", 1);
+    let key = events_after_xdotool(sandbox, &["key", "Return"], "key-release", 1);
     assert_eq!(
         keysyms(&key, "key-press"),
         ["0xff0d"],
-        "key reaches the app after the focus probe: {key:?}"
+        "raw key reaches the app after the focus probe: {key:?}"
     );
 }
 
 fn assert_one_command_restores_a_focus_that_started_elsewhere(sandbox: &Sandbox, window: &str) {
-    for arguments in [
-        &["move", "10", "10", "20", "20"][..],
-        &["click", "100", "120"],
-        &["drag", "50", "60", "200", "210"],
-        &["type", "hi"],
-        &["key", "Return"],
-        &["scroll", "300", "200", "3"],
-        &["hold", "Shift_L"],
-        &["release", "Shift_L"],
-    ] {
+    for arguments in FOCUS_COMMANDS {
         // PointerRoot is where a sandbox at rest sits on the old display stack, so the command must
         // put the focus on the app itself instead of relying on the pointer.
         sandbox_xdotool(sandbox, &["windowfocus", "1"]);
+        std::thread::sleep(FOCUS_SETTLE);
         assert_eq!(
             focused_window(sandbox),
             "1",
@@ -361,9 +358,26 @@ impl Event {
 }
 
 fn events_after(sandbox: &Sandbox, arguments: &[&str], kind: &str, count: usize) -> Vec<Event> {
+    events_after_run(sandbox, kind, count, || {
+        sandbox.succeed(arguments);
+    })
+}
+
+fn events_after_xdotool(
+    sandbox: &Sandbox,
+    arguments: &[&str],
+    kind: &str,
+    count: usize,
+) -> Vec<Event> {
+    events_after_run(sandbox, kind, count, || {
+        sandbox_xdotool(sandbox, arguments);
+    })
+}
+
+fn events_after_run(sandbox: &Sandbox, kind: &str, count: usize, run: impl FnOnce()) -> Vec<Event> {
     let before = sandbox.succeed(&["log"]).len();
 
-    sandbox.succeed(arguments);
+    run();
 
     let mut events = Vec::new();
     poll_until(Duration::from_secs(5), Duration::from_millis(100), || {

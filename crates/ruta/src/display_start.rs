@@ -329,10 +329,6 @@ mod tests {
         fs::write(
             &weston,
             r#"#!/bin/bash
-if [ "$1" = "--version" ]; then
-  echo 'weston 15.0.1'
-  exit 0
-fi
 for argument in "$@"; do
   case "$argument" in
     --log=*) log="${argument#--log=}" ;;

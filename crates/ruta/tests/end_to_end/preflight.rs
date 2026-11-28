@@ -225,10 +225,37 @@ fn old_weston_path(folder: &Path) -> String {
 }
 
 #[test]
+fn up_refuses_a_missing_weston_before_it_makes_a_root() {
+    in_test_namespace!();
+
+    let project = Project::new(&Config {
+        command: Some(r#"["true"]"#),
+        ..Config::default()
+    });
+    let sandbox = project.sandbox("no-weston");
+    let tools = tempfile::Builder::new()
+        .prefix("ruta-end-to-end-path-")
+        .tempdir()
+        .expect("create the PATH folder");
+
+    let output = Sandbox::fail_command(sandbox.command(&["up"]).env("PATH", tools.path()));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("The tool \"weston\" is missing."),
+        "{stderr}"
+    );
+    assert!(!sandbox.root().exists(), "no sandbox root is made");
+}
+
+#[test]
 fn up_refuses_an_old_weston_before_it_makes_a_root() {
     in_test_namespace!();
 
-    let project = Project::new(&Config::default());
+    let project = Project::new(&Config {
+        command: Some(r#"["true"]"#),
+        ..Config::default()
+    });
     let sandbox = project.sandbox("old-weston-up");
     let tools = tempfile::Builder::new()
         .prefix("ruta-end-to-end-path-")

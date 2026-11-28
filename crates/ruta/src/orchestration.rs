@@ -204,9 +204,12 @@ fn capture_window(name: &str, root: &Path, out: &Path) -> anyhow::Result<()> {
     crate::capture::write_capture(out, ready_line.as_deref(), &environment)
 }
 
-// The version refusal must win over a missing tool, so each command probes before it checks the
-// tools. `start_window` probes again for the executable the display start uses.
+// A missing weston gets the install hint before the version probe, and the version refusal wins
+// over the other tools, so each command checks and probes before it checks the tools.
+// `start_window` probes again for the executable the display start uses.
 fn require_display_weston(root: &Path, session: &Session) -> anyhow::Result<()> {
+    require_program(Tool::Weston)?;
+
     let environment = session.environment(&caller_environment(), root);
 
     require_weston_version(&environment)

@@ -536,7 +536,11 @@ fn record_fake_display(root: &Path) -> ChildGuard {
 }
 
 fn write_fake_weston(root: &Path) {
-    let weston = root.join("bin/weston");
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).expect("create the bin folder");
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o700))
+        .expect("make the bin folder private");
+    let weston = bin.join("weston");
     fs::write(
         &weston,
         "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'weston 15.0.1'\nfi\nexit 0\n",

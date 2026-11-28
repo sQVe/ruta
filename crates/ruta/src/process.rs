@@ -67,6 +67,14 @@ pub(crate) fn sandboxed_command(
 }
 
 pub(crate) fn run_tool(command: Command, label: &str, timeout: Duration) -> anyhow::Result<()> {
+    run_tool_output(command, label, timeout).map(|_| ())
+}
+
+pub(crate) fn run_tool_output(
+    command: Command,
+    label: &str,
+    timeout: Duration,
+) -> anyhow::Result<Output> {
     let output = run_with_timeout(command, timeout)?;
 
     if !output.status.success() {
@@ -76,7 +84,7 @@ pub(crate) fn run_tool(command: Command, label: &str, timeout: Duration) -> anyh
         );
     }
 
-    Ok(())
+    Ok(output)
 }
 
 pub(crate) fn run_with_timeout(command: Command, timeout: Duration) -> anyhow::Result<Output> {

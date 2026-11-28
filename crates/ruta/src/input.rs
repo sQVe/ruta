@@ -42,8 +42,9 @@ enum WindowError {
     #[error("xdotool getwindowgeometry {window} failed: {errors}")]
     QueryFailed { window: String, errors: String },
     #[error(
-        "Window {window} did not take the input focus; window {holder} holds it instead. Restart \
-         the sandbox with down and then up, so the display restarts without window frames."
+        "Window {window} did not take the input focus; window {holder} holds it instead. The \
+         session that started the sandbox must restart it with down and then up, with the same app \
+         arguments, so the display restarts without window frames."
     )]
     FocusRefused { window: String, holder: String },
 }
@@ -447,8 +448,8 @@ mod tests {
             error.to_string(),
             concat!(
                 "Window 123 did not take the input focus; window 456 holds it instead. ",
-                "Restart the sandbox with down and then up, so the display restarts without ",
-                "window frames."
+                "The session that started the sandbox must restart it with down and then up, ",
+                "with the same app arguments, so the display restarts without window frames."
             )
         );
     }

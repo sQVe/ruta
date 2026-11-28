@@ -170,9 +170,10 @@ pub(crate) fn release(
     keys: &[String],
 ) -> anyhow::Result<()> {
     let environment = sandbox_environment(&caller_environment(), root, display);
-    super::set_focus(&environment, window)?;
+    let released = xdotool(&environment, &key_arguments("keyup", keys), TOOL_TIMEOUT);
+    let focused = super::set_focus(&environment, window);
 
-    xdotool(&environment, &key_arguments("keyup", keys), TOOL_TIMEOUT)
+    released.and(focused)
 }
 
 #[mutants::skip]
@@ -346,6 +347,101 @@ mod tests {
             fs::read_to_string(&calls).expect("read the calls"),
             "windowfocus 123\n",
             "a failed focus request makes no focus query and sends no input"
+        );
+    }
+
+    // hold and release build the sandbox environment themselves, which puts the root's bin folder
+    // first on PATH, so the fake xdotool must live there.
+    fn fake_root_xdotool(windowfocus: &str, getwindowfocus: &str) -> (tempfile::TempDir, PathBuf) {
+        let root = crate::test_support::temporary_sandbox_root("send-keys");
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).expect("create the bin folder");
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o700))
+            .expect("make the bin folder private");
+        let calls = root.path().join("calls");
+        let script = bin.join("xdotool");
+        let script_text = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  windowfocus) {windowfocus} ;;\n  getwindowfocus) {getwindowfocus}\nesac\nexit 0\n",
+            calls.display()
+        );
+        fs::write(&script, script_text).expect("write the fake xdotool");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
+            .expect("make the fake xdotool runnable");
+
+        (root, calls)
+    }
+
+    #[test]
+    fn hold_sends_the_keydown_only_after_a_taken_focus() {
+        crate::test_support::in_test_namespace!();
+
+        let (root, calls) = fake_root_xdotool("exit 0", "printf '123\\n'");
+
+        hold(root.path(), ":7", "123", &strings(&["Shift_L"])).expect("the focus is taken");
+
+        assert_eq!(
+            fs::read_to_string(&calls).expect("read the calls"),
+            "windowfocus 123\ngetwindowfocus -f\nkeydown Shift_L\n"
+        );
+    }
+
+    #[test]
+    fn hold_refuses_a_focus_that_stayed_elsewhere_without_pressing_a_key() {
+        crate::test_support::in_test_namespace!();
+
+        let (root, calls) = fake_root_xdotool("exit 0", "printf '999\\n'");
+
+        let error = hold(root.path(), ":7", "123", &strings(&["Shift_L"]))
+            .expect_err("the focus stayed elsewhere");
+
+        assert_eq!(
+            error.downcast_ref::<WindowError>(),
+            Some(&WindowError::FocusRefused {
+                window: "123".to_string(),
+                holder: "999".to_string(),
+            })
+        );
+        assert_eq!(
+            fs::read_to_string(&calls).expect("read the calls"),
+            "windowfocus 123\ngetwindowfocus -f\n",
+            "a refused focus presses no key"
+        );
+    }
+
+    #[test]
+    fn release_sends_the_keyup_after_a_taken_focus() {
+        crate::test_support::in_test_namespace!();
+
+        let (root, calls) = fake_root_xdotool("exit 0", "printf '123\\n'");
+
+        release(root.path(), ":7", "123", &strings(&["Shift_L"])).expect("the focus is taken");
+
+        assert_eq!(
+            fs::read_to_string(&calls).expect("read the calls"),
+            "keyup Shift_L\nwindowfocus 123\ngetwindowfocus -f\n"
+        );
+    }
+
+    #[test]
+    fn release_sends_the_keyup_when_the_focus_is_refused() {
+        crate::test_support::in_test_namespace!();
+
+        let (root, calls) = fake_root_xdotool("exit 0", "printf '999\\n'");
+
+        let error = release(root.path(), ":7", "123", &strings(&["Shift_L"]))
+            .expect_err("the focus stayed elsewhere");
+
+        assert_eq!(
+            error.downcast_ref::<WindowError>(),
+            Some(&WindowError::FocusRefused {
+                window: "123".to_string(),
+                holder: "999".to_string(),
+            })
+        );
+        assert_eq!(
+            fs::read_to_string(&calls).expect("read the calls"),
+            "keyup Shift_L\nwindowfocus 123\ngetwindowfocus -f\n",
+            "the keyup goes out before the refused focus is reported"
         );
     }
 
