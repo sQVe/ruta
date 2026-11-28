@@ -204,9 +204,19 @@ fn capture_window(name: &str, root: &Path, out: &Path) -> anyhow::Result<()> {
     crate::capture::write_capture(out, ready_line.as_deref(), &environment)
 }
 
+// The version refusal must win over a missing tool, so each command probes before it checks the
+// tools. `start_window` probes again for the executable the display start uses.
+fn require_display_weston(root: &Path, session: &Session) -> anyhow::Result<()> {
+    let environment = session.environment(&caller_environment(), root);
+
+    require_weston_version(&environment)
+}
+
 #[mutants::skip]
 fn up(config: &Config, root: &Path, arguments: &[String], headed: bool) -> anyhow::Result<String> {
     let session = caller_session(headed)?;
+    require_display_weston(root, &session)?;
+    require_display_tools()?;
 
     start_window(config, root, arguments, &session)
 }
@@ -220,6 +230,8 @@ fn restart(
 ) -> anyhow::Result<String> {
     let (arguments, headed) = restart_plan(root, arguments, force_headed)?;
     let session = caller_session(headed)?;
+    require_display_weston(root, &session)?;
+    require_display_tools()?;
 
     start_window(config, root, &arguments, &session)
 }
@@ -277,7 +289,6 @@ fn start_window(
     require_trusted_root(root)?;
     let environment = session.environment(&caller_environment(), root);
     require_weston_version(&environment)?;
-    require_display_tools()?;
 
     start_window_with(root, &config.folder, || {
         start_sandbox(config, root, arguments, session)
